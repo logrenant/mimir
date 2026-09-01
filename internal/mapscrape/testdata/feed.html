@@ -1,0 +1,77 @@
+<!--
+A synthetic Google Maps results feed.
+
+It is NOT a live capture. It mirrors the structure this package's extraction is
+anchored on — a `div[role="feed"]` of cards, each with an
+`a[href*="/maps/place/"]` carrying the business name as its aria-label, Maps'
+!1s/!3d/!4d URL grammar, a localized rating aria-label, and an outbound website
+link — so the parser can be tested without the network or a container. Only the
+live integration test (`-tags integration`) can prove these selectors still
+match what Google serves; this file proves the parser does what it claims about
+the shape it is given.
+
+Deliberately included: a card with no rating, a card with a comma decimal and a
+dotted thousands separator, a card whose only link is Google's own, an anchor
+with no aria-label, an anchor with no feature id, a duplicate link to a place
+already listed, and — the regression case — a card in Google's bare-label
+variant ("4,9 yildizli", no count) whose visible text carries an Istanbul phone
+number in parentheses. A parser that looks for a parenthesised number anywhere
+in the card reads "(0216) 330 09 99" as 216 reviews. That happened, live.
+-->
+<div role="feed" aria-label="Results">
+
+  <div>
+    <a href="https://www.google.com/maps/place/Acme+Dental/data=!4m7!3m6!1s0x14caba1234567890:0xabcdef0123456789!8m2!3d41.0082376!4d28.9783589!16s%2Fg%2F11abc"
+       aria-label="Acme Dental"></a>
+    <div>
+      <span role="img" aria-label="4.6 stars 231 reviews"></span>
+      <span>4.6</span><span>(231)</span>
+    </div>
+    <a href="https://acme-dental.example/" aria-label="Visit Acme Dental's website">Website</a>
+  </div>
+
+  <div>
+    <a href="https://www.google.com/maps/place/Kadıköy+Diş+Kliniği/data=!4m7!3m6!1s0x14cab7aaaaaaaaaa:0x1111222233334444!8m2!3d40.9902100!4d29.0270300"
+       aria-label="Kadıköy Diş Kliniği"></a>
+    <div>
+      <span role="img" aria-label="4,5 yıldız 1.024 yorum"></span>
+    </div>
+    <a href="https://www.google.com/maps/dir//Kadıköy">Directions</a>
+  </div>
+
+  <div>
+    <a href="https://www.google.com/maps/place/Brand+New+Clinic/data=!4m7!3m6!1s0x14cab7bbbbbbbbbb:0x5555666677778888!8m2!3d-33.8688200!4d151.2092900"
+       aria-label="Brand New Clinic"></a>
+    <div>
+      <span aria-label="Kingsway 42, Sydney"></span>
+    </div>
+  </div>
+
+  <div>
+    <a href="https://www.google.com/maps/place/Duplicate+Link/data=!4m7!3m6!1s0x14caba1234567890:0xabcdef0123456789!8m2!3d41.0082376!4d28.9783589"
+       aria-label="Acme Dental"></a>
+  </div>
+
+  <div>
+    <a href="https://www.google.com/maps/place/Bare+Label+Clinic/data=!4m7!3m6!1s0x14cab8dddddddddd:0x3333444455556666!8m2!3d41.0400000!4d29.0100000"
+       aria-label="Diş Polikliniği Mecidiyeköy"></a>
+    <div>
+      <span role="img" aria-label="4,9 yıldızlı"><span aria-hidden="true">4,9</span></span>
+    </div>
+    <div>
+      <span><span>Dental clinic</span></span>
+      <span> <span aria-hidden="true">·</span> <span>No:14 Selahattin Pınar Caddesi</span></span>
+      <span> <span aria-hidden="true">·</span> <span>(0216) 330 09 99</span></span>
+    </div>
+  </div>
+
+  <div>
+    <a href="https://www.google.com/maps/place/No+Aria+Label/data=!4m7!3m6!1s0x14cab7cccccccccc:0x9999000011112222"></a>
+  </div>
+
+  <div>
+    <a href="https://www.google.com/maps/place/No+Feature+Id/data=!4m2!3m1!8m2!3d41.0!4d29.0"
+       aria-label="Placeless Cafe"></a>
+  </div>
+
+</div>

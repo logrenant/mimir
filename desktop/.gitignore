@@ -1,0 +1,6 @@
+node_modules/
+dist/
+src-tauri/target/
+# Built by `make desktop-sidecar`, never committed: it is the Go binary from
+# this same repo, and a stale copy in git would be worse than an absent one.
+src-tauri/binaries/

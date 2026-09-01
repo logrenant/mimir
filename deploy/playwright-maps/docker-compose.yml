@@ -1,0 +1,17 @@
+services:
+  playwright-maps:
+    build: .
+    image: goat-playwright-maps:1.62.1
+    ports:
+      # Loopback only. This service drives a real browser; it must never be
+      # reachable from another host.
+      - "127.0.0.1:11236:11236"
+    # A browser needs more than Docker's default 64MB of /dev/shm or Chromium
+    # crashes on pages with many images — a Maps feed is exactly that.
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:11236/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped

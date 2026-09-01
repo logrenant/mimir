@@ -1,0 +1,10 @@
+version: "2"
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gocritic

@@ -1,0 +1,19 @@
+# Build output
+/bin
+/goat-mcp
+/goat-daemon
+
+# Local scraper state
+/deploy/crawl4ai/.data
+
+# Desktop shell — installed, generated, or built
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/
+desktop/src-tauri/gen/schemas/
+
+# Machine-local
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.DS_Store

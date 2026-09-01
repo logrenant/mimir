@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+/* One dark theme, committed to deliberately: this window sits beside a
+   terminal, not inside a browser, and there is no viewer whose preference we
+   should be following. */
+@theme {
+  --color-ink: #0b0c0e;
+  --color-panel: #131519;
+  --color-edge: #23262d;
+  --color-text: #e6e8ec;
+  --color-muted: #8b919c;
+  --color-accent: #d8b44a;
+  --color-ok: #4ea87a;
+  --color-warn: #d59b3d;
+  --color-bad: #d1615d;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #2a2e36; border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Used by the Dashboard screen's blinking cursor and in-progress marquee. */
+@keyframes goatBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes goatCrawl { 0% { background-position: 0 0; } 100% { background-position: 24px 0; } }

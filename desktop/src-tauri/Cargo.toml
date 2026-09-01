@@ -1,0 +1,21 @@
+[package]
+name = "goat-desktop"
+version = "1.0.0"
+edition = "2021"
+description = "GOAT desktop shell"
+authors = ["goat"]
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+# Every dependency is pinned exactly (SD-5): `=`, not a caret range, so a
+# rebuilt shell is the shell that was reviewed.
+[dependencies]
+tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-shell = "=2.3.5"
+tauri-plugin-dialog = "=2.7.2"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+ureq = "=3.4.0"
+getrandom = "=0.4.3"

@@ -1,0 +1,17 @@
+<!-- Synthetic fixture: exercises the best-effort data-item-id/aria-label
+     selectors on a fully-populated info panel. Not captured from a live
+     render (the info panel never populated within the tested wait budget —
+     see gmaps.go's package doc) — this only proves the parsing logic is
+     correct IF Google Maps ever serves this shape, not that it reliably
+     does. -->
+<!DOCTYPE html>
+<html>
+<head><title>Blue Bottle Coffee - Google Maps</title></head>
+<body>
+<h1 class="DUwDvf"><span>Blue Bottle Coffee</span></h1>
+<button data-item-id="address">300 Webster St, San Francisco, CA 94117</button>
+<button data-item-id="phone:tel:+14155550100">(415) 555-0100</button>
+<a data-item-id="authority" href="https://bluebottlecoffee.com"><div>bluebottlecoffee.com</div></a>
+<span role="img" aria-label="4.6 stars"></span>
+</body>
+</html>
