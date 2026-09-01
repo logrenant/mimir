@@ -1,4 +1,4 @@
-.PHONY: build test race vet lint check e2e crawl-up crawl-down crawl-logs maps-up maps-down maps-logs desktop-sidecar desktop-dev desktop-build desktop-check
+.PHONY: build test race vet lint check e2e install-agent uninstall-agent agent-status agent-logs agent-restart install-app crawl-up crawl-down crawl-logs maps-up maps-down maps-logs desktop-sidecar desktop-dev desktop-build desktop-check
 
 build:
 	go build -o bin/goat-mcp ./cmd/goat-mcp
@@ -17,6 +17,8 @@ lint:
 	tools/lint/check_stdout.sh
 	tools/lint/check_context.sh
 	golangci-lint run
+	sh -n scripts/install-agent.sh
+	sh -n scripts/uninstall-agent.sh
 
 e2e:
 	@echo "Running E2E test harness..."
@@ -40,6 +42,40 @@ release:
 	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/goat-daemon-darwin-arm64 ./cmd/goat-daemon
 	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/goat-daemon-darwin-amd64 ./cmd/goat-daemon
 	@echo "Release binaries built in bin/"
+
+# --- always-on daemon (launchd) ---------------------------------------------
+#
+# Installs goat-daemon as a per-user LaunchAgent so it runs at login and is
+# restarted if it dies, whether or not the desktop app is open. The daemon's
+# own contract is unchanged: launchd is simply a second legitimate parent that
+# hands it GOAT_DAEMON_PORT and GOAT_DAEMON_TOKEN. See scripts/AGENTS.md.
+
+AGENT_LABEL := com.goat.daemon
+AGENT_DOMAIN := gui/$(shell id -u)
+
+install-agent:
+	scripts/install-agent.sh
+
+uninstall-agent:
+	scripts/uninstall-agent.sh
+
+agent-status:
+	@launchctl print $(AGENT_DOMAIN)/$(AGENT_LABEL) | grep -E "state = |pid = |path = " || \
+		echo "$(AGENT_LABEL) is not loaded — run 'make install-agent'"
+
+agent-restart:
+	launchctl kickstart -k $(AGENT_DOMAIN)/$(AGENT_LABEL)
+
+agent-logs:
+	tail -f "$(HOME)/Library/Logs/goat-daemon.log"
+
+# The menu-bar app itself. Copied rather than distributed: the bundle is
+# ad-hoc-signed, and a .dmg needs Finder automation permission for its layout
+# step (see desktop/AGENTS.md).
+install-app: desktop-build
+	rm -rf /Applications/GOAT.app
+	cp -R desktop/src-tauri/target/release/bundle/macos/GOAT.app /Applications/
+	@echo "GOAT.app installed — open it once; it lives in the menu bar, not the Dock"
 
 clean:
 	@echo "not implemented"

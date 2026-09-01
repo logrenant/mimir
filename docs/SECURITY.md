@@ -60,13 +60,50 @@ gates *whether* the Places provider exists; an empty value is a normal install
 in which `maps_search` and `/maps/*` are simply absent. This is the "credential
 vault" pattern `docs/ROADMAP.md` §A.3 anticipated, built here for its first use.
 
-The `goat-daemon` HTTP surface is authenticated by a **per-launch bearer token**
-the parent process mints (32 bytes, `GOAT_DAEMON_TOKEN`); `config.ValidateDaemon`
-refuses to start without one. The listener binds `127.0.0.1` only, a second
-loopback guard sits ahead of every route, and comparison is constant-time. There
-is no user model, no TLS, and no "development mode" that skips the check — an
-unauthenticated local server with the coding-task runner behind it is a shell on
-the operator's machine for anything that can open the port.
+The `goat-daemon` HTTP surface is authenticated by a **32-byte bearer token**
+its parent mints (`GOAT_DAEMON_TOKEN`); `config.ValidateDaemon` refuses to start
+without one. The listener binds `127.0.0.1` only, a second loopback guard sits
+ahead of every route, and comparison is constant-time. There is no user model,
+no TLS, and no "development mode" that skips the check — an unauthenticated
+local server with the coding-task runner behind it is a shell on the operator's
+machine for anything that can open the port.
+
+### The always-on install: a token at rest
+
+There are two legitimate parents, and they make different trade-offs:
+
+| Parent | Token | Lives |
+|--------|-------|-------|
+| The Tauri shell (dev) | minted per launch, in memory, passed in the child's environment | as long as the window |
+| launchd (`scripts/install-agent.sh`) | minted at install, **on disk in two files** | across logins |
+
+The installed path is the one the operator normally runs, and it deliberately
+weakens one property to gain another: a daemon that survives the app being
+closed cannot have a token that only ever existed in the app's memory. So the
+token is written twice — `~/Library/Application Support/goat-mcp/endpoint.json`
+(what the app reads) and `~/Library/LaunchAgents/com.goat.daemon.plist` (what
+launchd hands the child) — both created under `umask 077` and `chmod 0600`,
+both inside the operator's own home directory.
+
+What did **not** change: the daemon still binds loopback only, still refuses to
+start without a token, still answers no route without one, and still sends no
+CORS headers. What is new is that a process running as this user can read the
+token off disk instead of having to be the desktop app. On a single-user
+machine that is the same trust boundary the store (`goat.db`, which holds every
+registered project path and run transcript) already sits in.
+
+Two guards keep that honest:
+
+- The desktop shell **refuses** an `endpoint.json` that is group- or
+  world-readable, rather than reading it anyway (`daemon.rs`,
+  `EndpointError::Permissive`) — an exposed credential must fail loudly.
+- It also refuses a `base_url` that is not `http://127.0.0.1:` — an endpoint
+  file is an input, and a rewritten one would otherwise redirect the token off
+  the machine.
+
+Rotation is `scripts/install-agent.sh --rotate-token`, which rewrites both files
+and restarts the agent; any app holding the old token gets a 401 and re-reads
+the file on its next launch. `scripts/uninstall-agent.sh --purge` removes both.
 
 Note the refiner history: it was originally a fully local Ollama model, and no
 scraped content ever left the machine. It is now the Anthropic API, reached via

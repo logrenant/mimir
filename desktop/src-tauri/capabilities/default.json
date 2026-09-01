@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the WebView may ask the Rust shell for. Deliberately short: the daemon endpoint command is our own, and the folder picker is the only plugin surface exposed.",
-  "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "description": "What the WebView may ask the Rust shell for. Deliberately short: the daemon endpoint and quick-window commands are our own, and the folder picker plus run notifications are the only plugin surfaces exposed. The global shortcut and the login item are registered in Rust and are not reachable from the WebView at all.",
+  "windows": ["main", "quick"],
+  "permissions": ["core:default", "dialog:allow-open", "notification:default"]
 }

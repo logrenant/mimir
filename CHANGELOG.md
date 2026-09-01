@@ -4,6 +4,43 @@ Bu dosya [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) biçimini,
 sürüm numaraları [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 kuralını izler.
 
+## [1.1.0] — 2026-09-01
+
+GOAT artık "açınca çalışan bir uygulama" değil, sistemde sürekli çalışan bir
+servis ve menü çubuğundan tek kısayolla erişilen bir giriş noktası.
+
+### Eklendi
+
+- **launchd agent** (`scripts/install-agent.sh`, `make install-agent`) —
+  `goat-daemon` login'de başlar, ölürse `KeepAlive` ile geri gelir, uygulamadan
+  bağımsız yaşar. Port + token kurulumda üretilir; `endpoint.json` ve plist
+  ikisi de `0600`. `make agent-status` / `agent-logs` / `agent-restart` /
+  `uninstall-agent`.
+  - plist `PATH`'i genişletir: launchd'nin verdiği `/usr/bin:/bin:/usr/sbin:/sbin`
+    ile `internal/refine` ve `internal/coderunner`'ın `claude` CLI'yi bulması
+    mümkün değil.
+- **Menü çubuğu uygulaması** — Dock ikonu yok (accessory), tray'de canlı daemon
+  durumu, `New task…`, `Open GOAT`, `Restart daemon`, login'de başlatma anahtarı
+  ve `Quit GOAT`. Uygulamadan çıkmak daemon'ı durdurmaz; pencereyi kapatmak
+  gizler.
+- **Hızlı task penceresi (⌘⇧G)** — son kullanılan projeye varsayılan, prompt
+  yaz `⏎` ile başlat; canlı akış aynı pencerede. Pencereyi kapatmak run'ı iptal
+  etmez, bitince sistem bildirimi gelir. Saf karar mantığı
+  `desktop/src/lib/quickTask.ts` içinde, testli.
+
+### Değişti
+
+- **Masaüstü kabuğu artık attach-first.** `endpoint.json` varsa launchd'nin
+  daemon'ına bağlanır (sağlıksızsa `launchctl kickstart -k`), asla ikinci bir
+  daemon doğurmaz — tek SQLite store'a iki yazar olmasın diye. Dosya yoksa
+  eskisi gibi kendi çocuğunu başlatır (`make desktop-dev` yolu).
+- `endpoint.json` bir girdi olarak doğrulanır: `0600` değilse veya `base_url`
+  loopback değilse **reddedilir**, okunmaz.
+- Sürüm dizesi tek kaynaktan (`internal/mcp.Version`) geliyor ve git etiketiyle
+  aynı: `/healthz`, `diagnostics` ve tray durum satırı aynı numarayı gösterir.
+- Bundle hedefi yalnızca `app`; `.dmg` adımı Finder otomasyon izni istiyor ve
+  GOAT dağıtılmıyor, kopyalanarak kuruluyor.
+
 ## [1.0.0] — 2026-09-01
 
 İlk sürüm etiketi: bugüne kadar inşa edilmiş ve çalışan sistemin tamamı.

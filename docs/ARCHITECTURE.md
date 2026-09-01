@@ -155,18 +155,28 @@ Google Maps lead-generation pipeline, all behind a Tauri app.
 ### 7.1 Two binaries, one engine
 
 ```
-  Claude Code (MCP client)                Tauri desktop app (React + shadcn/ui)
-        │ stdio                                 │ Tauri IPC ── REST via Rust shell
-        ▼                                       ▼           ── WebSocket (browser)
-  cmd/goat-mcp                            cmd/goat-daemon  (spawned as a sidecar;
-   → internal/mcp (stdio)                   parent-provided 127.0.0.1 port + token)
-                                            → internal/mcp  (StreamableHTTPHandler on /mcp)
-                                            → internal/api  (REST + /ws + /maps/*)
+                                          launchd  (com.goat.daemon: at login, KeepAlive)
+                                              │ GOAT_DAEMON_PORT + GOAT_DAEMON_TOKEN + PATH
+  Claude Code (MCP client)                    ▼
+        │ stdio                         cmd/goat-daemon  ◀── endpoint.json (0600)
+        ▼                                → internal/mcp (StreamableHTTPHandler on /mcp)     │
+  cmd/goat-mcp                            → internal/api (REST + /ws + /maps/*)             │
+   → internal/mcp (stdio)                       ▲                                          │
+                                                │ REST via Rust shell · WebSocket           │
+                                          GOAT.app (menu-bar, no Dock) ────────────────────-┘
+                                            main window · quick window (⌘⇧G)
         └──────────────┬──────────────────────────┘
                        ▼   both import the same packages — one runtime engine
    internal/{store · project · coderunner · events · pipeline · leadgen}
    internal/{search · crawl · refine · maps · mapscrape · config}
 ```
+
+The daemon's lifetime is **launchd's**, not a window's: it starts at login, is
+restarted if it dies, and outlives every app launch. The app reads the port and
+token launchd was given from `endpoint.json` and attaches. With no endpoint file
+— a fresh checkout running `make desktop-dev` — the shell falls back to being
+the parent itself, reserving a port and minting a per-launch token. Exactly one
+of the two is ever live: two daemons would contend for the store's write lock.
 
 `cmd/goat-mcp` is unchanged: a thin stdio entrypoint whose lifetime an MCP
 client owns. `cmd/goat-daemon` is the only new orchestration surface — it owns
@@ -286,17 +296,33 @@ needs.
 
 ### 7.5 Desktop app (`desktop/`)
 
-Tauri (Rust shell) + React + shadcn/ui + Tailwind, macOS/ARM64. The Rust shell
-binds `127.0.0.1:0`, reads and drops the port, mints a 32-byte per-launch bearer
-token, and spawns `goat-daemon` with exactly two env vars
+Tauri (Rust shell) + React + shadcn/ui + Tailwind, macOS/ARM64. A **menu-bar
+app**: accessory activation policy (no Dock icon), a tray item carrying the
+daemon's live status, `New task…`, `Open GOAT`, `Restart daemon`, a login-item
+toggle, and `Quit GOAT` — which quits the app and leaves the daemon running.
+Closing a window hides it.
+
+The shell finds the daemon rather than assuming it owns one: it reads
+`endpoint.json` (refusing it if it is not `0600`, or if `base_url` is not
+loopback) and attaches, asking `launchctl kickstart -k` for a restart if that
+daemon is not answering. Only when there is no endpoint file does it spawn
+`goat-daemon` itself — binding `127.0.0.1:0`, reading and dropping the port,
+minting a 32-byte per-launch token, and passing exactly two env vars
 (`GOAT_DAEMON_PORT`, `GOAT_DAEMON_TOKEN`). The WebView never parses subprocess
 output. **REST goes through Rust** (`daemon_request`), because a cross-origin
 `fetch` carrying `Authorization` is preflighted and the daemon answers `OPTIONS`
 with 401 by design — so the token stays out of the WebView for every REST path.
 The one exception is the run WebSocket, whose handshake is preflight-exempt and
-which carries the token as `Sec-WebSocket-Protocol: goat.bearer.<token>`. Three
-screens: `Connection` (the handshake), `Workspace` (coding-task runner + live
-run view), `Leadgen` (the Maps pipeline).
+which carries the token as `Sec-WebSocket-Protocol: goat.bearer.<token>`.
+
+Two windows over one bundle, told apart by window label. **Main**: `Connection`
+(the handshake) → `Dashboard`, whose sidebar switches between `Workspace`
+(coding-task runner + live run view) and `Leadgen` (the Maps pipeline).
+**Quick** (⌘⇧G, or the tray): a project picker defaulted to the most recently
+used folder, a prompt, `⏎` to start — then the same run stream, reduced by the
+same `reduceRun`. Dismissing it does not cancel the run; a system notification
+reports the result, because a task started from the menu bar is one nobody is
+watching.
 
 ### 7.6 The operator-provisioned credential
 

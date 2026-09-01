@@ -52,8 +52,21 @@ The single source of every operational value. Enforces **SD-1**.
   1. it is knowledge the process cannot derive, only be told — a port its
      parent already reserved, a secret its parent minted;
   2. it changes **nothing** about what the process does with a request;
-  3. it is set by the parent that spawns the daemon (the Tauri shell, per
-     `docs/ROADMAP.md` §B.2.1), never by a human editing a config file;
+  3. it is set by the parent that starts the daemon, never by a human editing a
+     config file. There are exactly **two** such parents, and they are
+     interchangeable from this package's point of view:
+     - the **Tauri shell** (`docs/ROADMAP.md` §B.2.1), which reserves a port and
+       mints a token per launch — the development path;
+     - **launchd**, via `scripts/install-agent.sh`, which writes the same two
+       variables into `com.goat.daemon.plist` at install time — the always-on
+       path an operator actually runs.
+
+     A third variable in the plist, `PATH`, is not in this table on purpose: it
+     is not read by this package at all. launchd hands a job
+     `/usr/bin:/bin:/usr/sbin:/sbin`, and `internal/refine` and
+     `internal/coderunner` resolve the `claude` CLI through `exec`, so the
+     plist widens `PATH` for the *process*. `ClaudeCLIPath` itself stays the
+     constant `claude`;
   4. absent, the daemon has a defined, fail-closed posture.
 
   | Env var | Sets | Default | Absent |

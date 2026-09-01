@@ -1,6 +1,6 @@
 [package]
 name = "goat-desktop"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "GOAT desktop shell"
 authors = ["goat"]
@@ -12,9 +12,13 @@ tauri-build = { version = "=2.6.3", features = [] }
 # Every dependency is pinned exactly (SD-5): `=`, not a caret range, so a
 # rebuilt shell is the shell that was reviewed.
 [dependencies]
-tauri = { version = "=2.11.5", features = [] }
+# tray-icon + image-png: the menu-bar item and the PNG template icon it draws.
+tauri = { version = "=2.11.5", features = ["tray-icon", "image-png"] }
 tauri-plugin-shell = "=2.3.5"
 tauri-plugin-dialog = "=2.7.2"
+tauri-plugin-global-shortcut = "=2.3.2"
+tauri-plugin-notification = "=2.4.0"
+tauri-plugin-autostart = "=2.5.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 ureq = "=3.4.0"

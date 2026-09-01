@@ -1,23 +1,47 @@
-//! Supervises the `goat-daemon` sidecar.
+//! Finds the `goat-daemon` this app talks to — attaching to the installed
+//! always-on one, or spawning its own in development.
 //!
 //! The parent owns the plumbing, and that is the whole design. goat v1 had its
 //! shell scrape `GOAT_PORT=<n>` out of the child's stdout; this repo made that
 //! impossible on the child's side (SD-4 — stdout carries MCP frames and nothing
 //! else, and the daemon logs its resolved address to stderr precisely because
-//! the parent is supposed to already know it). So here: **we** pick the port,
-//! **we** mint the token, we tell the child, and we tell the WebView. Nothing
-//! in this file reads either value back out of a pipe.
+//! the parent is supposed to already know it). Nothing in this file reads
+//! either value back out of a pipe.
+//!
+//! There are now two legitimate parents, and exactly one of them is live at a
+//! time:
+//!
+//! * **Attached (the installed system).** `scripts/install-agent.sh` registered
+//!   `com.goat.daemon` with launchd, which owns the process, restarts it if it
+//!   dies, and starts it at login. launchd is the parent; it was handed the
+//!   port and the token at install time, and the same pair is in
+//!   `endpoint.json`, `0600`, for this app to read. The daemon outlives the
+//!   window, so this app never spawns and never kills it.
+//! * **Spawned (development).** No `endpoint.json` means no agent is installed
+//!   — `make desktop-dev` on a fresh checkout — so the shell falls back to the
+//!   original behaviour: reserve a port, mint a per-launch token, run the
+//!   sidecar as a child, and reap it on exit.
+//!
+//! The two modes are mutually exclusive on purpose. Two daemons against one
+//! SQLite store would contend for its write lock, so the presence of the
+//! endpoint file decides, and nothing races it.
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::Read;
 use std::net::TcpListener;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+/// The launchd job `scripts/install-agent.sh` registers.
+const AGENT_LABEL: &str = "com.goat.daemon";
 
 /// How long to wait for the child to answer /healthz before calling it dead.
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -76,6 +100,53 @@ impl DaemonState {
 #[tauri::command]
 pub fn get_daemon_endpoint(state: State<'_, DaemonState>) -> Status {
     state.status.lock().expect("daemon status poisoned").clone()
+}
+
+/// The handshake state, for callers inside the shell (the tray's status line).
+/// Same value `get_daemon_endpoint` hands the WebView, without the IPC hop.
+pub fn status_snapshot(app: &AppHandle) -> Status {
+    app.state::<DaemonState>()
+        .status
+        .lock()
+        .expect("daemon status poisoned")
+        .clone()
+}
+
+/// The version string a live daemon reports, or `None` if it does not answer.
+///
+/// Doubles as the tray's liveness check: an installed daemon can die and be
+/// restarted by launchd while this app sits idle, so the status line asks the
+/// process rather than trusting the handshake it did at start-up.
+pub fn health_version(endpoint: &Endpoint) -> Option<String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(2)))
+        .build()
+        .into();
+
+    let mut response = agent
+        .get(&format!("{}/healthz", endpoint.base_url))
+        .header("Authorization", &format!("Bearer {}", endpoint.token))
+        .call()
+        .ok()?;
+
+    let mut body = String::new();
+    response
+        .body_mut()
+        .as_reader()
+        .take(4096)
+        .read_to_string(&mut body)
+        .ok()?;
+
+    if !body.contains("\"ok\":true") {
+        return None;
+    }
+    let version: HealthzVersion = serde_json::from_str(&body).ok()?;
+    Some(version.version)
+}
+
+#[derive(Deserialize)]
+struct HealthzVersion {
+    version: String,
 }
 
 /// One daemon reply, handed back to the WebView.
@@ -173,13 +244,20 @@ fn call_daemon(
     }
 }
 
-/// Retry after a failed start, so a transient cause (a port that was briefly
-/// taken, a sidecar built a second too late) does not need an app restart.
+/// Retry after a failed start.
+///
+/// Attached: asks launchd to restart the job it owns, then re-runs the
+/// handshake. Spawned: kills our child and starts a fresh one. Either way a
+/// transient cause — a port that was briefly taken, a sidecar built a second
+/// too late — does not need an app restart.
 #[tauri::command]
 pub fn restart_daemon(app: AppHandle) {
     let state = app.state::<DaemonState>();
     if let Some(child) = state.take_child() {
         let _ = child.kill();
+    }
+    if endpoint_file().exists() {
+        let _ = kickstart_agent();
     }
     state.set(Status::Starting);
     start(app.clone());
@@ -200,6 +278,50 @@ pub fn start(app: AppHandle) {
 }
 
 fn supervise(app: &AppHandle) -> Result<Endpoint, String> {
+    // Attached mode wins whenever the agent is installed: launchd owns that
+    // process, and spawning a second one would put two writers on one SQLite
+    // store.
+    match read_endpoint(&endpoint_file()) {
+        Ok(endpoint) => return attach(endpoint),
+        Err(EndpointError::Missing) => {}
+        Err(other) => return Err(other.to_string()),
+    }
+
+    spawn_supervised(app)
+}
+
+/// Connects to the daemon launchd is keeping alive.
+///
+/// A healthy daemon answers immediately. An unhealthy one is not ours to fix by
+/// hand: launchd already restarts it, and `kickstart -k` is how you ask for
+/// that now rather than in ten seconds' time.
+fn attach(endpoint: Endpoint) -> Result<Endpoint, String> {
+    if health_ok(&endpoint.base_url, &endpoint.token) {
+        return Ok(endpoint);
+    }
+
+    if let Err(err) = kickstart_agent() {
+        return Err(format!(
+            "{err}\n\nThe endpoint file at {} names a daemon that is not answering. \
+             Run `make install-agent` to reinstall the agent.",
+            endpoint_file().display()
+        ));
+    }
+
+    // No child of ours, so nothing can report an exit code: the health poll is
+    // the only signal, exactly as it is for a spawned daemon that never exits.
+    let never_exits = Arc::new(Mutex::new(None));
+    match wait_until_ready(&endpoint.base_url, &endpoint.token, &never_exits) {
+        Ok(()) => Ok(endpoint),
+        Err(reason) => Err(format!(
+            "{reason}\n\nlaunchd restarted {AGENT_LABEL} but it did not come up. \
+             Check ~/Library/Logs/goat-daemon.log."
+        )),
+    }
+}
+
+/// The development path: no agent installed, so this shell is the parent.
+fn spawn_supervised(app: &AppHandle) -> Result<Endpoint, String> {
     let mut last_error = String::new();
 
     for attempt in 1..=PORT_ATTEMPTS {
@@ -353,6 +475,136 @@ fn health_ok(base_url: &str, token: &str) -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// attached mode: the endpoint file and the launchd job
+// ---------------------------------------------------------------------------
+
+/// What `scripts/install-agent.sh` wrote for us: the same port and token it
+/// gave launchd, and nothing else. Extra keys are ignored so the file can grow
+/// without breaking an older app.
+#[derive(Deserialize)]
+struct EndpointFile {
+    base_url: String,
+    token: String,
+}
+
+#[derive(Debug)]
+enum EndpointError {
+    /// No agent is installed. Not an error — it selects the spawn path.
+    Missing,
+    Unreadable(String),
+    Malformed(String),
+    /// The file holds a live credential for a process that runs coding
+    /// sessions with file tools. Group- or world-readable is a refusal, not a
+    /// warning: reading it anyway would launder a real exposure into a
+    /// working app.
+    Permissive(u32),
+}
+
+impl std::fmt::Display for EndpointError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = endpoint_file();
+        match self {
+            Self::Missing => write!(f, "no daemon endpoint at {}", path.display()),
+            Self::Unreadable(err) => {
+                write!(f, "could not read {}: {err}", path.display())
+            }
+            Self::Malformed(what) => write!(
+                f,
+                "{} is not a usable endpoint file ({what}) — run `make install-agent` to rewrite it",
+                path.display()
+            ),
+            Self::Permissive(mode) => write!(
+                f,
+                "refusing to read {}: it is mode {mode:04o} and holds the daemon token; \
+                 run `chmod 600` on it, or `make install-agent` to rewrite it",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// Where the installer puts the endpoint file: alongside the store, under
+/// `os.UserConfigDir()` as Go computes it on macOS.
+fn endpoint_file() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home)
+        .join("Library/Application Support/goat-mcp")
+        .join("endpoint.json")
+}
+
+fn read_endpoint(path: &std::path::Path) -> Result<Endpoint, EndpointError> {
+    let meta = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(EndpointError::Missing)
+        }
+        Err(err) => return Err(EndpointError::Unreadable(err.to_string())),
+    };
+
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(EndpointError::Permissive(mode));
+    }
+
+    let raw = fs::read_to_string(path).map_err(|e| EndpointError::Unreadable(e.to_string()))?;
+    let parsed: EndpointFile =
+        serde_json::from_str(&raw).map_err(|e| EndpointError::Malformed(e.to_string()))?;
+
+    // The same guard `daemon_request` applies to a path, applied to the base:
+    // an endpoint file that named another host would send the token there.
+    if !parsed.base_url.starts_with("http://127.0.0.1:") {
+        return Err(EndpointError::Malformed(format!(
+            "base_url {:?} is not loopback",
+            parsed.base_url
+        )));
+    }
+    if parsed.token.len() < 32 || !parsed.token.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(EndpointError::Malformed(
+            "token is not 32+ hex characters".to_string(),
+        ));
+    }
+
+    Ok(Endpoint {
+        base_url: parsed.base_url.trim_end_matches('/').to_string(),
+        token: parsed.token,
+    })
+}
+
+/// Asks launchd to restart the job it owns. `-k` kills the current instance
+/// first, so this is a restart and not a no-op against a wedged process.
+fn kickstart_agent() -> Result<(), String> {
+    let target = format!("gui/{}/{AGENT_LABEL}", current_uid());
+    let output = std::process::Command::new("/bin/launchctl")
+        .args(["kickstart", "-k", &target])
+        .output()
+        .map_err(|e| format!("could not run launchctl: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(format!(
+        "launchctl could not restart {target}: {}",
+        if stderr.is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            stderr
+        }
+    ))
+}
+
+fn current_uid() -> u32 {
+    // Safe: getuid() takes no arguments, touches no memory, and cannot fail.
+    unsafe { libc_getuid() }
+}
+
+#[cfg(unix)]
+extern "C" {
+    #[link_name = "getuid"]
+    fn libc_getuid() -> u32;
+}
+
 /// Reserves a port by binding it, reading the number the kernel assigned, and
 /// letting go.
 ///
@@ -379,9 +631,12 @@ fn mint_token() -> Result<String, getrandom::Error> {
 
 /// Signals the child on app exit and gives it a moment to drain.
 ///
-/// The daemon has a graceful path — it shuts the HTTP server down on SIGTERM
-/// and waits for in-flight coding runs — and skipping it would orphan a process
-/// holding the store's write lock.
+/// Only ever a child *we* spawned. In attached mode there is none — the daemon
+/// belongs to launchd and is meant to outlive this window, which is the whole
+/// point of installing the agent — so `take_child()` returns `None` and this is
+/// a no-op. For a spawned one the graceful path matters: the daemon shuts the
+/// HTTP server down on SIGTERM and waits for in-flight coding runs, and
+/// skipping it would orphan a process holding the store's write lock.
 pub fn shutdown(app: &AppHandle) {
     let state = app.state::<DaemonState>();
     if let Some(child) = state.take_child() {
@@ -445,6 +700,82 @@ mod tests {
         // The listener must really have been released, or the child could
         // never bind what we just handed it.
         TcpListener::bind(("127.0.0.1", port)).expect("port should be bindable after reservation");
+    }
+
+    /// The endpoint file is the whole attached-mode contract, and every one of
+    /// these rejections is a real failure mode: a hand-edited file, a token
+    /// left world-readable, an installer pointed somewhere else.
+    #[test]
+    fn endpoint_file_is_read_only_when_it_is_well_formed_and_private() {
+        let dir = std::env::temp_dir().join(format!("goat-endpoint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let token = "a".repeat(64);
+
+        let write = |name: &str, body: &str, mode: u32| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).expect("write");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+            path
+        };
+
+        let good = write(
+            "good.json",
+            &format!(r#"{{"base_url":"http://127.0.0.1:41999/","port":41999,"token":"{token}"}}"#),
+            0o600,
+        );
+        let endpoint = read_endpoint(&good).expect("a private, well-formed file must be read");
+        assert_eq!(endpoint.base_url, "http://127.0.0.1:41999");
+        assert_eq!(endpoint.token, token);
+
+        let missing = dir.join("absent.json");
+        assert!(
+            matches!(read_endpoint(&missing), Err(EndpointError::Missing)),
+            "an absent file selects the spawn path, it is not an error"
+        );
+
+        let loose = write(
+            "loose.json",
+            &format!(r#"{{"base_url":"http://127.0.0.1:41999","token":"{token}"}}"#),
+            0o644,
+        );
+        assert!(
+            matches!(read_endpoint(&loose), Err(EndpointError::Permissive(0o644))),
+            "a world-readable token file must be refused, not read"
+        );
+
+        let remote = write(
+            "remote.json",
+            &format!(r#"{{"base_url":"http://evil.example:80","token":"{token}"}}"#),
+            0o600,
+        );
+        assert!(
+            matches!(read_endpoint(&remote), Err(EndpointError::Malformed(_))),
+            "a non-loopback base_url would send the token off the machine"
+        );
+
+        let weak = write(
+            "weak.json",
+            r#"{"base_url":"http://127.0.0.1:41999","token":"short"}"#,
+            0o600,
+        );
+        assert!(matches!(
+            read_endpoint(&weak),
+            Err(EndpointError::Malformed(_))
+        ));
+
+        let junk = write("junk.json", "not json at all", 0o600);
+        assert!(matches!(
+            read_endpoint(&junk),
+            Err(EndpointError::Malformed(_))
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn endpoint_path_sits_next_to_the_store() {
+        let path = endpoint_file();
+        assert!(path.ends_with("Library/Application Support/goat-mcp/endpoint.json"));
     }
 
     #[test]

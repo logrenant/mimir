@@ -9,8 +9,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Version is the goat-mcp binary version, surfaced by the diagnostics tool.
-const Version = "0.1.0"
+// Version is the goat binary version, surfaced by the diagnostics tool, by
+// /healthz, and by the desktop app's menu-bar status line. It is the release
+// this commit ships as, without the tag's leading "v" — the UI adds that. An
+// operator comparing a running daemon with a GitHub release must see the same
+// number in both places, so a release bumps this constant and tags the same
+// commit `v<Version>`.
+const Version = "1.1.0"
 
 // SDKVersion is the pinned modelcontextprotocol/go-sdk release (see go.mod).
 const SDKVersion = "v1.7.0"
