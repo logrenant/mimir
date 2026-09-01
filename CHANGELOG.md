@@ -51,6 +51,10 @@ o bir kayıt, marka kullanımı değil.
   kalır). Kayıtlı projeler, run geçmişi ve proje hafızası korunur.
 - Store migration `0009`: `memory_episodes.source_kind` satırlarında
   `goat_run` → `mimir_run`.
+- Store migration `0010`: run transkript yolları (`coding_runs.transcript_path`,
+  `memory_episodes.source_path`, `memory_ingest_state.source_path`) yeni
+  dizine yazıldı; kurulum betiği transkript dosyalarını da kopyalıyor. Böylece
+  eski `goat-mcp` klasörü gerçekten silinebilir hale geliyor.
 
 ### Düzeltildi
 

@@ -78,13 +78,21 @@ mv "$BIN_DIR/mimir-daemon.new" "$BIN_DIR/mimir-daemon"
 # Copied, never moved: the old file stays where it is as a backup until the
 # operator deletes it themselves.
 
-LEGACY_DB="$HOME/Library/Application Support/goat-mcp/goat.db"
+LEGACY_DIR="$HOME/Library/Application Support/goat-mcp"
+LEGACY_DB="$LEGACY_DIR/goat.db"
 if [ -f "$LEGACY_DB" ] && [ ! -f "$SUPPORT_DIR/mimir.db" ]; then
 	echo "==> carrying the pre-rebrand store forward"
 	# `.backup`, not `cp`: the database is in WAL mode and may still have a
 	# reader or writer attached, and a plain copy of a live SQLite file can be
 	# torn. This takes a consistent snapshot, wal included, and needs no lock.
 	if /usr/bin/sqlite3 "$LEGACY_DB" ".backup '$SUPPORT_DIR/mimir.db'"; then
+		# The run transcripts the database points at move with it. Migration
+		# 0010 rewrites the pointers; without the files beside them a
+		# pre-rebrand run would replay as an empty stream.
+		if [ -d "$LEGACY_DIR/transcripts" ]; then
+			mkdir -p "$SUPPORT_DIR/transcripts"
+			cp -R "$LEGACY_DIR/transcripts/." "$SUPPORT_DIR/transcripts/" 2>/dev/null || true
+		fi
 		echo "    from $LEGACY_DB (left in place as a backup)"
 	else
 		echo "    could not read $LEGACY_DB — starting with an empty store" >&2
