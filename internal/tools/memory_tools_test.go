@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/memory"
-	"github.com/logrenant/goat-mcp/internal/project"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/memory"
+	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 func memoryFixture(t *testing.T) (config.Config, *memory.Memory, *store.Store, string) {
@@ -27,7 +27,7 @@ func memoryFixture(t *testing.T) (config.Config, *memory.Memory, *store.Store, s
 	}
 
 	cfg := config.Load()
-	cfg.StorePath = filepath.Join(t.TempDir(), "goat.db")
+	cfg.StorePath = filepath.Join(t.TempDir(), "mimir.db")
 	cfg.ClaudeProjectsDir = t.TempDir() // Empty: these tests seed the store directly.
 
 	db, err := store.Open(context.Background(), cfg)

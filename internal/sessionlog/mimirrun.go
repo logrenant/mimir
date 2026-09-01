@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/events"
+	"github.com/logrenant/mimir/internal/events"
 )
 
 // RunMeta is what the store knows about a coding run that its event transcript
@@ -21,14 +21,14 @@ type RunMeta struct {
 	CostUSD     float64
 }
 
-// ParseGoatRun reads one coding run's event transcript into a single episode.
+// ParseMimirRun reads one coding run's event transcript into a single episode.
 //
 // A run is one prompt by construction, so unlike a Claude Code session there is
 // nothing to segment: the whole file is the episode. The events are decoded
 // with events.Event itself rather than a private struct, because that type's
 // JSON tags are the on-disk format — a second definition here is exactly how
 // the two would drift apart.
-func ParseGoatRun(r io.Reader, src Source, meta RunMeta) (Episode, error) {
+func ParseMimirRun(r io.Reader, src Source, meta RunMeta) (Episode, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 
@@ -117,7 +117,7 @@ func ParseGoatRun(r io.Reader, src Source, meta RunMeta) (Episode, error) {
 		// A run id is already unique and stable, so it keys the episode
 		// directly; there is no growing-file case here to guard against.
 		Key:           "run:" + meta.RunID,
-		SourceKind:    SourceGoatRun,
+		SourceKind:    SourceMimirRun,
 		SourcePath:    src.Path,
 		SessionID:     sessionID,
 		ProjectPath:   projectPath,

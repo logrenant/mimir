@@ -9,8 +9,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
 )
 
 // RegionSearcher is the primary data source (Google Places). *maps.Client

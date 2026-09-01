@@ -1,16 +1,16 @@
-# AGENTS.md — GOAT
+# AGENTS.md — Mimir
 
 This repository builds **two macOS binaries over one runtime engine**
 ([`docs/ROADMAP.md`](docs/ROADMAP.md)):
 
-- **`bin/goat-mcp`** (Track A) — a local, zero-cost **MCP server** that gives an
+- **`bin/mimir-mcp`** (Track A) — a local, zero-cost **MCP server** that gives an
   end-user Claude Code session the ability to search the web, scrape pages, and
   receive **compact, refined** results — never raw dumps. The MVP is website
   scraping; Stage F adds free, self-written, no-login scrapers for
   e-commerce/TikTok/Google Maps/Instagram (`internal/{ecommerce,tiktok,gmaps,
   instagram}` + `internal/extract`). Paid providers (LinkedIn, Meta Ads, Google
   Ads) remain **out of scope** — §A.3.
-- **`bin/goat-daemon`** (Track B) — a long-running, loopback-only HTTP service
+- **`bin/mimir-daemon`** (Track B) — a long-running, loopback-only HTTP service
   the Tauri desktop app (`desktop/`) talks to. It owns the folder-scoped
   coding-task runner with live streaming, and the Google Maps lead-gen pipeline,
   and re-exposes the same MCP registry at `/mcp`. New packages:
@@ -53,15 +53,15 @@ AGENTS.md                     ← you are here (root rules + task protocol)
 docs/
   AGENT_RULES.md              ← detailed rules, strict directives, workflows
   ARCHITECTURE.md             ← pipeline + package design reference
-  ROADMAP.md                  ← the one roadmap: Track A (research MCP) + Track B (GOAT product)
+  ROADMAP.md                  ← the one roadmap: Track A (research MCP) + Track B (Mimir product)
   CAPABILITIES.md             ← what the built system does today (EN)
   CAPABILITIES.tr.md          ← same, Türkçe
   INSTALL.md · SECURITY.md    ← setup + the security model
 tasks/
   README.md                  ← archived task index + status board (all task files retired)
-cmd/goat-mcp/        (task-01) ← Track A entrypoint: stdio MCP, wiring + lifecycle only
+cmd/mimir-mcp/        (task-01) ← Track A entrypoint: stdio MCP, wiring + lifecycle only
   AGENTS.md
-cmd/goat-daemon/     (task-22) ← Track B entrypoint: loopback HTTP, drains runs on SIGTERM
+cmd/mimir-daemon/     (task-22) ← Track B entrypoint: loopback HTTP, drains runs on SIGTERM
   AGENTS.md
 internal/
   config/           (task-01) ← standardized constants; two narrow non-constant categories (AGENTS.md)
@@ -106,7 +106,7 @@ desktop/            (task-26) ← Tauri + React + shadcn/ui shell; screens: Conn
 
 | Command | Meaning |
 |---------|---------|
-| `make build`   | compile `bin/goat-mcp` and `bin/goat-daemon` |
+| `make build`   | compile `bin/mimir-mcp` and `bin/mimir-daemon` |
 | `make test`    | unit tests, external services mocked |
 | `make race`    | `go test -race ./...` |
 | `make check`   | `build` + `go vet` + lint + `test` + `race` — **must be green to finish any task** (Go only) |

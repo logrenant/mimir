@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/search"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/search"
 )
 
 func TestIntegration_DuckDuckGo(t *testing.T) {

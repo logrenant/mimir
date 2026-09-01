@@ -1,6 +1,6 @@
-// Command goat-daemon is the long-running half of GOAT.
+// Command mimir-daemon is the long-running half of Mimir.
 //
-// cmd/goat-mcp is a stdio entrypoint whose lifetime an MCP client owns — it
+// cmd/mimir-mcp is a stdio entrypoint whose lifetime an MCP client owns — it
 // starts and stops with a Claude Code session, so it can never be the process
 // the desktop app talks to. This binary is that process: it owns the coding-
 // task runner, the event bus, and the store, and it re-exposes the same MCP
@@ -18,22 +18,22 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/logrenant/goat-mcp/internal/api"
-	"github.com/logrenant/goat-mcp/internal/coderunner"
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/events"
-	"github.com/logrenant/goat-mcp/internal/leadgen"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/mapscrape"
-	goatmcp "github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/memory"
-	"github.com/logrenant/goat-mcp/internal/pipeline"
-	"github.com/logrenant/goat-mcp/internal/project"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/search"
-	"github.com/logrenant/goat-mcp/internal/store"
-	"github.com/logrenant/goat-mcp/internal/tools"
+	"github.com/logrenant/mimir/internal/api"
+	"github.com/logrenant/mimir/internal/coderunner"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/events"
+	"github.com/logrenant/mimir/internal/leadgen"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/mapscrape"
+	mimirmcp "github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/memory"
+	"github.com/logrenant/mimir/internal/pipeline"
+	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/store"
+	"github.com/logrenant/mimir/internal/tools"
 )
 
 // Populated via -ldflags by `make release`.
@@ -43,8 +43,8 @@ var (
 )
 
 func main() {
-	goatmcp.InitLogging(os.Stderr)
-	slog.Info("goat-daemon starting", "version", version, "commit", commit)
+	mimirmcp.InitLogging(os.Stderr)
+	slog.Info("mimir-daemon starting", "version", version, "commit", commit)
 
 	if err := run(); err != nil {
 		slog.Error("Fatal error", "error", err)
@@ -73,7 +73,7 @@ func run() error {
 		return err
 	}
 
-	// Unlike goat-mcp, which degrades to an uncached pipeline if the store will
+	// Unlike mimir-mcp, which degrades to an uncached pipeline if the store will
 	// not open, the daemon cannot: projects and runs *are* the store. Failing
 	// here with the path named beats starting a server whose every route 500s.
 	db, err := store.Open(ctx, cfg)
@@ -118,12 +118,12 @@ func run() error {
 	// through it; the registry itself has no dependency of its own beyond db.
 	projects := project.NewRegistry(db)
 
-	// Unlike goat-mcp, the daemon passes a run source: it owns the coding-task
+	// Unlike mimir-mcp, the daemon passes a run source: it owns the coding-task
 	// runner, so its memory covers both interactive sessions and the runs it
 	// executed itself.
 	mem := memory.New(cfg, db, refineClient, db)
 
-	srv := goatmcp.NewServer(cfg)
+	srv := mimirmcp.NewServer(cfg)
 	if err := tools.RegisterAll(srv.Registry(), cfg, tools.Deps{
 		Search:   searchClient,
 		Crawl:    crawlClient,

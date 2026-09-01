@@ -94,7 +94,7 @@ pub fn hide_quick(app: AppHandle) {
     hide(&app);
 }
 
-/// "Open in GOAT" from the quick window — the full Workspace on the same run.
+/// "Open in Mimir" from the quick window — the full Workspace on the same run.
 #[tauri::command]
 pub fn open_main(app: AppHandle) {
     show_main(&app);

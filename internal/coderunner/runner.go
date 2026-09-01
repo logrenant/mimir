@@ -24,10 +24,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/events"
-	"github.com/logrenant/goat-mcp/internal/project"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/events"
+	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // ErrClaudeUnavailable means the `claude` CLI could not be started at all —

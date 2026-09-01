@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 // maxResponseBytes bounds how much of a Places response is read. A full page

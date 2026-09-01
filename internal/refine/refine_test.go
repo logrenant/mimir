@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite golden files")

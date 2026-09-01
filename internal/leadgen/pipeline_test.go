@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/refine"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/refine"
 )
 
 // --- fakes for the region-search stage -----------------------------------

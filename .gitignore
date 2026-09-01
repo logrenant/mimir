@@ -1,7 +1,7 @@
 # Build output
 /bin
-/goat-mcp
-/goat-daemon
+/mimir-mcp
+/mimir-daemon
 
 # Local scraper state
 /deploy/crawl4ai/.data

@@ -30,10 +30,10 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/sessionlog"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/sessionlog"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // Store is the persistence this package needs. Narrow on purpose: it is
@@ -58,7 +58,7 @@ type Refiner interface {
 	Recap(ctx context.Context, in refine.RecapInput) (refine.Output, error)
 }
 
-// RunSource exposes this daemon's own coding runs. It is optional: goat-mcp
+// RunSource exposes this daemon's own coding runs. It is optional: mimir-mcp
 // runs without a daemon and has no runs to read, and a memory built only from
 // interactive sessions is a smaller memory, not a broken one.
 type RunSource interface {

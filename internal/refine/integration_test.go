@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/refine"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/refine"
 )
 
 // TestIntegration_Claude runs a real query against the local `claude` CLI.
@@ -28,9 +28,9 @@ func TestIntegration_Claude(t *testing.T) {
 	}
 
 	in := refine.Input{
-		Query:        "What is goat-mcp?",
-		PageMarkdown: "# Goat-MCP\nGoat-MCP is a Model Context Protocol server that helps AI agents.",
-		SourceURL:    "https://example.com/goat-mcp",
+		Query:        "What is mimir-mcp?",
+		PageMarkdown: "# Mimir\nMimir is a Model Context Protocol server that helps AI agents.",
+		SourceURL:    "https://example.com/mimir-mcp",
 		MaxTokens:    100,
 	}
 

@@ -100,7 +100,7 @@ export function Workspace() {
                   <input
                     type="radio"
                     name="project"
-                    className="accent-accent"
+                    className="accent-electric"
                     checked={selected === project.id}
                     onChange={() => setSelected(project.id)}
                   />
@@ -123,7 +123,7 @@ export function Workspace() {
             onChange={(event) => setPrompt(event.target.value)}
             rows={3}
             placeholder="What should Claude do in this folder?"
-            className="w-full resize-y rounded border border-edge bg-ink p-3 text-sm outline-none focus:border-accent/60"
+            className="w-full resize-y rounded border border-edge bg-ground p-3 text-sm outline-none focus:border-electric/60"
           />
           <div className="flex items-center gap-3">
             <Button onClick={() => void start()} disabled={busy || !selected || !prompt.trim()}>
@@ -198,14 +198,14 @@ function RunPanel({
       />
       <CardBody className="min-h-0 flex-1 overflow-auto">
         {view.reasoning && (
-          <details className="mb-3 rounded border border-edge bg-ink/60 p-3">
+          <details className="mb-3 rounded border border-edge bg-ground/60 p-3">
             <summary className="cursor-pointer text-xs text-muted">Reasoning</summary>
             <pre className="mt-2 whitespace-pre-wrap text-xs text-muted">{view.reasoning}</pre>
           </details>
         )}
 
         {view.tools.map((tool) => (
-          <details key={tool.callID} className="mb-2 rounded border border-edge bg-ink/60">
+          <details key={tool.callID} className="mb-2 rounded border border-edge bg-ground/60">
             <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs">
               <span className="font-medium">{tool.name}</span>
               {/* Risk comes from the daemon, which classifies an unknown tool

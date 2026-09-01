@@ -12,9 +12,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/sessionlog"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/sessionlog"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // maxRunsPerIngest bounds how far back into this daemon's own coding runs one
@@ -194,7 +194,7 @@ func transcriptBelongsTo(path, projectPath string) bool {
 }
 
 // discoverRuns locates this daemon's own coding-run transcripts. Absent a run
-// source — which is the normal case for goat-mcp, which has no daemon behind
+// source — which is the normal case for mimir-mcp, which has no daemon behind
 // it — there simply are none.
 func (m *Memory) discoverRuns(ctx context.Context, p Project) []source {
 	if m.runs == nil || p.ID == "" {
@@ -217,7 +217,7 @@ func (m *Memory) discoverRuns(ctx context.Context, p Project) []source {
 			continue
 		}
 		out = append(out, source{
-			Source:  sessionlog.Source{Kind: sessionlog.SourceGoatRun, Path: r.TranscriptPath, ProjectPath: p.Path},
+			Source:  sessionlog.Source{Kind: sessionlog.SourceMimirRun, Path: r.TranscriptPath, ProjectPath: p.Path},
 			size:    st.Size(),
 			modTime: st.ModTime(),
 			run: sessionlog.RunMeta{
@@ -231,7 +231,7 @@ func (m *Memory) discoverRuns(ctx context.Context, p Project) []source {
 
 // ingestSource reads whatever is new in one transcript and stores it.
 func (m *Memory) ingestSource(ctx context.Context, p Project, src source) (int, error) {
-	if src.Kind == sessionlog.SourceGoatRun {
+	if src.Kind == sessionlog.SourceMimirRun {
 		return m.ingestRun(ctx, src)
 	}
 	return m.ingestSession(ctx, p, src)
@@ -314,7 +314,7 @@ func (m *Memory) ingestRun(ctx context.Context, src source) (int, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	e, err := sessionlog.ParseGoatRun(f, src.Source, src.run)
+	e, err := sessionlog.ParseMimirRun(f, src.Source, src.run)
 	if err != nil {
 		return 0, err
 	}

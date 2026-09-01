@@ -1,4 +1,4 @@
-# CAPABILITIES.tr.md — GOAT bugün neler yapabiliyor
+# CAPABILITIES.tr.md — Mimir bugün neler yapabiliyor
 
 İngilizce aslı: [`CAPABILITIES.md`](CAPABILITIES.md). Bir tutarsızlık olursa
 İngilizce sürüm esastır.
@@ -15,16 +15,16 @@ olduğunun eksiksiz ve güncel envanteridir. *Neden* böyle kurgulandığı içi
 
 | Binary | Taşıma (transport) | Ömrünü yöneten | Amaç |
 |---|---|---|---|
-| `bin/goat-mcp` | stdio MCP | onu kaydeden Claude Code oturumu | Bir Claude Code oturumuna web araması, sayfa kazıma, rafine edilmiş araştırma ve giriş gerektirmeyen ücretsiz kazıyıcılar verir. |
-| `bin/goat-daemon` | loopback HTTP (`127.0.0.1` + her başlatmada üretilen bearer token) | Tauri masaüstü uygulaması (onu bir sidecar süreç olarak başlatır) | Canlı akışlı, klasör kapsamlı kod görevi çalıştırıcısı; Google Maps lead-gen pipeline'ı; ve aynı MCP araçlarını `/mcp` altında yeniden sunar. |
+| `bin/mimir-mcp` | stdio MCP | onu kaydeden Claude Code oturumu | Bir Claude Code oturumuna web araması, sayfa kazıma, rafine edilmiş araştırma ve giriş gerektirmeyen ücretsiz kazıyıcılar verir. |
+| `bin/mimir-daemon` | loopback HTTP (`127.0.0.1` + her başlatmada üretilen bearer token) | Tauri masaüstü uygulaması (onu bir sidecar süreç olarak başlatır) | Canlı akışlı, klasör kapsamlı kod görevi çalıştırıcısı; Google Maps lead-gen pipeline'ı; ve aynı MCP araçlarını `/mcp` altında yeniden sunar. |
 
-İkisi de aynı runtime paketlerini import eder — tek motor, iki taşıma. `goat-mcp`
+İkisi de aynı runtime paketlerini import eder — tek motor, iki taşıma. `mimir-mcp`
 içinde MCP taşıması dışında hiçbir şey stdout'a yazmaz; daemon portunu asla
 yazdırmaz (portu ana süreç seçer).
 
 ---
 
-## 2. MCP araçları (`bin/goat-mcp`, ayrıca `goat-daemon` `/mcp` altında)
+## 2. MCP araçları (`bin/mimir-mcp`, ayrıca `mimir-daemon` `/mcp` altında)
 
 Tüm yanıtlar **kompakt ve rafine**dir — ham kazınmış metin bir aracı asla terk
 edemez (tek bir kontrol noktasında zorlanır: `internal/mcp/finalize.go`).
@@ -85,7 +85,7 @@ içindeki ücretli sağlayıcı araçları.
 |---|---|---|---|
 | `maps_search` | `query: string`, `count?: int` (≤60), `language_code?`, `region_code?`, `near?: {lat,lng,radius_meters}` | `{ query, returned, total_found, truncated, companies[{place_id,name,address,…}] }` | ~2000 token; **ücretlendirilir** |
 
-`maps_search` **yalnızca** `GOAT_GOOGLE_PLACES_API_KEY` ayarlıysa kaydedilir.
+`maps_search` **yalnızca** `MIMIR_GOOGLE_PLACES_API_KEY` ayarlıysa kaydedilir.
 Anahtarsız kurulum normal kurulumdur — araç sadece yoktur, "anahtar yok" diyen
 ölü bir uç değildir. Bu araç bir bölgedeki **her** işletmeyi listeler
 (ücretlendirilen Places API), bu `gmaps_business_lookup`'tan (tek ücretsiz kayıt)
@@ -93,7 +93,7 @@ farklıdır.
 
 ---
 
-## 3. Daemon HTTP yüzeyi (`bin/goat-daemon`)
+## 3. Daemon HTTP yüzeyi (`bin/mimir-daemon`)
 
 Her rota aynı zincirin arkasındadır: panic-recover → istek logu → loopback
 koruması → bearer token kontrolü → gövde boyutu sınırı. REST'in Tauri Rust
@@ -126,9 +126,9 @@ düşünce/eylem akışını canlı, saniye saniye izleyin.
   ayarlar *ve* `--add-dir <project.Path>` geçirir, ayrıca sabit bir
   `--permission-mode` sabiti kullanır. Çalıştırıcı yalnızca seçtiğiniz klasörü
   görebilir.
-- **GOAT'ın kendi araçlarını geri çağırır.** Oturum, `goat-mcp`'yi iç içe bir
+- **Mimir'ın kendi araçlarını geri çağırır.** Oturum, `mimir-mcp`'yi iç içe bir
   MCP sunucusu olarak adlandıran bir `--mcp-config` ile başlatılır; böylece kod
-  ajanı kendi web erişimi yerine GOAT'ın rafine web erişimini kullanır —
+  ajanı kendi web erişimi yerine Mimir'ın rafine web erişimini kullanır —
   tekrarlayan kazımayı token faturasından uzak tutar.
 - **Canlı akış.** stdout satır satır ayrıştırılır (`stream-json`), kümülatif
   metin/düşünme uzunluğu **`message.id` başına** izlenir ve yalnızca farklar
@@ -166,7 +166,7 @@ demektir. Bir bölgeyi yeniden çalıştırmak token'ı yalnızca gerçekten yen
 da `prompt_version`'ı kasıtlı olarak yükseltilen şirketler/kategoriler için
 harcar.
 
-Gereksinim: birincil yol için `GOAT_GOOGLE_PLACES_API_KEY`; yedek için `make
+Gereksinim: birincil yol için `MIMIR_GOOGLE_PLACES_API_KEY`; yedek için `make
 maps-up` (Playwright sidecar'ı); 3–4. aşamalar için `claude` CLI.
 
 ---
@@ -175,7 +175,7 @@ maps-up` (Playwright sidecar'ı); 3–4. aşamalar için `claude` CLI.
 
 Tauri (Rust kabuk) + React + shadcn/ui + Tailwind, macOS / Apple Silicon. Rust
 kabuğu boş bir loopback portu seçer, her başlatmada 32 baytlık bir bearer token
-üretir, `goat-daemon`'ı tam olarak bu iki ortam değişkeniyle başlatır ve çıkışta
+üretir, `mimir-daemon`'ı tam olarak bu iki ortam değişkeniyle başlatır ve çıkışta
 onu sonlandırır. WebView, alt süreç çıktısını asla ayrıştırmaz; REST, Rust
 üzerinden gider (`daemon_request`), böylece token WebView'e hiç girmez.
 
@@ -237,7 +237,7 @@ keşfetmesinin tekrar eden maliyeti.
 | `fetch_page`, `research` | Crawl4AI (`make crawl-up`) | evet | — | — |
 | `diagnostics` | — | — | — | — |
 | Stage F kazıyıcılar | — | — | — | — |
-| `maps_search` | — | — | **evet** (`GOAT_GOOGLE_PLACES_API_KEY`) | — |
+| `maps_search` | — | — | **evet** (`MIMIR_GOOGLE_PLACES_API_KEY`) | — |
 | `project_context`, `context_recall`, `context_remember` | — | damıtma için (onsuz da aranabilir) | — | — |
 | Kod görevi çalıştırıcısı + canlı akış | — | evet | — | — |
 | Lead-gen (birincil yol) | — | evet (3–4. aşamalar) | **evet** | — |

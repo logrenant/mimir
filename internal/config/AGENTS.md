@@ -13,13 +13,13 @@ The single source of every operational value. Enforces **SD-1**.
 
   | Env var | Overrides | Default |
   |---------|-----------|---------|
-  | `GOAT_CRAWL4AI_URL` | `Crawl4AIBaseURL` | `http://127.0.0.1:11235` |
-  | `GOAT_CLAUDE_CLI_PATH` | `ClaudeCLIPath` | `claude` |
-  | `GOAT_DDG_HTML_URL` | `DuckDuckGoHTMLURL` | `https://html.duckduckgo.com/html/` |
-  | `GOAT_DDG_LITE_URL` | `DuckDuckGoLiteURL` | `https://lite.duckduckgo.com/lite/` |
-  | `GOAT_MAPSCRAPE_URL` | `MapScrapeBaseURL` | `http://127.0.0.1:11236` |
-  | `GOAT_STORE_PATH` | `StorePath` | `<os.UserConfigDir()>/goat-mcp/goat.db` |
-  | `GOAT_CLAUDE_PROJECTS_DIR` | `ClaudeProjectsDir` | `<os.UserHomeDir()>/.claude/projects` |
+  | `MIMIR_CRAWL4AI_URL` | `Crawl4AIBaseURL` | `http://127.0.0.1:11235` |
+  | `MIMIR_CLAUDE_CLI_PATH` | `ClaudeCLIPath` | `claude` |
+  | `MIMIR_DDG_HTML_URL` | `DuckDuckGoHTMLURL` | `https://html.duckduckgo.com/html/` |
+  | `MIMIR_DDG_LITE_URL` | `DuckDuckGoLiteURL` | `https://lite.duckduckgo.com/lite/` |
+  | `MIMIR_MAPSCRAPE_URL` | `MapScrapeBaseURL` | `http://127.0.0.1:11236` |
+  | `MIMIR_STORE_PATH` | `StorePath` | `<os.UserConfigDir()>/mimir-mcp/mimir.db` |
+  | `MIMIR_CLAUDE_PROJECTS_DIR` | `ClaudeProjectsDir` | `<os.UserHomeDir()>/.claude/projects` |
 
   There is **no** override for timeouts, concurrency limits, result caps, output
   ceilings, politeness interval, `ClaudeModel`, `PageCacheTTL`,
@@ -46,7 +46,7 @@ The single source of every operational value. Enforces **SD-1**.
   derived from a contract that no longer exists, and that is a review-stopper.
 
 - **Process plumbing, parent-provided** — a second, narrower category, added by
-  task-22 for `cmd/goat-daemon`. It is *not* a loophole in SD-1; a value belongs
+  task-22 for `cmd/mimir-daemon`. It is *not* a loophole in SD-1; a value belongs
   here only if all four hold:
 
   1. it is knowledge the process cannot derive, only be told — a port its
@@ -58,7 +58,7 @@ The single source of every operational value. Enforces **SD-1**.
      - the **Tauri shell** (`docs/ROADMAP.md` §B.2.1), which reserves a port and
        mints a token per launch — the development path;
      - **launchd**, via `scripts/install-agent.sh`, which writes the same two
-       variables into `com.goat.daemon.plist` at install time — the always-on
+       variables into `studio.mimir.daemon.plist` at install time — the always-on
        path an operator actually runs.
 
      A third variable in the plist, `PATH`, is not in this table on purpose: it
@@ -71,8 +71,8 @@ The single source of every operational value. Enforces **SD-1**.
 
   | Env var | Sets | Default | Absent |
   |---------|------|---------|--------|
-  | `GOAT_DAEMON_PORT` | `DaemonPort` | `0` (kernel-assigned) | fine — bind ephemeral, log the resolved address to stderr |
-  | `GOAT_DAEMON_TOKEN` | `DaemonAuthToken` | *(none)* | **refuses to start** (`ValidateDaemon`) |
+  | `MIMIR_DAEMON_PORT` | `DaemonPort` | `0` (kernel-assigned) | fine — bind ephemeral, log the resolved address to stderr |
+  | `MIMIR_DAEMON_TOKEN` | `DaemonAuthToken` | *(none)* | **refuses to start** (`ValidateDaemon`) |
 
   `DaemonHost` is deliberately **not** in this table. Binding loopback-only is a
   security property of the daemon, not a deployment detail, so it stays a
@@ -81,7 +81,7 @@ The single source of every operational value. Enforces **SD-1**.
 
 - **Operator-provisioned credential** — a third, narrower category, added by
   task-24 for the Google Places key. It is the one documented exception to
-  `docs/SECURITY.md`'s "zero API keys configured by GOAT-MCP itself" stance,
+  `docs/SECURITY.md`'s "zero API keys configured by Mimir itself" stance,
   and `docs/ROADMAP.md` §B.6 (M4) is where it was agreed. A value belongs here
   only if all four hold:
 
@@ -98,7 +98,7 @@ The single source of every operational value. Enforces **SD-1**.
 
   | Env var | Sets | Default | Absent |
   |---------|------|---------|--------|
-  | `GOAT_GOOGLE_PLACES_API_KEY` | `PlacesAPIKey` | *(none)* | `maps_search` is not registered; everything else runs |
+  | `MIMIR_GOOGLE_PLACES_API_KEY` | `PlacesAPIKey` | *(none)* | `maps_search` is not registered; everything else runs |
 
   `Validate()` deliberately does **not** require it. The caps that surround it
   (`MapsSearchDefaultCount`, `MapsSearchMaxCount`, `MapsSearchMaxTokens`) are

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { Wordmark } from "../components/brand";
 import { Badge } from "../components/ui/badge";
 import { api, DaemonError, type Project, type Run } from "../lib/daemon";
 import { canStart, defaultProject, finishedNotification, isDismissKey, isSubmitKey } from "../lib/quickTask";
@@ -101,16 +102,14 @@ export function QuickTask() {
         data-tauri-drag-region
         className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2.5"
       >
-        <span data-tauri-drag-region className="text-xs font-medium tracking-wide text-accent">
-          GOAT
-        </span>
+        <Wordmark className="pointer-events-none h-3 w-auto shrink-0 text-mist" />
         <select
           value={selected ?? ""}
           onChange={(event) => {
             pinned.current = true;
             setSelected(event.target.value || null);
           }}
-          className="min-w-0 flex-1 truncate rounded border border-edge bg-ink px-2 py-1 text-xs outline-none focus:border-accent/60"
+          className="min-w-0 flex-1 truncate rounded border border-edge bg-ground px-2 py-1 text-xs outline-none focus:border-electric/60"
         >
           {projects.length === 0 && <option value="">No project registered</option>}
           {projects.map((project) => (
@@ -139,11 +138,11 @@ export function QuickTask() {
           rows={2}
           placeholder={
             projects.length === 0
-              ? "Register a folder in GOAT first — a run is scoped to one."
+              ? "Register a folder in Mimir first — a run is scoped to one."
               : "What should Claude do in this folder?   ⏎ start · ⇧⏎ newline"
           }
           disabled={projects.length === 0}
-          className="w-full resize-none rounded border border-edge bg-ink p-2.5 text-sm outline-none focus:border-accent/60 disabled:opacity-60"
+          className="w-full resize-none rounded border border-edge bg-ground p-2.5 text-sm outline-none focus:border-electric/60 disabled:opacity-60"
         />
         {error && <p className="mt-2 text-xs text-bad">{error}</p>}
       </div>
@@ -230,7 +229,7 @@ function QuickStream({
           onClick={() => void invoke("open_main")}
           className="ml-auto shrink-0 rounded px-2 py-1 text-xs text-muted hover:bg-edge/50"
         >
-          Open in GOAT →
+          Open in Mimir →
         </button>
       </div>
 

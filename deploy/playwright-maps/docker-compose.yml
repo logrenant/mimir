@@ -1,7 +1,7 @@
 services:
   playwright-maps:
     build: .
-    image: goat-playwright-maps:1.62.1
+    image: mimir-playwright-maps:1.62.1
     ports:
       # Loopback only. This service drives a real browser; it must never be
       # reachable from another host.

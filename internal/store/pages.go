@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/refine"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/refine"
 )
 
 // HashContent returns the digest used for RefineKey.ContentHash.

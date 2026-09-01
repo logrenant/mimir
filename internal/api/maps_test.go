@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/leadgen"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/leadgen"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 type fakeLeadGen struct {

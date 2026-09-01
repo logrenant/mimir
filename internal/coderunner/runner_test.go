@@ -14,10 +14,10 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/events"
-	"github.com/logrenant/goat-mcp/internal/project"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/events"
+	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 func TestMain(m *testing.M) {
@@ -62,7 +62,7 @@ func newHarness(t *testing.T, claudePath string) *harness {
 
 	tmp := t.TempDir()
 	cfg := config.Load()
-	cfg.StorePath = filepath.Join(tmp, "goat.db")
+	cfg.StorePath = filepath.Join(tmp, "mimir.db")
 	cfg.TranscriptDir = filepath.Join(tmp, "transcripts")
 	cfg.ClaudeCLIPath = claudePath
 	cfg.CodingRunTimeout = 30 * time.Second

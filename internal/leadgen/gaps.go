@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // GapAnalyzer is the model tier for stage 3. *refine.Client satisfies it.

@@ -81,20 +81,20 @@ export function Leadgen() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="What you would type into Google Maps, e.g. 'dentists in Kadıköy, Istanbul'"
-              className="rounded border border-edge bg-ink px-3 py-2 text-sm outline-none focus:border-accent/60"
+              className="rounded border border-edge bg-ground px-3 py-2 text-sm outline-none focus:border-electric/60"
             />
             <input
               value={region}
               onChange={(e) => setRegion(e.target.value)}
               placeholder="Region label (optional)"
-              className="rounded border border-edge bg-ink px-3 py-2 text-sm outline-none focus:border-accent/60"
+              className="rounded border border-edge bg-ground px-3 py-2 text-sm outline-none focus:border-electric/60"
             />
             <input
               value={count}
               onChange={(e) => setCount(e.target.value.replace(/[^0-9]/g, ""))}
               inputMode="numeric"
               placeholder="Count"
-              className="w-20 rounded border border-edge bg-ink px-3 py-2 text-sm outline-none focus:border-accent/60"
+              className="w-20 rounded border border-edge bg-ground px-3 py-2 text-sm outline-none focus:border-electric/60"
             />
           </div>
 
@@ -102,7 +102,7 @@ export function Leadgen() {
             <label className="flex cursor-pointer items-center gap-2">
               <input
                 type="checkbox"
-                className="accent-accent"
+                className="accent-electric"
                 checked={gapsEffective}
                 disabled={withEmails}
                 onChange={(e) => setWithGaps(e.target.checked)}
@@ -112,7 +112,7 @@ export function Leadgen() {
             <label className="flex cursor-pointer items-center gap-2">
               <input
                 type="checkbox"
-                className="accent-accent"
+                className="accent-electric"
                 checked={withEmails}
                 onChange={(e) => setWithEmails(e.target.checked)}
               />
@@ -191,7 +191,7 @@ function ReportView({
         </section>
 
         {report.notes && report.notes.length > 0 && (
-          <details className="rounded border border-edge bg-ink/60 p-3">
+          <details className="rounded border border-edge bg-ground/60 p-3">
             <summary className="cursor-pointer text-xs text-muted">
               {report.notes.length} note{report.notes.length === 1 ? "" : "s"} from the run
             </summary>
@@ -209,7 +209,7 @@ function ReportView({
 
 function CategoryCard({ report }: { report: CategoryReport }) {
   return (
-    <div className="rounded border border-edge bg-ink/60 p-3">
+    <div className="rounded border border-edge bg-ground/60 p-3">
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium">{report.category}</span>
         <span className="text-xs text-muted">{report.company_count} companies</span>
@@ -252,7 +252,7 @@ function CompanyRow({
   const statusTone = company.email_status === "sent" ? "ok" : company.email_status === "skipped" ? "muted" : "warn";
 
   return (
-    <div className="rounded border border-edge bg-ink/60">
+    <div className="rounded border border-edge bg-ground/60">
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
         <span className="text-sm font-medium">{company.name}</span>
         <Badge tone="muted">{company.category}</Badge>

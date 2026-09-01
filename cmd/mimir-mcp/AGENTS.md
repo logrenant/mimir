@@ -1,4 +1,4 @@
-# AGENTS.md — cmd/goat-mcp
+# AGENTS.md — cmd/mimir-mcp
 
 `main` package. **Wiring and process lifecycle only.**
 

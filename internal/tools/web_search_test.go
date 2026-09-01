@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/search"
-	"github.com/logrenant/goat-mcp/internal/tools"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/tools"
 )
 
 var webSearchTestCfg = config.Config{WebSearchMaxTokens: 1200}

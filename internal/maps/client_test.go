@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 const testKey = "test-places-key"

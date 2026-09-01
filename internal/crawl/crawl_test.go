@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
 )
 
 func TestClient_Health(t *testing.T) {

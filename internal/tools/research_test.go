@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/pipeline"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/pipeline"
 )
 
 type mockResearcher struct {

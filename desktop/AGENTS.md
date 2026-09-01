@@ -9,13 +9,13 @@ switches between `Workspace` and `Leadgen`) and **quick** (`QuickTask`, the
 menu-bar window). `src/main.tsx` picks the root component from the window label.
 
 The app is an **accessory**: no Dock icon, a menu-bar item instead. Closing a
-window hides it; only the tray's "Quit GOAT" exits, and quitting never stops the
+window hides it; only the tray's "Quit Mimir" exits, and quitting never stops the
 daemon.
 
 ## Rules for this directory
 
 - **Attach before spawning; the two modes never overlap.** If
-  `~/Library/Application Support/goat-mcp/endpoint.json` exists, launchd owns a
+  `~/Library/Application Support/mimir/endpoint.json` exists, launchd owns a
   daemon and this shell connects to it — it never spawns, and never kills it on
   exit. Only with no endpoint file does the shell become the parent. Two daemons
   against one SQLite store would contend for its write lock, so the presence of
@@ -26,15 +26,15 @@ daemon.
   the same lesson as `daemon_request`'s path guard.
 - **The parent owns the plumbing.** When this shell *is* the parent it picks the
   port (binds `127.0.0.1:0`, reads it, drops it), mints a 32-byte token per
-  launch, and passes both to `goat-daemon` in its environment. **Nothing reads
-  either value back out of the child's output.** goat v1 scraped `GOAT_PORT=<n>`
+  launch, and passes both to `mimir-daemon` in its environment. **Nothing reads
+  either value back out of the child's output.** goat v1 scraped `MIMIR_PORT=<n>`
   from stdout; the daemon side made that impossible (SD-4), and this side must
   not undo it. The child's stdout is drained and dropped; its stderr is logged
   and kept only as a failure message.
-- **The spawn environment is exactly two variables** — `GOAT_DAEMON_PORT` and
-  `GOAT_DAEMON_TOKEN`. Every other value the daemon uses is a constant in
+- **The spawn environment is exactly two variables** — `MIMIR_DAEMON_PORT` and
+  `MIMIR_DAEMON_TOKEN`. Every other value the daemon uses is a constant in
   `internal/config`. Adding a third here would create the runtime knob SD-1 says
-  we do not have, and `GOAT_STORE_PATH` in particular is a test-only override:
+  we do not have, and `MIMIR_STORE_PATH` in particular is a test-only override:
   the store path is computed, not configurable.
 - **REST goes through Rust, not `fetch`.** This is forced, not stylistic. A
   cross-origin `fetch` carrying `Authorization` is preflighted, and the daemon
@@ -48,7 +48,7 @@ daemon.
   the same lesson as `deploy/playwright-maps`'s host allowlist.
 - **The WebSocket is the one thing the WebView does itself**, because a browser
   socket cannot set headers and its handshake is exempt from preflight. The
-  token rides `Sec-WebSocket-Protocol` as `goat.bearer.<token>`, never a query
+  token rides `Sec-WebSocket-Protocol` as `mimir.bearer.<token>`, never a query
   parameter: URLs land in logs, history and referrers, and this token starts
   coding sessions with file tools.
 - **A path crosses to the daemon exactly once.** The picker's absolute path goes
@@ -99,7 +99,7 @@ daemon.
   `signingIdentity` is `null` in config so a build with no certs still produces
   an ad-hoc-signed app. No auto-update. The bundle target is `app` only — a
   `.dmg` needs Finder automation permission for its AppleScript layout step, and
-  GOAT is installed by copying the app, not by distributing an image.
+  Mimir is installed by copying the app, not by distributing an image.
 
 ## Reviewer focus
 

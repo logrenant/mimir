@@ -1,4 +1,4 @@
-// Package config provides configuration management for goat-mcp.
+// Package config provides configuration management for mimir-mcp.
 package config
 
 import (
@@ -186,18 +186,18 @@ type Config struct {
 }
 
 // defaultStorePath derives the cache database location. It is computed, not
-// configurable (SD-1); GOAT_STORE_PATH overrides it for tests only.
+// configurable (SD-1); MIMIR_STORE_PATH overrides it for tests only.
 func defaultStorePath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil || dir == "" {
-		return filepath.Join(os.TempDir(), "goat-mcp", "goat.db")
+		return filepath.Join(os.TempDir(), "mimir", "mimir.db")
 	}
-	return filepath.Join(dir, "goat-mcp", "goat.db")
+	return filepath.Join(dir, "mimir", "mimir.db")
 }
 
 // defaultClaudeProjectsDir is where Claude Code keeps its session transcripts.
 // Computed like defaultStorePath, not configurable (SD-1);
-// GOAT_CLAUDE_PROJECTS_DIR points it at a fixture tree for tests only.
+// MIMIR_CLAUDE_PROJECTS_DIR points it at a fixture tree for tests only.
 //
 // An empty result is a defined state: the memory then has one fewer source and
 // still works from this daemon's own coding-run transcripts.
@@ -331,33 +331,33 @@ func Load() Config {
 		DaemonMaxRequestBytes:   1 << 20,
 	}
 
-	if val := os.Getenv("GOAT_CRAWL4AI_URL"); val != "" {
+	if val := os.Getenv("MIMIR_CRAWL4AI_URL"); val != "" {
 		if _, err := url.ParseRequestURI(val); err == nil {
 			c.Crawl4AIBaseURL = val
 		}
 	}
-	if val := os.Getenv("GOAT_CLAUDE_CLI_PATH"); val != "" {
+	if val := os.Getenv("MIMIR_CLAUDE_CLI_PATH"); val != "" {
 		c.ClaudeCLIPath = val
 	}
-	if val := os.Getenv("GOAT_DDG_HTML_URL"); val != "" {
+	if val := os.Getenv("MIMIR_DDG_HTML_URL"); val != "" {
 		if _, err := url.ParseRequestURI(val); err == nil {
 			c.DuckDuckGoHTMLURL = val
 		}
 	}
-	if val := os.Getenv("GOAT_DDG_LITE_URL"); val != "" {
+	if val := os.Getenv("MIMIR_DDG_LITE_URL"); val != "" {
 		if _, err := url.ParseRequestURI(val); err == nil {
 			c.DuckDuckGoLiteURL = val
 		}
 	}
-	if val := os.Getenv("GOAT_MAPSCRAPE_URL"); val != "" {
+	if val := os.Getenv("MIMIR_MAPSCRAPE_URL"); val != "" {
 		if _, err := url.ParseRequestURI(val); err == nil {
 			c.MapScrapeBaseURL = val
 		}
 	}
-	if val := os.Getenv("GOAT_STORE_PATH"); val != "" {
+	if val := os.Getenv("MIMIR_STORE_PATH"); val != "" {
 		c.StorePath = val
 	}
-	if val := os.Getenv("GOAT_CLAUDE_PROJECTS_DIR"); val != "" {
+	if val := os.Getenv("MIMIR_CLAUDE_PROJECTS_DIR"); val != "" {
 		c.ClaudeProjectsDir = val
 	}
 
@@ -365,17 +365,17 @@ func Load() Config {
 	// (0 = kernel-assigned) rather than failing, like every other override
 	// here. The token has no default on purpose: absent means the daemon
 	// refuses to start, which is checked by ValidateDaemon, not here.
-	if val := os.Getenv("GOAT_DAEMON_PORT"); val != "" {
+	if val := os.Getenv("MIMIR_DAEMON_PORT"); val != "" {
 		if port, err := strconv.Atoi(val); err == nil && port >= 0 && port <= 65535 {
 			c.DaemonPort = port
 		}
 	}
-	c.DaemonAuthToken = os.Getenv("GOAT_DAEMON_TOKEN")
+	c.DaemonAuthToken = os.Getenv("MIMIR_DAEMON_TOKEN")
 
 	// Operator-provisioned credential, read once, here and nowhere else. Empty
 	// is a defined state, not an error: RegisterAll then omits maps_search
 	// rather than advertising a tool that cannot work.
-	c.PlacesAPIKey = os.Getenv("GOAT_GOOGLE_PLACES_API_KEY")
+	c.PlacesAPIKey = os.Getenv("MIMIR_GOOGLE_PLACES_API_KEY")
 
 	// Derived after the override above so a test pointing StorePath at a temp
 	// directory gets an isolated transcript directory for free.
@@ -548,8 +548,8 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// ValidateDaemon adds the checks only cmd/goat-daemon needs. It is separate
-// from Validate because cmd/goat-mcp has no listen address and no token, and
+// ValidateDaemon adds the checks only cmd/mimir-daemon needs. It is separate
+// from Validate because cmd/mimir-mcp has no listen address and no token, and
 // must not start failing over values that mean nothing to it.
 func (c Config) ValidateDaemon() error {
 	if err := c.Validate(); err != nil {
@@ -565,7 +565,7 @@ func (c Config) ValidateDaemon() error {
 	// runner behind it is a shell on the operator's machine for anything that
 	// can reach the port, so there is no "no token" mode to fall back to.
 	if c.DaemonAuthToken == "" {
-		return errors.New("GOAT_DAEMON_TOKEN is empty — the daemon is started by its parent process, " +
+		return errors.New("MIMIR_DAEMON_TOKEN is empty — the daemon is started by its parent process, " +
 			"which must generate a per-launch token and pass it down; it will not run unauthenticated")
 	}
 	if c.DaemonReadHeaderTimeout <= 0 || c.DaemonShutdownTimeout <= 0 {

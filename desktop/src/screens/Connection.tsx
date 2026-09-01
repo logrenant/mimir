@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Badge } from "../components/ui/badge";
+import { Wordmark } from "../components/brand";
 import { Button } from "../components/ui/button";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
 import {
@@ -52,17 +53,18 @@ export function Connection({ onReady }: { onReady: () => void }) {
 
   return (
     <div className="mx-auto flex h-full max-w-2xl flex-col justify-center gap-4 p-8">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">GOAT</h1>
+      <div className="flex flex-col items-start gap-2.5">
+        <Wordmark className="h-5 w-auto text-mist" />
         <p className="text-xs text-muted">
-          The shell picks the port and mints a token, then starts goat-daemon with them.
+          Connecting to the mimir-daemon launchd keeps running. With no agent
+          installed the shell starts one of its own instead.
         </p>
       </div>
 
       <Card>
         <CardHeader
           title="Daemon"
-          subtitle={state.state === "ready" ? state.base_url : "loopback, per-launch token"}
+          subtitle={state.state === "ready" ? state.base_url : "loopback, bearer token"}
           aside={
             <Badge tone={state.state === "ready" ? "ok" : state.state === "failed" ? "bad" : "warn"}>
               {state.state}
@@ -78,9 +80,9 @@ export function Connection({ onReady }: { onReady: () => void }) {
             <div className="space-y-3">
               <p className="text-sm text-bad">The daemon did not start.</p>
               {/* The daemon's own stderr, verbatim: it names the cause
-                  ("GOAT_DAEMON_TOKEN is empty", "could not listen on …") far
+                  ("MIMIR_DAEMON_TOKEN is empty", "could not listen on …") far
                   better than anything this screen could paraphrase. */}
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-edge bg-ink p-3 text-xs text-muted">
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-edge bg-ground p-3 text-xs text-muted">
                 {state.message}
               </pre>
               <Button onClick={() => void restart().then(() => setState({ state: "starting" }))}>

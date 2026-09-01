@@ -1,20 +1,28 @@
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
 
-type Tone = "ok" | "warn" | "bad" | "muted";
+type Tone = "ok" | "warn" | "bad" | "muted" | "accent";
 
+/**
+ * A state marker, not decoration.
+ *
+ * The brand allows one energy accent at a time, so a badge is an outline and a
+ * label — never a filled chip competing with the one control that is actually
+ * accented on the screen.
+ */
 const tones: Record<Tone, string> = {
-  ok: "border-ok/40 text-ok",
-  warn: "border-warn/40 text-warn",
-  bad: "border-bad/40 text-bad",
+  ok: "border-ok/45 text-ok",
+  warn: "border-warn/60 text-warn",
+  bad: "border-bad/50 text-bad",
   muted: "border-edge text-muted",
+  accent: "border-electric/60 text-electric",
 };
 
 export function Badge({ tone = "muted", children }: { tone?: Tone; children: ReactNode }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium",
+        "label inline-flex items-center rounded-sm border px-2 py-1 leading-none",
         tones[tone],
       )}
     >

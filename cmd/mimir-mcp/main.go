@@ -7,16 +7,16 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	goatmcp "github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/memory"
-	"github.com/logrenant/goat-mcp/internal/pipeline"
-	"github.com/logrenant/goat-mcp/internal/project"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/search"
-	"github.com/logrenant/goat-mcp/internal/store"
-	"github.com/logrenant/goat-mcp/internal/tools"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	mimirmcp "github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/memory"
+	"github.com/logrenant/mimir/internal/pipeline"
+	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/store"
+	"github.com/logrenant/mimir/internal/tools"
 )
 
 // Populated via -ldflags "-X main.version=… -X main.commit=…" by `make release`.
@@ -27,8 +27,8 @@ var (
 
 func main() {
 	// 6. Logging: slog JSON handler writing to stderr only.
-	goatmcp.InitLogging(os.Stderr)
-	slog.Info("goat-mcp starting", "version", version, "commit", commit)
+	mimirmcp.InitLogging(os.Stderr)
+	slog.Info("mimir-mcp starting", "version", version, "commit", commit)
 
 	if err := run(); err != nil {
 		slog.Error("Fatal error", "error", err)
@@ -52,7 +52,7 @@ func run() error {
 		return err
 	}
 
-	srv := goatmcp.NewServer(cfg)
+	srv := mimirmcp.NewServer(cfg)
 
 	searchClient := search.New(cfg)
 	crawlClient := crawl.New(cfg)
@@ -87,7 +87,7 @@ func run() error {
 		projects = project.NewRegistry(pageStore)
 	}
 
-	// One canonical tool list, shared with cmd/goat-daemon (task-22).
+	// One canonical tool list, shared with cmd/mimir-daemon (task-22).
 	if err := tools.RegisterAll(srv.Registry(), cfg, tools.Deps{
 		Search:   searchClient,
 		Crawl:    crawlClient,

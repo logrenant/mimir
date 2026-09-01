@@ -1,0 +1,12 @@
+-- The rebrand to Mimir renamed a wire string, not just a symbol.
+--
+-- sessionlog.SourceKind values are persisted on every episode row and surface
+-- through the memory tools, so `goat_run` -> `mimir_run` is a data change. An
+-- installed store already holds rows written under the old name; without this
+-- they would keep the retired brand forever and never match a query written
+-- against the new one.
+--
+-- Only source_kind is touched. Episode keys, FTS rows and everything else stay
+-- as they are: the update fires memory_episodes_au, which rebuilds the index
+-- entry for each affected row on its own.
+UPDATE memory_episodes SET source_kind = 'mimir_run' WHERE source_kind = 'goat_run';

@@ -1,8 +1,8 @@
 #!/bin/sh
 #
-# Removes the goat-daemon launchd agent.
+# Removes the mimir-daemon launchd agent.
 #
-# The store (~/Library/Application Support/goat-mcp/goat.db) is never touched:
+# The store (~/Library/Application Support/mimir/mimir.db) is never touched:
 # it holds registered projects, run history and the project memory, and losing
 # it to an uninstall would be a data loss the operator did not ask for.
 #
@@ -12,8 +12,8 @@
 
 set -eu
 
-LABEL="com.goat.daemon"
-SUPPORT_DIR="$HOME/Library/Application Support/goat-mcp"
+LABEL="studio.mimir.daemon"
+SUPPORT_DIR="$HOME/Library/Application Support/mimir"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 PURGE=0
@@ -45,7 +45,7 @@ if [ -f "$PLIST" ]; then
 fi
 
 if [ "$PURGE" -eq 1 ]; then
-	rm -f "$SUPPORT_DIR/endpoint.json" "$SUPPORT_DIR/bin/goat-daemon"
+	rm -f "$SUPPORT_DIR/endpoint.json" "$SUPPORT_DIR/bin/mimir-daemon"
 	echo "==> removed the endpoint file and the installed binary"
-	echo "    the store at $SUPPORT_DIR/goat.db was left alone"
+	echo "    the store at $SUPPORT_DIR/mimir.db was left alone"
 fi

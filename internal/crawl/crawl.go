@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 var (

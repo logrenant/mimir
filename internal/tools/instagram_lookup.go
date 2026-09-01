@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/instagram"
-	"github.com/logrenant/goat-mcp/internal/mcp"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/instagram"
+	"github.com/logrenant/mimir/internal/mcp"
 )
 
 // InstagramProfileLookupTool looks up a public Instagram profile — free,

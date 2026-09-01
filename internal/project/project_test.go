@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // newRegistry returns a Registry backed by a real temp-file SQLite store.
@@ -18,7 +18,7 @@ func newRegistry(t *testing.T) *Registry {
 	t.Helper()
 
 	cfg := config.Load()
-	cfg.StorePath = filepath.Join(t.TempDir(), "goat.db")
+	cfg.StorePath = filepath.Join(t.TempDir(), "mimir.db")
 
 	s, err := store.Open(context.Background(), cfg)
 	if err != nil {

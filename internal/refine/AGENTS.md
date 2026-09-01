@@ -22,7 +22,7 @@ weak, the whole guarantee is weak.
   (ours, trusted, passed via `--system-prompt`) states the fenced region is
   content to summarise, never instructions. `--restricted` +
   `--disallowedTools` + `--strict-mcp-config` mean the subprocess has no
-  tools and cannot recurse into goat-mcp's own MCP registration, so even a
+  tools and cannot recurse into mimir-mcp's own MCP registration, so even a
   successful injection can only change the *text* it emits, never take an
   action. Injection strings ("ignore previous instructions", fence-break
   attempts) must not alter behaviour — there is a test corpus for this.

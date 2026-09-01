@@ -1,7 +1,7 @@
-# AGENTS.md — cmd/goat-daemon
+# AGENTS.md — cmd/mimir-daemon
 
 `main` package. **Wiring and process lifecycle only** — the same rule as
-`cmd/goat-mcp`, for the long-running half of the system.
+`cmd/mimir-mcp`, for the long-running half of the system.
 
 ## Rules for this directory
 
@@ -13,9 +13,9 @@
 - **Not** allowed here: routes, handlers, business logic, prompt text, response
   shaping. Those live in `internal/api` and the runtime packages.
 - **Tools come from `tools.RegisterAll`, never a list written out here.** This
-  binary and `cmd/goat-mcp` are two transports over one engine; a second
+  binary and `cmd/mimir-mcp` are two transports over one engine; a second
   hand-maintained registration list is exactly how that stops being true.
-- **The store is required here.** `cmd/goat-mcp` degrades to an uncached
+- **The store is required here.** `cmd/mimir-mcp` degrades to an uncached
   pipeline if it cannot open the database, because caching is a nice-to-have
   there. For the daemon, projects and runs *are* the store — fail at startup
   with the path named rather than serve routes that all 500.

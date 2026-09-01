@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
 )
 
 // This file makes a real, billed request to the Google Places API. It is the
@@ -18,15 +18,15 @@ import (
 // parsing still match what Google actually serves — the unit tests prove the
 // parser handles the shape it is given, not that the shape is still real.
 //
-//	GOAT_GOOGLE_PLACES_API_KEY=… go test -v -tags=integration ./internal/maps
+//	MIMIR_GOOGLE_PLACES_API_KEY=… go test -v -tags=integration ./internal/maps
 //
 // It costs money and talks to Google. Keep it out of anything automated.
 
 func liveClient(t *testing.T) *maps.Client {
 	t.Helper()
-	key := os.Getenv("GOAT_GOOGLE_PLACES_API_KEY")
+	key := os.Getenv("MIMIR_GOOGLE_PLACES_API_KEY")
 	if key == "" {
-		t.Skip("GOAT_GOOGLE_PLACES_API_KEY not set — skipping the live Places test")
+		t.Skip("MIMIR_GOOGLE_PLACES_API_KEY not set — skipping the live Places test")
 	}
 	c, err := maps.New(config.Load(), maps.Options{APIKey: key})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestIntegration_EmptyRegionIsNotAnError(t *testing.T) {
 // A bad key maps to the credential sentinel, and the key never appears in the
 // error text.
 func TestIntegration_RejectedKeyIsTyped(t *testing.T) {
-	if os.Getenv("GOAT_GOOGLE_PLACES_API_KEY") == "" {
+	if os.Getenv("MIMIR_GOOGLE_PLACES_API_KEY") == "" {
 		t.Skip("no key configured")
 	}
 	bad := "AIza-obviously-not-a-real-key-000000000000"

@@ -3,7 +3,7 @@ package tools
 import (
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/mcp"
+	"github.com/logrenant/mimir/internal/mcp"
 )
 
 // task-13 DoD: every tool response the registry can emit must be recognisable by

@@ -29,8 +29,8 @@ type SourceKind string
 const (
 	// SourceClaudeCode is an interactive session under ~/.claude/projects.
 	SourceClaudeCode SourceKind = "claude_code"
-	// SourceGoatRun is one of this daemon's own coding runs.
-	SourceGoatRun SourceKind = "goat_run"
+	// SourceMimirRun is one of this daemon's own coding runs.
+	SourceMimirRun SourceKind = "mimir_run"
 )
 
 // Field ceilings. An episode is an index entry, not a copy of the transcript:

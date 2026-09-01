@@ -17,7 +17,7 @@ set before a task was finished. Every task belonged to one **track** in
 
 - **Track A** — the research MCP capability. Shipped: task-01 … task-16, plus
   Stage F (the free scrapers), which shipped without task files.
-- **Track B** — GOAT desktop & agent orchestration, milestones M1 … M7, all
+- **Track B** — Mimir desktop & agent orchestration, milestones M1 … M7, all
   shipped (task-17 … task-34).
 
 ---
@@ -66,7 +66,7 @@ by roadmap milestone instead.
 | task-19 | `internal/events` typed run events + in-process bus | task-18 |
 | task-20 | `internal/project` folder registry with hard path scoping | task-17 |
 | task-21 | `internal/coderunner` streaming, folder-scoped `claude` sessions | task-19, task-20 |
-| task-22 | `cmd/goat-daemon` + `internal/api` loopback HTTP surface | task-17, task-20, task-21 |
+| task-22 | `cmd/mimir-daemon` + `internal/api` loopback HTTP surface | task-17, task-20, task-21 |
 | task-23 | `internal/maps` Places API client + `store.companies` | task-17 |
 | task-24 | `maps_search` MCP tool + operator-provisioned Places credential | task-22, task-23 |
 | task-25 | `GET /ws/runs/{id}` live run fan-out over WebSocket | task-19, task-21, task-22 |

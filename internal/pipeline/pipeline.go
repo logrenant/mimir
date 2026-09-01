@@ -10,12 +10,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/search"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 var ErrNoUsableSources = errors.New("pipeline: all sources failed")

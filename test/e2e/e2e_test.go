@@ -12,12 +12,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/logrenant/mimir/internal/mcp"
 )
 
 func TestE2E(t *testing.T) {
 	// Build the binary
-	binPath := filepath.Join(t.TempDir(), "goat-mcp")
-	buildCmd := exec.Command("go", "build", "-o", binPath, "../../cmd/goat-mcp")
+	binPath := filepath.Join(t.TempDir(), "mimir-mcp")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "../../cmd/mimir-mcp")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build binary: %v\n%s", err, string(out))
 	}
@@ -68,12 +70,18 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 	}
 
 	cmd := exec.Command(binPath)
-	// Only the four test-URL/path overrides are honoured by config.Load() (SD-1).
+	// Only the test-URL/path overrides are honoured by config.Load() (SD-1).
+	//
+	// MIMIR_STORE_PATH is not optional here. Without it this test runs the real
+	// binary against the operator's real store — the one holding their
+	// registered projects, run history and project memory — and creates it if
+	// it is absent. A test must not be able to touch that file at all.
 	cmd.Env = append(os.Environ(),
-		"GOAT_DDG_HTML_URL="+ddgSrv.URL,
-		"GOAT_DDG_LITE_URL="+ddgSrv.URL,
-		"GOAT_CRAWL4AI_URL="+crawlSrv.URL,
-		"GOAT_CLAUDE_CLI_PATH="+fakeClaudePath,
+		"MIMIR_DDG_HTML_URL="+ddgSrv.URL,
+		"MIMIR_DDG_LITE_URL="+ddgSrv.URL,
+		"MIMIR_CRAWL4AI_URL="+crawlSrv.URL,
+		"MIMIR_CLAUDE_CLI_PATH="+fakeClaudePath,
+		"MIMIR_STORE_PATH="+filepath.Join(t.TempDir(), "mimir.db"),
 	)
 
 	stdin, err := cmd.StdinPipe()
@@ -165,8 +173,10 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 	if !strings.Contains(diagContent, `"ok":true`) {
 		t.Errorf("diagnostics reported failure: %s", diagContent)
 	}
-	// versions block reflects the pinned constants.
-	for _, want := range []string{`"binary":"0.1.0"`, `"mcp_sdk":"v1.7.0"`, `"crawl4ai_image":"unclecode/crawl4ai:0.8.9"`, `"claude_model":"claude-haiku-4-5-20251001"`} {
+	// The versions block reflects the pinned constants. The binary version is
+	// read from the constant rather than repeated as a literal: a release bumps
+	// it, and a test that had to be edited alongside would just be edited wrong.
+	for _, want := range []string{`"binary":"` + mcp.Version + `"`, `"mcp_sdk":"v1.7.0"`, `"crawl4ai_image":"unclecode/crawl4ai:0.8.9"`, `"claude_model":"claude-haiku-4-5-20251001"`} {
 		if !strings.Contains(diagContent, want) {
 			t.Errorf("diagnostics versions missing %s: %s", want, diagContent)
 		}

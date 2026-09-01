@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
 )
 
 func testCfg(baseURL string) config.Config {

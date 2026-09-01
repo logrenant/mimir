@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/mcp"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/mcp"
 )
 
 // RegionSearcher is the internal/maps seam. An interface rather than the
@@ -238,7 +238,7 @@ func trimToBudget(companies []mapsCompany, resp mapsSearchResponse) []mapsCompan
 func mapsToolError(err error) error {
 	switch {
 	case errors.Is(err, maps.ErrCredentialMissing):
-		return errors.New("no Google Places API key — set GOAT_GOOGLE_PLACES_API_KEY and restart; it is provisioned by the operator, not passed per call")
+		return errors.New("no Google Places API key — set MIMIR_GOOGLE_PLACES_API_KEY and restart; it is provisioned by the operator, not passed per call")
 	case errors.Is(err, maps.ErrRequestDenied):
 		return errors.New("the Places key was rejected — check it is valid, that the Places API (New) is enabled for its project, and that any key restriction allows this machine")
 	case errors.Is(err, maps.ErrQuotaExceeded):

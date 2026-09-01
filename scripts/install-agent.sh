@@ -1,11 +1,11 @@
 #!/bin/sh
 #
-# Installs goat-daemon as a per-user launchd agent, so GOAT runs whether or not
+# Installs mimir-daemon as a per-user launchd agent, so Mimir runs whether or not
 # the desktop app is open.
 #
 # The daemon itself is unchanged by this: it still learns where to listen and
 # what secret to accept from exactly two environment variables
-# (GOAT_DAEMON_PORT / GOAT_DAEMON_TOKEN, internal/config/config.go). All this
+# (MIMIR_DAEMON_PORT / MIMIR_DAEMON_TOKEN, internal/config/config.go). All this
 # script changes is *who the parent is* — launchd instead of the Tauri shell.
 #
 # Idempotent. Re-running it rebuilds the binary and restarts the agent while
@@ -16,12 +16,12 @@
 
 set -eu
 
-LABEL="com.goat.daemon"
-SUPPORT_DIR="$HOME/Library/Application Support/goat-mcp"
+LABEL="studio.mimir.daemon"
+SUPPORT_DIR="$HOME/Library/Application Support/mimir"
 BIN_DIR="$SUPPORT_DIR/bin"
 ENDPOINT_FILE="$SUPPORT_DIR/endpoint.json"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG_FILE="$HOME/Library/Logs/goat-daemon.log"
+LOG_FILE="$HOME/Library/Logs/mimir-daemon.log"
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DEFAULT_PORT=41999
 
@@ -52,21 +52,45 @@ done
 # --- 1. the binary ----------------------------------------------------------
 
 if [ "$BUILD" -eq 1 ]; then
-	echo "==> building goat-daemon"
+	echo "==> building mimir-daemon"
 	(cd "$REPO_ROOT" && make build >/dev/null)
 fi
 
-if [ ! -x "$REPO_ROOT/bin/goat-daemon" ]; then
-	echo "bin/goat-daemon is missing — run 'make build' first (or drop --no-build)" >&2
+if [ ! -x "$REPO_ROOT/bin/mimir-daemon" ]; then
+	echo "bin/mimir-daemon is missing — run 'make build' first (or drop --no-build)" >&2
 	exit 1
 fi
 
-mkdir -p "$BIN_DIR"
+mkdir -p "$BIN_DIR" "$SUPPORT_DIR"
 # Copy to a temp name and move it into place: replacing a running binary
 # in-place is what makes launchd's restart pick up a half-written file.
-cp "$REPO_ROOT/bin/goat-daemon" "$BIN_DIR/goat-daemon.new"
-chmod 0755 "$BIN_DIR/goat-daemon.new"
-mv "$BIN_DIR/goat-daemon.new" "$BIN_DIR/goat-daemon"
+cp "$REPO_ROOT/bin/mimir-daemon" "$BIN_DIR/mimir-daemon.new"
+chmod 0755 "$BIN_DIR/mimir-daemon.new"
+mv "$BIN_DIR/mimir-daemon.new" "$BIN_DIR/mimir-daemon"
+
+# --- 1b. carry the old store forward ---------------------------------------
+#
+# The rebrand moved the store: ~/Library/Application Support/goat-mcp/goat.db is
+# now .../mimir/mimir.db. That file is not a cache — it holds registered
+# projects, every coding run and the whole project memory — so an install that
+# quietly started a fresh one would look like data loss.
+#
+# Copied, never moved: the old file stays where it is as a backup until the
+# operator deletes it themselves.
+
+LEGACY_DB="$HOME/Library/Application Support/goat-mcp/goat.db"
+if [ -f "$LEGACY_DB" ] && [ ! -f "$SUPPORT_DIR/mimir.db" ]; then
+	echo "==> carrying the pre-rebrand store forward"
+	# `.backup`, not `cp`: the database is in WAL mode and may still have a
+	# reader or writer attached, and a plain copy of a live SQLite file can be
+	# torn. This takes a consistent snapshot, wal included, and needs no lock.
+	if /usr/bin/sqlite3 "$LEGACY_DB" ".backup '$SUPPORT_DIR/mimir.db'"; then
+		echo "    from $LEGACY_DB (left in place as a backup)"
+	else
+		echo "    could not read $LEGACY_DB — starting with an empty store" >&2
+		rm -f "$SUPPORT_DIR/mimir.db"
+	fi
+fi
 
 # --- 2. port and token ------------------------------------------------------
 #
@@ -148,9 +172,9 @@ esac
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
 PLACES_ENTRY=""
-if [ -n "${GOAT_GOOGLE_PLACES_API_KEY:-}" ]; then
-	PLACES_ENTRY="		<key>GOAT_GOOGLE_PLACES_API_KEY</key>
-		<string>$GOAT_GOOGLE_PLACES_API_KEY</string>"
+if [ -n "${MIMIR_GOOGLE_PLACES_API_KEY:-}" ]; then
+	PLACES_ENTRY="		<key>MIMIR_GOOGLE_PLACES_API_KEY</key>
+		<string>$MIMIR_GOOGLE_PLACES_API_KEY</string>"
 	echo "==> Places key found in the environment; writing it into the agent"
 fi
 
@@ -163,13 +187,13 @@ cat >"$PLIST" <<PLISTEOF
 	<string>$LABEL</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>$BIN_DIR/goat-daemon</string>
+		<string>$BIN_DIR/mimir-daemon</string>
 	</array>
 	<key>EnvironmentVariables</key>
 	<dict>
-		<key>GOAT_DAEMON_PORT</key>
+		<key>MIMIR_DAEMON_PORT</key>
 		<string>$PORT</string>
-		<key>GOAT_DAEMON_TOKEN</key>
+		<key>MIMIR_DAEMON_TOKEN</key>
 		<string>$TOKEN</string>
 		<key>PATH</key>
 		<string>$AGENT_PATH</string>
@@ -227,7 +251,7 @@ while [ "$ATTEMPT" -lt 40 ]; do
 	case "$BODY" in
 	*'"ok":true'*)
 		VERSION=$(printf '%s' "$BODY" | /usr/bin/sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
-		echo "==> goat-daemon is up on port $PORT (version ${VERSION:-unknown})"
+		echo "==> mimir-daemon is up on port $PORT (version ${VERSION:-unknown})"
 		echo "    endpoint: $ENDPOINT_FILE"
 		echo "    logs:     $LOG_FILE"
 		exit 0
@@ -237,6 +261,6 @@ while [ "$ATTEMPT" -lt 40 ]; do
 	/bin/sleep 0.5
 done
 
-echo "goat-daemon did not answer /healthz within 20s. Last 20 log lines:" >&2
+echo "mimir-daemon did not answer /healthz within 20s. Last 20 log lines:" >&2
 /usr/bin/tail -20 "$LOG_FILE" >&2 || true
 exit 1

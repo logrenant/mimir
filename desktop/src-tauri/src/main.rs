@@ -32,7 +32,7 @@ fn main() {
             quick::open_main
         ])
         .setup(|app| {
-            // No Dock icon: GOAT is a menu-bar app. The daemon outlives every
+            // No Dock icon: Mimir is a menu-bar app. The daemon outlives every
             // window, so a Dock tile would advertise a lifetime the app no
             // longer owns.
             #[cfg(target_os = "macos")]
@@ -49,23 +49,23 @@ fn main() {
             // A shortcut another app already owns is a degraded feature, not a
             // failed launch — the tray menu opens the same window.
             if let Err(err) = quick::register_shortcut(app.handle()) {
-                eprintln!("[goat] {err}");
+                eprintln!("[mimir] {err}");
             }
 
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Closing a window hides it. Nothing about GOAT stops when a
+                // Closing a window hides it. Nothing about Mimir stops when a
                 // window goes away: the daemon is launchd's, and the app has
                 // to stay alive to keep its menu-bar item. Quitting is the
-                // tray's "Quit GOAT" and nothing else.
+                // tray's "Quit Mimir" and nothing else.
                 api.prevent_close();
                 let _ = window.hide();
             }
         })
         .build(tauri::generate_context!())
-        .expect("error building the GOAT desktop shell");
+        .expect("error building the Mimir desktop shell");
 
     app.run(|handle, event| {
         if let tauri::RunEvent::Exit = event {

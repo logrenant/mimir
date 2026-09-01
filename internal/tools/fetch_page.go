@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/pipeline"
-	"github.com/logrenant/goat-mcp/internal/refine"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/pipeline"
+	"github.com/logrenant/mimir/internal/refine"
 )
 
 // Fetcher represents an interface to allow mocking of pipeline.Fetch

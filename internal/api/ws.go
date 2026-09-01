@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/logrenant/goat-mcp/internal/coderunner"
-	"github.com/logrenant/goat-mcp/internal/events"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/coderunner"
+	"github.com/logrenant/mimir/internal/events"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // Socket tuning. Package constants, not config: these are properties of the

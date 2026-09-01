@@ -1,4 +1,4 @@
-# CAPABILITIES.md — what GOAT can do today
+# CAPABILITIES.md — what Mimir can do today
 
 Türkçe: [`CAPABILITIES.tr.md`](CAPABILITIES.tr.md).
 
@@ -14,16 +14,16 @@ and where the code lives. For *why* it is built this way see
 
 | Binary | Transport | Lifetime owner | Purpose |
 |---|---|---|---|
-| `bin/goat-mcp` | stdio MCP | the Claude Code session that registered it | Give a Claude Code session web search, page scraping, refined research, and free no-login scrapers. |
-| `bin/goat-daemon` | loopback HTTP (`127.0.0.1` + per-launch bearer token) | the Tauri desktop app (spawns it as a sidecar) | Folder-scoped coding-task runner with live streaming, the Google Maps lead-gen pipeline, and the **same** MCP tools re-exposed at `/mcp`. |
+| `bin/mimir-mcp` | stdio MCP | the Claude Code session that registered it | Give a Claude Code session web search, page scraping, refined research, and free no-login scrapers. |
+| `bin/mimir-daemon` | loopback HTTP (`127.0.0.1` + per-launch bearer token) | the Tauri desktop app (spawns it as a sidecar) | Folder-scoped coding-task runner with live streaming, the Google Maps lead-gen pipeline, and the **same** MCP tools re-exposed at `/mcp`. |
 
 Both import the same runtime packages — one engine, two transports. Nothing in
-`goat-mcp` writes to stdout except the MCP transport; the daemon never prints its
+`mimir-mcp` writes to stdout except the MCP transport; the daemon never prints its
 port (the parent chose it).
 
 ---
 
-## 2. MCP tools (`bin/goat-mcp`, also at `goat-daemon` `/mcp`)
+## 2. MCP tools (`bin/mimir-mcp`, also at `mimir-daemon` `/mcp`)
 
 All responses are **compact and refined** — raw scraped text can never leave a
 tool (enforced at a single choke-point, `internal/mcp/finalize.go`). Token
@@ -82,14 +82,14 @@ Parked (not built): `linkedin_company_lookup` and the paid-provider tools in
 |---|---|---|---|
 | `maps_search` | `query: string`, `count?: int` (≤60), `language_code?`, `region_code?`, `near?: {lat,lng,radius_meters}` | `{ query, returned, total_found, truncated, companies[{place_id,name,address,…}] }` | ~2000 tokens; **billed** |
 
-`maps_search` is registered **only** when `GOAT_GOOGLE_PLACES_API_KEY` is set. A
+`maps_search` is registered **only** when `MIMIR_GOOGLE_PLACES_API_KEY` is set. A
 keyless install is the normal install — the tool is simply absent, not a
 dead-end stub. This enumerates **every** business in a region (billed Places
 API), which is different from `gmaps_business_lookup` (one free fact).
 
 ---
 
-## 3. The daemon HTTP surface (`bin/goat-daemon`)
+## 3. The daemon HTTP surface (`bin/mimir-daemon`)
 
 Every route sits behind the same chain: panic-recover → request log → loopback
 guard → bearer-token check → body-size cap. REST is meant to be called from the
@@ -121,9 +121,9 @@ second-by-second.
 - **Scoping is hard.** `internal/coderunner` sets `cmd.Dir = project.Path` *and*
   passes `--add-dir <project.Path>`, plus a fixed `--permission-mode` constant.
   The runner can only see the folder you picked.
-- **It calls back into GOAT's own tools.** The session is launched with an
-  `--mcp-config` naming `goat-mcp` as a nested MCP server, so the coding agent
-  uses GOAT's refined web access instead of its own — keeping repetitive
+- **It calls back into Mimir's own tools.** The session is launched with an
+  `--mcp-config` naming `mimir-mcp` as a nested MCP server, so the coding agent
+  uses Mimir's refined web access instead of its own — keeping repetitive
   scraping off the token bill.
 - **Live streaming.** stdout is parsed line-by-line (`stream-json`), cumulative
   text/thinking length tracked **per `message.id`**, and only deltas are emitted
@@ -159,7 +159,7 @@ hit means **no API call, no `claude` subprocess, zero tokens**. Re-running a
 region only spends tokens on companies/categories that are genuinely new or
 whose `prompt_version` was deliberately bumped.
 
-Needs: `GOAT_GOOGLE_PLACES_API_KEY` for the primary path; `make maps-up` (the
+Needs: `MIMIR_GOOGLE_PLACES_API_KEY` for the primary path; `make maps-up` (the
 Playwright sidecar) only for the fallback; the `claude` CLI for stages 3–4.
 
 ---
@@ -168,7 +168,7 @@ Playwright sidecar) only for the fallback; the `claude` CLI for stages 3–4.
 
 Tauri (Rust shell) + React + shadcn/ui + Tailwind, macOS / Apple Silicon. The
 Rust shell picks a free loopback port, mints a 32-byte per-launch bearer token,
-spawns `goat-daemon` with exactly those two env vars, and reaps it on quit. The
+spawns `mimir-daemon` with exactly those two env vars, and reaps it on quit. The
 WebView never parses subprocess output; REST goes through Rust (`daemon_request`)
 so the token never enters the WebView.
 
@@ -228,7 +228,7 @@ from scratch.
 | `fetch_page`, `research` | Crawl4AI (`make crawl-up`) | yes | — | — |
 | `diagnostics` | — | — | — | — |
 | Stage F scrapers | — | — | — | — |
-| `maps_search` | — | — | **yes** (`GOAT_GOOGLE_PLACES_API_KEY`) | — |
+| `maps_search` | — | — | **yes** (`MIMIR_GOOGLE_PLACES_API_KEY`) | — |
 | `project_context`, `context_recall`, `context_remember` | — | to distil (searchable without) | — | — |
 | Coding-task runner + live stream | — | yes | — | — |
 | Lead-gen (primary path) | — | yes (stages 3–4) | **yes** | — |

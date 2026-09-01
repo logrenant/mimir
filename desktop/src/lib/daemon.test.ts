@@ -179,7 +179,7 @@ describe("wsURL", () => {
     expect(url).not.toContain(READY.token);
     expect(url).not.toContain("?");
     // internal/api/middleware.go reads exactly this prefix.
-    expect(protocol).toBe(`goat.bearer.${READY.token}`);
+    expect(protocol).toBe(`mimir.bearer.${READY.token}`);
   });
 
   test("escapes a run id rather than splicing it into a path", () => {

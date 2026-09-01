@@ -8,7 +8,7 @@
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
 
-  <!-- The app spawns goat-daemon as a sidecar; under hardened runtime the
+  <!-- The app spawns mimir-daemon as a sidecar; under hardened runtime the
        parent must be allowed to load a nested Mach-O it did not itself build.
        The sidecar is signed with the same identity at bundle time, so this is
        the narrow "let a signed child run" allowance, not a blanket bypass. -->

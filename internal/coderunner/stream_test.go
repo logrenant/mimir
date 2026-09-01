@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/events"
+	"github.com/logrenant/mimir/internal/events"
 )
 
 var at = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)

@@ -1,9 +1,9 @@
 [package]
-name = "goat-desktop"
-version = "1.1.1"
+name = "mimir-desktop"
+version = "2.0.0"
 edition = "2021"
-description = "GOAT desktop shell"
-authors = ["goat"]
+description = "Mimir desktop shell"
+authors = ["Mimir Studio"]
 publish = false
 
 [build-dependencies]

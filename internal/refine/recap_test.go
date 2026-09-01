@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 func sampleRecapInput() RecapInput {
@@ -175,7 +175,7 @@ func TestValidateRecap_Rules(t *testing.T) {
 // reject good recaps of most of its history, so the drift rule must stay off
 // whenever the input itself was not ASCII.
 func TestValidateRecap_ScriptDriftIgnoresNonASCIIInput(t *testing.T) {
-	turkishFacts := "Request: goat-remastered için hafıza sistemi kur\n" +
+	turkishFacts := "Request: mimir için hafıza sistemi kur\n" +
 		"Files: internal/memory/memory.go\n" +
 		"Outcome: Episode tabanlı hafıza eklendi.\n"
 
@@ -186,7 +186,7 @@ func TestValidateRecap_ScriptDriftIgnoresNonASCIIInput(t *testing.T) {
 
 	// And a mostly-ASCII Turkish recap of ASCII facts must still pass: the rule
 	// targets script switching, not diacritics.
-	if err := validateRecap("Added the memory package for goat-remastered's hafıza", sampleRecapInput().Facts); err != nil {
+	if err := validateRecap("Added the memory package for mimir's hafıza", sampleRecapInput().Facts); err != nil {
 		t.Errorf("diacritics must not trip the drift rule: %v", err)
 	}
 }

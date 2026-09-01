@@ -36,9 +36,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/extract"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/extract"
 )
 
 // ErrNotAPlacePage means the page never rendered past Google's generic

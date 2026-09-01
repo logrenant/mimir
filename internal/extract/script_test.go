@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/extract"
+	"github.com/logrenant/mimir/internal/extract"
 )
 
 func TestScriptJSON_TikTokUniversalData(t *testing.T) {

@@ -32,7 +32,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/logrenant/goat-mcp/internal/maps"
+	"github.com/logrenant/mimir/internal/maps"
 )
 
 // ImageTag is the pinned sidecar image (see

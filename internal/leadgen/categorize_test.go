@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // The runtime types must actually satisfy what this package asks of them.

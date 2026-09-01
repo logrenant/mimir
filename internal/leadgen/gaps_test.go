@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // The runtime types must satisfy what stage 3 asks of them.

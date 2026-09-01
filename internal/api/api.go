@@ -7,7 +7,7 @@
 // user model, no session, no TLS, because there is no second party.
 //
 // The MCP tool surface is not reimplemented here. /mcp is the SDK's streamable
-// handler over the very same internal/mcp.Registry that cmd/goat-mcp serves
+// handler over the very same internal/mcp.Registry that cmd/mimir-mcp serves
 // over stdio, so the finalize.go choke-point (SD-2) applies to an HTTP tool
 // call exactly as it does to a stdio one.
 package api
@@ -23,12 +23,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/coderunner"
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/events"
-	"github.com/logrenant/goat-mcp/internal/leadgen"
-	goatmcp "github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/project"
+	"github.com/logrenant/mimir/internal/coderunner"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/events"
+	"github.com/logrenant/mimir/internal/leadgen"
+	mimirmcp "github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/project"
 )
 
 // ProjectRegistry is the folder registry this API exposes. Note the contract
@@ -88,7 +88,7 @@ type Deps struct {
 	Runner      CodeRunner
 	Store       Healther
 	MCP         http.Handler
-	Diagnostics goatmcp.Tool
+	Diagnostics mimirmcp.Tool
 
 	// Events and Transcripts are both needed for /ws/runs/{id}; the route is
 	// not registered unless both are present.
@@ -148,7 +148,7 @@ func (s *Server) Handler() http.Handler {
 // Serve binds and serves until ctx is cancelled, then drains.
 //
 // The resolved address is logged to stderr, never printed: goat v1 had its
-// parent scrape `GOAT_PORT=<n>` out of the child's stdout, and this process
+// parent scrape `MIMIR_PORT=<n>` out of the child's stdout, and this process
 // could not do that even if it wanted to (SD-4). The parent already knows the
 // port because the parent chose it.
 func (s *Server) Serve(ctx context.Context) error {
@@ -156,7 +156,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	addr := net.JoinHostPort(s.cfg.DaemonHost, strconv.Itoa(s.cfg.DaemonPort))
 	ln, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
-		return errors.New("goat-daemon could not listen on " + addr + ": " + err.Error() +
+		return errors.New("mimir-daemon could not listen on " + addr + ": " + err.Error() +
 			" — the parent process picks this port, check it is free")
 	}
 
@@ -165,7 +165,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		ReadHeaderTimeout: s.cfg.DaemonReadHeaderTimeout,
 	}
 
-	slog.Info("goat-daemon listening", "addr", ln.Addr().String())
+	slog.Info("mimir-daemon listening", "addr", ln.Addr().String())
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()

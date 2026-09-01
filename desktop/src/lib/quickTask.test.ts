@@ -70,7 +70,7 @@ describe("finishedNotification", () => {
   test("reports completion with the turn count", () => {
     const view = reduceRun(emptyRun(), event({ kind: "run.completed", num_turns: 4 }));
     expect(finishedNotification(view)).toEqual({
-      title: "GOAT — run completed",
+      title: "Mimir — run completed",
       body: "Finished in 4 turns.",
     });
   });
@@ -80,7 +80,7 @@ describe("finishedNotification", () => {
   test("carries the daemon's own failure message", () => {
     const view = reduceRun(emptyRun(), event({ kind: "run.failed", error: "claude exited with 1" }));
     expect(finishedNotification(view)).toEqual({
-      title: "GOAT — run failed",
+      title: "Mimir — run failed",
       body: "claude exited with 1",
     });
   });

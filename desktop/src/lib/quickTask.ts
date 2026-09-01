@@ -57,12 +57,12 @@ export function finishedNotification(view: RunView): Notification | null {
   if (!view.finished) return null;
   if (view.failed) {
     return {
-      title: "GOAT — run failed",
+      title: "Mimir — run failed",
       body: view.error ?? "The coding run did not finish.",
     };
   }
   return {
-    title: "GOAT — run completed",
+    title: "Mimir — run completed",
     body: view.numTurns ? `Finished in ${view.numTurns} turns.` : "The coding run finished.",
   };
 }

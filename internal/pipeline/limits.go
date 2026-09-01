@@ -6,7 +6,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 var (

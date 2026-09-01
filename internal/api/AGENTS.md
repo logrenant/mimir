@@ -16,7 +16,7 @@ decisions, it is in the wrong package.
 - **No route bypasses the chain.** `Handler()` wraps the whole mux —
   `/mcp` included — in recover → log → loopback → token → body cap. Adding a
   route means adding it to that mux, never mounting a second handler beside it.
-- **`/mcp` is the same registry `cmd/goat-mcp` serves over stdio.** Never build
+- **`/mcp` is the same registry `cmd/mimir-mcp` serves over stdio.** Never build
   a parallel tool path here; that would put a tool response outside
   `finalize.go`'s choke-point (SD-2). Two transports, one engine.
 - **A filesystem path is accepted at exactly one route** — `POST /projects` —
@@ -35,7 +35,7 @@ decisions, it is in the wrong package.
   run: a session lasts minutes, and the run's lifetime belongs to the daemon
   (`coderunner.New(base, …)`), not to the request context.
 - **stderr only** (SD-4). The resolved listen address is logged, never printed.
-  goat v1's parent scraped `GOAT_PORT=<n>` off the child's stdout; here the
+  goat v1's parent scraped `MIMIR_PORT=<n>` off the child's stdout; here the
   parent already knows the port because the parent chose it.
 
 ## The run socket
@@ -63,7 +63,7 @@ would be a different endpoint with a different threat model.
 
 - **Registered only when a Places key is configured.** `Handler()` mounts them
   behind `s.deps.LeadGen != nil`, the same availability-follows-credential rule
-  the `maps_search` tool uses. `cmd/goat-daemon` sets the interface field only
+  the `maps_search` tool uses. `cmd/mimir-daemon` sets the interface field only
   when it has a real `*leadgen.Pipeline`, because a nil pointer in a non-nil
   interface would still pass the guard.
 - **`POST /maps/leadgen` returns the pipeline's `Report` verbatim.** The handler
@@ -89,11 +89,11 @@ reject exactly the caller this exists for.
 ## Auth model
 
 One operator, one machine, one process. The parent (Tauri) mints a per-launch
-token and passes it via `GOAT_DAEMON_TOKEN`; `config.ValidateDaemon` refuses to
+token and passes it via `MIMIR_DAEMON_TOKEN`; `config.ValidateDaemon` refuses to
 start without one. Comparison is constant-time.
 
 The token arrives in `Authorization: Bearer …`, or — for a WebSocket, where the
-browser API cannot set headers — as the `goat.bearer.<token>` entry in
+browser API cannot set headers — as the `mimir.bearer.<token>` entry in
 `Sec-WebSocket-Protocol`, which the handshake echoes back. **Never accept it
 from the query string**: URLs reach access logs, history, and referrers, and
 this token starts coding sessions in the operator's own repositories. There is no user model, no

@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 	"golang.org/x/time/rate"
 )
 

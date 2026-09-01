@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/events"
+	"github.com/logrenant/mimir/internal/events"
 )
 
 // toolRisk classifies what a tool can do. A tool absent from this map is

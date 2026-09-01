@@ -1,8 +1,8 @@
 .PHONY: build test race vet lint check e2e install-agent uninstall-agent agent-status agent-logs agent-restart install-app crawl-up crawl-down crawl-logs maps-up maps-down maps-logs desktop-sidecar desktop-dev desktop-build desktop-check
 
 build:
-	go build -o bin/goat-mcp ./cmd/goat-mcp
-	go build -o bin/goat-daemon ./cmd/goat-daemon
+	go build -o bin/mimir-mcp ./cmd/mimir-mcp
+	go build -o bin/mimir-daemon ./cmd/mimir-daemon
 
 test:
 	go test ./...
@@ -37,20 +37,20 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 release:
 	@echo "Building release binaries ($(VERSION))..."
-	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/goat-mcp-darwin-arm64 ./cmd/goat-mcp
-	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/goat-mcp-darwin-amd64 ./cmd/goat-mcp
-	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/goat-daemon-darwin-arm64 ./cmd/goat-daemon
-	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/goat-daemon-darwin-amd64 ./cmd/goat-daemon
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-mcp-darwin-arm64 ./cmd/mimir-mcp
+	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-mcp-darwin-amd64 ./cmd/mimir-mcp
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-daemon-darwin-arm64 ./cmd/mimir-daemon
+	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-daemon-darwin-amd64 ./cmd/mimir-daemon
 	@echo "Release binaries built in bin/"
 
 # --- always-on daemon (launchd) ---------------------------------------------
 #
-# Installs goat-daemon as a per-user LaunchAgent so it runs at login and is
+# Installs mimir-daemon as a per-user LaunchAgent so it runs at login and is
 # restarted if it dies, whether or not the desktop app is open. The daemon's
 # own contract is unchanged: launchd is simply a second legitimate parent that
-# hands it GOAT_DAEMON_PORT and GOAT_DAEMON_TOKEN. See scripts/AGENTS.md.
+# hands it MIMIR_DAEMON_PORT and MIMIR_DAEMON_TOKEN. See scripts/AGENTS.md.
 
-AGENT_LABEL := com.goat.daemon
+AGENT_LABEL := studio.mimir.daemon
 AGENT_DOMAIN := gui/$(shell id -u)
 
 install-agent:
@@ -67,15 +67,15 @@ agent-restart:
 	launchctl kickstart -k $(AGENT_DOMAIN)/$(AGENT_LABEL)
 
 agent-logs:
-	tail -f "$(HOME)/Library/Logs/goat-daemon.log"
+	tail -f "$(HOME)/Library/Logs/mimir-daemon.log"
 
 # The menu-bar app itself. Copied rather than distributed: the bundle is
 # ad-hoc-signed, and a .dmg needs Finder automation permission for its layout
 # step (see desktop/AGENTS.md).
 install-app: desktop-build
-	rm -rf /Applications/GOAT.app
-	cp -R desktop/src-tauri/target/release/bundle/macos/GOAT.app /Applications/
-	@echo "GOAT.app installed — open it once; it lives in the menu bar, not the Dock"
+	rm -rf /Applications/Mimir.app
+	cp -R desktop/src-tauri/target/release/bundle/macos/Mimir.app /Applications/
+	@echo "Mimir.app installed — open it once; it lives in the menu bar, not the Dock"
 
 clean:
 	@echo "not implemented"
@@ -115,7 +115,7 @@ TAURI_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/{print $$2}')
 desktop-sidecar:
 	@test -n "$(TAURI_TRIPLE)" || { echo "rustc not found — install Rust (https://rustup.rs) so the sidecar can be named for its target triple"; exit 1; }
 	mkdir -p desktop/src-tauri/binaries
-	go build -o desktop/src-tauri/binaries/goat-daemon-$(TAURI_TRIPLE) ./cmd/goat-daemon
+	go build -o desktop/src-tauri/binaries/mimir-daemon-$(TAURI_TRIPLE) ./cmd/mimir-daemon
 
 desktop-dev: desktop-sidecar
 	cd desktop && npm run tauri dev

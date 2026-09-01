@@ -9,9 +9,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/extract"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/extract"
 )
 
 // ErrNoProductData means the page exposed neither a Product JSON-LD block

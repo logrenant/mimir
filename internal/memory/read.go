@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // Guidance travels with every memory response.

@@ -3,14 +3,14 @@ package tools
 import (
 	"fmt"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/memory"
-	"github.com/logrenant/goat-mcp/internal/pipeline"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/search"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/memory"
+	"github.com/logrenant/mimir/internal/pipeline"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/search"
 )
 
 // Deps are the collaborators every tool is built from. They are constructed by
@@ -22,9 +22,9 @@ type Deps struct {
 	Refine   *refine.Client
 	Pipeline *pipeline.Pipeline
 
-	// Maps is optional. cmd/goat-daemon builds one Places client and shares it
+	// Maps is optional. cmd/mimir-daemon builds one Places client and shares it
 	// with the lead-gen pipeline, so it passes it here rather than have
-	// RegisterAll build a second. cmd/goat-mcp leaves it nil and RegisterAll
+	// RegisterAll build a second. cmd/mimir-mcp leaves it nil and RegisterAll
 	// builds its own from the credential, exactly as before.
 	Maps *maps.Client
 
@@ -37,10 +37,10 @@ type Deps struct {
 	Projects ProjectFinder
 }
 
-// RegisterAll registers the canonical goat tool set on reg.
+// RegisterAll registers the canonical Mimir tool set on reg.
 //
-// It exists so there is exactly one list. cmd/goat-mcp (stdio) and
-// cmd/goat-daemon (HTTP) are two transports over one engine; two
+// It exists so there is exactly one list. cmd/mimir-mcp (stdio) and
+// cmd/mimir-daemon (HTTP) are two transports over one engine; two
 // hand-maintained registration lists is precisely how that claim would quietly
 // stop being true — a tool added for the desktop app and never reaching Claude
 // Code, or the reverse.

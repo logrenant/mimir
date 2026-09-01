@@ -96,7 +96,7 @@ virtual table's real name; an alias fails with `no such column`.
 
 - **No user-facing knob** enables, disables, or tunes the cache (SD-1). The
   path, TTL, and prompt version are constants in `internal/config`;
-  `GOAT_STORE_PATH` exists for tests only.
+  `MIMIR_STORE_PATH` exists for tests only.
 
 ## Testing
 

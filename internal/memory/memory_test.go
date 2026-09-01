@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // fakeRefiner stands in for the claude CLI. The real subprocess is covered in
@@ -63,7 +63,7 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	cfg := config.Load()
-	cfg.StorePath = filepath.Join(t.TempDir(), "goat.db")
+	cfg.StorePath = filepath.Join(t.TempDir(), "mimir.db")
 	cfg.ClaudeProjectsDir = claudeRoot
 
 	s, err := store.Open(context.Background(), cfg)

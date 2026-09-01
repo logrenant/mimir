@@ -12,17 +12,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/coderunner"
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/events"
-	goatmcp "github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/pipeline"
-	"github.com/logrenant/goat-mcp/internal/project"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/search"
-	"github.com/logrenant/goat-mcp/internal/store"
-	"github.com/logrenant/goat-mcp/internal/tools"
+	"github.com/logrenant/mimir/internal/coderunner"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/events"
+	mimirmcp "github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/pipeline"
+	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/store"
+	"github.com/logrenant/mimir/internal/tools"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -75,7 +75,7 @@ func newLive(t *testing.T, claudePath string) *live {
 
 	tmp := t.TempDir()
 	cfg := config.Load()
-	cfg.StorePath = filepath.Join(tmp, "goat.db")
+	cfg.StorePath = filepath.Join(tmp, "mimir.db")
 	cfg.TranscriptDir = filepath.Join(tmp, "transcripts")
 	cfg.ClaudeCLIPath = claudePath
 	cfg.CodingRunTimeout = 30 * time.Second
@@ -104,7 +104,7 @@ func newLive(t *testing.T, claudePath string) *live {
 	refineClient := refine.New(cfg)
 	pipe := pipeline.New(cfg, searchClient, crawlClient, refineClient, db)
 
-	mcpServer := goatmcp.NewServer(cfg)
+	mcpServer := mimirmcp.NewServer(cfg)
 	if err := tools.RegisterAll(mcpServer.Registry(), cfg, tools.Deps{
 		Search:   searchClient,
 		Crawl:    crawlClient,
@@ -289,7 +289,7 @@ func TestLive_StartCodingTaskAnswersBeforeTheRunFinishes(t *testing.T) {
 	}
 }
 
-// /mcp is the same registry cmd/goat-mcp serves over stdio. If this list and
+// /mcp is the same registry cmd/mimir-mcp serves over stdio. If this list and
 // that binary's ever diverge, "two transports, one engine" has stopped being
 // true — which is the whole reason tools.RegisterAll exists.
 func TestLive_MCPRouteExposesTheCanonicalToolSet(t *testing.T) {

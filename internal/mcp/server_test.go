@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	goatmcp "github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/search"
-	"github.com/logrenant/goat-mcp/internal/tools"
+	"github.com/logrenant/mimir/internal/config"
+	mimirmcp "github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/tools"
 )
 
 // mockTool is a simple tool for testing.
@@ -78,7 +78,7 @@ func TestServerToolsE2E(t *testing.T) {
 	os.Stdout = wServer
 
 	cfg := config.Load()
-	srv := goatmcp.NewServer(cfg)
+	srv := mimirmcp.NewServer(cfg)
 	
 	err = srv.Registry().Register(mockTool{})
 	if err != nil {

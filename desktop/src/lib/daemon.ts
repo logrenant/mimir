@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /**
- * The one way this app talks to goat-daemon.
+ * The one way this app talks to mimir-daemon.
  *
  * REST goes through the Rust shell, not through `fetch`. That is forced, not
  * stylistic: a `fetch` with an `Authorization` header from `tauri://localhost`
@@ -116,7 +116,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 export function wsURL(runID: string, ep: DaemonEndpoint): { url: string; protocol: string } {
   return {
     url: `${ep.base_url.replace(/^http/, "ws")}/ws/runs/${encodeURIComponent(runID)}`,
-    protocol: `goat.bearer.${ep.token}`,
+    protocol: `mimir.bearer.${ep.token}`,
   };
 }
 

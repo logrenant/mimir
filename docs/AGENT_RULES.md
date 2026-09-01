@@ -1,4 +1,4 @@
-# AGENT_RULES.md — GOAT
+# AGENT_RULES.md — Mimir
 
 Detailed rules for every agent that touches this repo. Root [`AGENTS.md`](../AGENTS.md)
 is the short version and the repo map; this file is the authority when the two
@@ -31,11 +31,11 @@ rules blurred them; keep them separate.
 - The finished binary is registered as an MCP server in an end-user Claude Code
   session. That session calls `web_search`, `fetch_page`, `research`,
   `diagnostics`, the four Stage F lookups, and `maps_search` (only when a Places
-  key is present). `goat-daemon` re-exposes the same registry over HTTP at
+  key is present). `mimir-daemon` re-exposes the same registry over HTTP at
   `/mcp`.
 - It never sees this repo. It **only** sees tool responses — which is why every
   response must be compact and refined (§3.2, §3.7).
-- The Tauri desktop app is a second runtime consumer of `goat-daemon`'s REST +
+- The Tauri desktop app is a second runtime consumer of `mimir-daemon`'s REST +
   WebSocket surface (`/projects`, `/coding-tasks`, `/ws/runs/{id}`, `/maps/*`).
   It is not a contributor either, and the same "door, not a floor" rule applies:
   a handler translates JSON to a runtime-package call and back, nothing more.
@@ -58,20 +58,20 @@ rules blurred them; keep them separate.
 
 ## 2. Architecture contract (summary — full detail in [`ARCHITECTURE.md`](ARCHITECTURE.md))
 
-- **Two binaries, one engine.** `bin/goat-mcp` (Track A) is a stdio MCP server, no
-  daemon, no service of its own. `bin/goat-daemon` (Track B) is a long-running
+- **Two binaries, one engine.** `bin/mimir-mcp` (Track A) is a stdio MCP server, no
+  daemon, no service of its own. `bin/mimir-daemon` (Track B) is a long-running
   loopback-only HTTP service for the Tauri app; it imports the same runtime
   packages and re-exposes the same `internal/mcp.Registry` at `/mcp`. Not two
   orchestrators — one engine, two transports.
-- **Transport:** `goat-mcp` speaks MCP over **stdio** — `stdout` carries protocol
-  frames and nothing else. `goat-daemon` binds `127.0.0.1` only, behind a
+- **Transport:** `mimir-mcp` speaks MCP over **stdio** — `stdout` carries protocol
+  frames and nothing else. `mimir-daemon` binds `127.0.0.1` only, behind a
   per-launch bearer token (`config.ValidateDaemon` refuses to start without one)
   and a second loopback guard. Both log structured JSON to `stderr` only.
-- **Egress policy:** `goat-mcp` may reach exactly two network destinations —
+- **Egress policy:** `mimir-mcp` may reach exactly two network destinations —
   `duckduckgo.com` and `127.0.0.1:11235` (Crawl4AI) — plus the local `claude`
   CLI subprocess, which makes its own call to the Anthropic API under the
-  operator's login. `goat-daemon` adds the Google Places API (only with
-  `GOAT_GOOGLE_PLACES_API_KEY`) and the `127.0.0.1:11236` Playwright sidecar
+  operator's login. `mimir-daemon` adds the Google Places API (only with
+  `MIMIR_GOOGLE_PLACES_API_KEY`) and the `127.0.0.1:11236` Playwright sidecar
   (optional fallback). Crawl4AI / the sidecar are what fetch arbitrary target
   sites; our processes do not.
 - **Data flow, mandatory:**
@@ -94,17 +94,17 @@ Numbered so task files and reviews can cite them (e.g. "violates SD-2"). A task 
   **No exported setters, no functional options, no config file, no CLI flags** for
   behaviour.
 - The only permitted environment overrides are for **test/CI plumbing** and must be
-  enumerated in `internal/config/AGENTS.md` (e.g. `GOAT_CRAWL4AI_URL`,
-  `GOAT_CLAUDE_CLI_PATH` pointing at mock servers/fake binaries). They default
+  enumerated in `internal/config/AGENTS.md` (e.g. `MIMIR_CRAWL4AI_URL`,
+  `MIMIR_CLAUDE_CLI_PATH` pointing at mock servers/fake binaries). They default
   to the production localhost values / `claude` on `$PATH` and are ignored in
   the shipped happy path.
 - The single decision made once, at bootstrap, is the Go **module path**
-  (`github.com/logrenant/goat-mcp`). Not a runtime knob.
+  (`github.com/logrenant/mimir`). Not a runtime knob.
 - **Two narrow, documented categories of non-constant value exist (Track B),
   both in `internal/config/AGENTS.md`:** (a) *process plumbing, parent-provided*
-  — `GOAT_DAEMON_PORT` / `GOAT_DAEMON_TOKEN`, which answer "where do I listen,
+  — `MIMIR_DAEMON_PORT` / `MIMIR_DAEMON_TOKEN`, which answer "where do I listen,
   what secret do I accept" and nothing about behaviour; (b) the
-  *operator-provisioned credential* — `GOAT_GOOGLE_PLACES_API_KEY`, read once,
+  *operator-provisioned credential* — `MIMIR_GOOGLE_PLACES_API_KEY`, read once,
   which gates *whether* the Places provider is reachable, never what a request
   does. Neither is a behaviour knob, and no third category may be added without
   the same justification.

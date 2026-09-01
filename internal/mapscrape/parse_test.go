@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/maps"
+	"github.com/logrenant/mimir/internal/maps"
 )
 
 func loadFixture(t *testing.T) string {

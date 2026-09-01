@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
 )
 
 // maxResponseBytes bounds what a compromised or broken sidecar can make this

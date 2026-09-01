@@ -3,7 +3,7 @@ package extract_test
 import (
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/extract"
+	"github.com/logrenant/mimir/internal/extract"
 )
 
 func TestMeta_OGProperty(t *testing.T) {

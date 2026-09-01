@@ -8,8 +8,8 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/logrenant/goat-mcp/internal/extract"
-	"github.com/logrenant/goat-mcp/internal/maps"
+	"github.com/logrenant/mimir/internal/extract"
+	"github.com/logrenant/mimir/internal/maps"
 )
 
 // The anchors extraction is built on, in descending order of how likely they

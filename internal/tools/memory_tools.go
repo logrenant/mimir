@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/memory"
-	"github.com/logrenant/goat-mcp/internal/project"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/memory"
+	"github.com/logrenant/mimir/internal/project"
 )
 
 // ProjectFinder looks a project up without registering it. Satisfied by
@@ -70,7 +70,7 @@ func (b *memoryBase) resolve(ctx context.Context, path string) (memory.Project, 
 
 // catchUp folds a small amount of ingest into a read.
 //
-// Without it, goat-mcp — which is a short-lived stdio process with no daemon
+// Without it, mimir-mcp — which is a short-lived stdio process with no daemon
 // behind it — would only ever serve what some other process had already
 // ingested. The batch is deliberately small: phase 1 of an ingest is free, so
 // the index stays current either way, and a read should not stall behind a

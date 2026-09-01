@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 func TestBrief_AssemblesFromRows(t *testing.T) {

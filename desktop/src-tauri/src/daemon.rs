@@ -1,8 +1,8 @@
-//! Finds the `goat-daemon` this app talks to — attaching to the installed
+//! Finds the `mimir-daemon` this app talks to — attaching to the installed
 //! always-on one, or spawning its own in development.
 //!
 //! The parent owns the plumbing, and that is the whole design. goat v1 had its
-//! shell scrape `GOAT_PORT=<n>` out of the child's stdout; this repo made that
+//! shell scrape `MIMIR_PORT=<n>` out of the child's stdout; this repo made that
 //! impossible on the child's side (SD-4 — stdout carries MCP frames and nothing
 //! else, and the daemon logs its resolved address to stderr precisely because
 //! the parent is supposed to already know it). Nothing in this file reads
@@ -12,7 +12,7 @@
 //! time:
 //!
 //! * **Attached (the installed system).** `scripts/install-agent.sh` registered
-//!   `com.goat.daemon` with launchd, which owns the process, restarts it if it
+//!   `studio.mimir.daemon` with launchd, which owns the process, restarts it if it
 //!   dies, and starts it at login. launchd is the parent; it was handed the
 //!   port and the token at install time, and the same pair is in
 //!   `endpoint.json`, `0600`, for this app to read. The daemon outlives the
@@ -41,7 +41,7 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 /// The launchd job `scripts/install-agent.sh` registers.
-const AGENT_LABEL: &str = "com.goat.daemon";
+const AGENT_LABEL: &str = "studio.mimir.daemon";
 
 /// How long to wait for the child to answer /healthz before calling it dead.
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -315,7 +315,7 @@ fn attach(endpoint: Endpoint) -> Result<Endpoint, String> {
         Ok(()) => Ok(endpoint),
         Err(reason) => Err(format!(
             "{reason}\n\nlaunchd restarted {AGENT_LABEL} but it did not come up. \
-             Check ~/Library/Logs/goat-daemon.log."
+             Check ~/Library/Logs/mimir-daemon.log."
         )),
     }
 }
@@ -350,22 +350,22 @@ fn spawn_once(app: &AppHandle, port: u16, token: &str) -> Result<Endpoint, Strin
     // other value the daemon uses is a constant in internal/config, and adding
     // an env var to this map would create the runtime knob SD-1 says we do not
     // have.
-    env.insert("GOAT_DAEMON_PORT".to_string(), port.to_string());
-    env.insert("GOAT_DAEMON_TOKEN".to_string(), token.to_string());
+    env.insert("MIMIR_DAEMON_PORT".to_string(), port.to_string());
+    env.insert("MIMIR_DAEMON_TOKEN".to_string(), token.to_string());
 
     let command = app
         .shell()
-        .sidecar("goat-daemon")
+        .sidecar("mimir-daemon")
         .map_err(|e| {
             format!(
-                "the goat-daemon sidecar binary is missing: {e} — run `make desktop-sidecar` to build it"
+                "the mimir-daemon sidecar binary is missing: {e} — run `make desktop-sidecar` to build it"
             )
         })?
         .envs(env);
 
     let (mut rx, child) = command
         .spawn()
-        .map_err(|e| format!("could not start goat-daemon: {e}"))?;
+        .map_err(|e| format!("could not start mimir-daemon: {e}"))?;
 
     let state = app.state::<DaemonState>();
     *state.child.lock().expect("daemon child poisoned") = Some(child);
@@ -386,7 +386,7 @@ fn spawn_once(app: &AppHandle, port: u16, token: &str) -> Result<Endpoint, Strin
                         if text.is_empty() {
                             continue;
                         }
-                        eprintln!("[goat-daemon] {text}");
+                        eprintln!("[mimir-daemon] {text}");
                         let mut buf = stderr.lock().expect("stderr buffer poisoned");
                         if buf.len() == STDERR_KEEP_LINES {
                             buf.remove(0);
@@ -420,7 +420,7 @@ fn spawn_once(app: &AppHandle, port: u16, token: &str) -> Result<Endpoint, Strin
                 Err(reason)
             } else {
                 // A bare exit code is not actionable; the daemon's own message
-                // ("GOAT_DAEMON_TOKEN is empty", "could not listen on …") is.
+                // ("MIMIR_DAEMON_TOKEN is empty", "could not listen on …") is.
                 Err(format!("{reason}\n\n{tail}"))
             }
         }
@@ -436,14 +436,14 @@ fn wait_until_ready(
 
     loop {
         if let Some(code) = *exited.lock().expect("exit status poisoned") {
-            return Err(format!("goat-daemon exited early with status {code}"));
+            return Err(format!("mimir-daemon exited early with status {code}"));
         }
         if health_ok(base_url, token) {
             return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "goat-daemon did not answer {base_url}/healthz within {}s",
+                "mimir-daemon did not answer {base_url}/healthz within {}s",
                 READY_TIMEOUT.as_secs()
             ));
         }
@@ -529,7 +529,7 @@ impl std::fmt::Display for EndpointError {
 fn endpoint_file() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
     PathBuf::from(home)
-        .join("Library/Application Support/goat-mcp")
+        .join("Library/Application Support/mimir")
         .join("endpoint.json")
 }
 
@@ -707,7 +707,7 @@ mod tests {
     /// left world-readable, an installer pointed somewhere else.
     #[test]
     fn endpoint_file_is_read_only_when_it_is_well_formed_and_private() {
-        let dir = std::env::temp_dir().join(format!("goat-endpoint-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mimir-endpoint-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let token = "a".repeat(64);
 
@@ -775,7 +775,7 @@ mod tests {
     #[test]
     fn endpoint_path_sits_next_to_the_store() {
         let path = endpoint_file();
-        assert!(path.ends_with("Library/Application Support/goat-mcp/endpoint.json"));
+        assert!(path.ends_with("Library/Application Support/mimir/endpoint.json"));
     }
 
     #[test]

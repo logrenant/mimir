@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 // testConfig returns a Config pointing the store at a fresh temp database.
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	cfg := config.Load()
-	cfg.StorePath = filepath.Join(t.TempDir(), "goat.db")
+	cfg.StorePath = filepath.Join(t.TempDir(), "mimir.db")
 	return cfg
 }
 
@@ -30,7 +30,7 @@ func openTestStore(t *testing.T) *Store {
 
 func TestOpen_CreatesParentDirectory(t *testing.T) {
 	cfg := config.Load()
-	cfg.StorePath = filepath.Join(t.TempDir(), "nested", "deeper", "goat.db")
+	cfg.StorePath = filepath.Join(t.TempDir(), "nested", "deeper", "mimir.db")
 
 	s, err := Open(context.Background(), cfg)
 	if err != nil {

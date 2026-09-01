@@ -8,14 +8,14 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/mapscrape"
-	"github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/memory"
-	"github.com/logrenant/goat-mcp/internal/project"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/search"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/mapscrape"
+	"github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/memory"
+	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/search"
 )
 
 type diagnosticsTool struct {
@@ -94,7 +94,7 @@ func (t *diagnosticsTool) Name() string {
 }
 
 func (t *diagnosticsTool) Description() string {
-	return "Checks the health of GOAT's dependencies (Crawl4AI, the claude CLI, DuckDuckGo, the optional Maps scrape sidecar) and reports system state."
+	return "Checks the health of Mimir's dependencies (Crawl4AI, the claude CLI, DuckDuckGo, the optional Maps scrape sidecar) and reports system state."
 }
 
 func (t *diagnosticsTool) InputSchema() json.RawMessage {

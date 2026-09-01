@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/mapscrape"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/mapscrape"
 )
 
 // This file is the only thing that can prove the extraction selectors still

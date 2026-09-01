@@ -10,7 +10,7 @@ import (
 func testEpisode(key string) EpisodeRow {
 	return EpisodeRow{
 		Key:          key,
-		ProjectPath:  "/work/goat",
+		ProjectPath:  "/work/demo",
 		SourceKind:   "claude_code",
 		SourcePath:   "/transcripts/a.jsonl",
 		SessionID:    "sess-1",
@@ -107,7 +107,7 @@ func TestPendingRecap_Selection(t *testing.T) {
 		}
 	}
 
-	got, err := s.PendingRecap(ctx, "/work/goat", "v1", 2, 10)
+	got, err := s.PendingRecap(ctx, "/work/demo", "v1", 2, 10)
 	if err != nil {
 		t.Fatalf("PendingRecap: %v", err)
 	}
@@ -121,13 +121,13 @@ func TestPendingRecap_Selection(t *testing.T) {
 	if err := s.UpdateRecap(ctx, "high", "t", "s", "v1"); err != nil {
 		t.Fatalf("UpdateRecap: %v", err)
 	}
-	got, _ = s.PendingRecap(ctx, "/work/goat", "v1", 2, 10)
+	got, _ = s.PendingRecap(ctx, "/work/demo", "v1", 2, 10)
 	if len(got) != 1 || got[0].Key != "low" {
 		t.Fatalf("a recapped episode should drop out of the pending set, got %+v", got)
 	}
 
 	// Bumping the prompt version makes every stored recap eligible again.
-	got, _ = s.PendingRecap(ctx, "/work/goat", "v2", 2, 10)
+	got, _ = s.PendingRecap(ctx, "/work/demo", "v2", 2, 10)
 	if len(got) != 2 {
 		t.Fatalf("a prompt-version bump must re-open recapped episodes, got %d", len(got))
 	}
@@ -142,7 +142,7 @@ func TestPendingRecap_RespectsAttemptCeiling(t *testing.T) {
 	}
 
 	for i := range 2 {
-		got, _ := s.PendingRecap(ctx, "/work/goat", "v1", 2, 10)
+		got, _ := s.PendingRecap(ctx, "/work/demo", "v1", 2, 10)
 		if len(got) != 1 {
 			t.Fatalf("attempt %d: want the episode still pending, got %d", i, len(got))
 		}
@@ -152,11 +152,11 @@ func TestPendingRecap_RespectsAttemptCeiling(t *testing.T) {
 		}
 	}
 
-	got, _ := s.PendingRecap(ctx, "/work/goat", "v1", 2, 10)
+	got, _ := s.PendingRecap(ctx, "/work/demo", "v1", 2, 10)
 	if len(got) != 0 {
 		t.Fatalf("want the episode retired after 2 attempts, got %d", len(got))
 	}
-	n, err := s.CountPendingRecap(ctx, "/work/goat", "v1", 2)
+	n, err := s.CountPendingRecap(ctx, "/work/demo", "v1", 2)
 	if err != nil || n != 0 {
 		t.Fatalf("CountPendingRecap: got %d err=%v, want 0", n, err)
 	}
@@ -182,7 +182,7 @@ func TestSearchEpisodes_FindsAndRanks(t *testing.T) {
 		t.Fatalf("UpdateRecap: %v", err)
 	}
 
-	got, err := s.SearchEpisodes(ctx, "/work/goat", "isolation gate", 10)
+	got, err := s.SearchEpisodes(ctx, "/work/demo", "isolation gate", 10)
 	if err != nil {
 		t.Fatalf("SearchEpisodes: %v", err)
 	}
@@ -191,9 +191,9 @@ func TestSearchEpisodes_FindsAndRanks(t *testing.T) {
 	}
 
 	// Another project's episode indexes the same path and must not leak.
-	got, _ = s.SearchEpisodes(ctx, "/work/goat", "finalize", 10)
+	got, _ = s.SearchEpisodes(ctx, "/work/demo", "finalize", 10)
 	for _, e := range got {
-		if e.ProjectPath != "/work/goat" {
+		if e.ProjectPath != "/work/demo" {
 			t.Fatalf("search leaked across projects: %+v", e)
 		}
 	}
@@ -211,17 +211,17 @@ func TestSearchEpisodes_ReindexesOnUpdate(t *testing.T) {
 	if err := s.UpdateRecap(ctx, "k1", "first", "places api is the primary source", "v1"); err != nil {
 		t.Fatalf("UpdateRecap: %v", err)
 	}
-	if got, _ := s.SearchEpisodes(ctx, "/work/goat", "primary", 10); len(got) != 1 {
+	if got, _ := s.SearchEpisodes(ctx, "/work/demo", "primary", 10); len(got) != 1 {
 		t.Fatalf("want a hit before the rewrite, got %d", len(got))
 	}
 
 	if err := s.UpdateRecap(ctx, "k1", "second", "scraping is the fallback", "v1"); err != nil {
 		t.Fatalf("UpdateRecap: %v", err)
 	}
-	if got, _ := s.SearchEpisodes(ctx, "/work/goat", "primary", 10); len(got) != 0 {
+	if got, _ := s.SearchEpisodes(ctx, "/work/demo", "primary", 10); len(got) != 0 {
 		t.Errorf("stale term still matches after a rewrite: %d hits", len(got))
 	}
-	if got, _ := s.SearchEpisodes(ctx, "/work/goat", "fallback", 10); len(got) != 1 {
+	if got, _ := s.SearchEpisodes(ctx, "/work/demo", "fallback", 10); len(got) != 1 {
 		t.Errorf("new term does not match after a rewrite")
 	}
 }
@@ -239,7 +239,7 @@ func TestSearchEpisodes_HostileQueriesDoNotError(t *testing.T) {
 		`"`, `*`, `OR`, `NEAR(a b)`, `foo AND (bar`, `-x`, `a:b`, `^`, ``, `   `,
 		`why did we pick "places" OR scraping? -- see internal/maps/*`,
 	} {
-		if _, err := s.SearchEpisodes(ctx, "/work/goat", q, 10); err != nil {
+		if _, err := s.SearchEpisodes(ctx, "/work/demo", q, 10); err != nil {
 			t.Errorf("SearchEpisodes(%q): %v, want a miss not an error", q, err)
 		}
 	}
@@ -271,9 +271,9 @@ func TestNotes_RoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	older := NoteRow{ID: "n1", ProjectPath: "/work/goat", Kind: "decision",
+	older := NoteRow{ID: "n1", ProjectPath: "/work/demo", Kind: "decision",
 		Text: "Places API is primary; scraping is fallback only.", CreatedAt: time.Unix(1700000000, 0)}
-	newer := NoteRow{ID: "n2", ProjectPath: "/work/goat", Kind: "trap",
+	newer := NoteRow{ID: "n2", ProjectPath: "/work/demo", Kind: "trap",
 		Text: "modernc sqlite needs unaliased FTS tables for MATCH.", CreatedAt: time.Unix(1700009999, 0)}
 	for _, n := range []NoteRow{older, newer} {
 		if err := s.PutNote(ctx, n); err != nil {
@@ -281,11 +281,11 @@ func TestNotes_RoundTrip(t *testing.T) {
 		}
 	}
 	// Blank text is not a note.
-	if err := s.PutNote(ctx, NoteRow{ID: "n3", ProjectPath: "/work/goat", Text: "   "}); err != nil {
+	if err := s.PutNote(ctx, NoteRow{ID: "n3", ProjectPath: "/work/demo", Text: "   "}); err != nil {
 		t.Fatalf("PutNote(blank): %v", err)
 	}
 
-	got, err := s.ListNotes(ctx, "/work/goat", 10)
+	got, err := s.ListNotes(ctx, "/work/demo", 10)
 	if err != nil {
 		t.Fatalf("ListNotes: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestIngestState_RoundTripAndMiss(t *testing.T) {
 		t.Fatalf("unknown file: ok=%v err=%v, want a miss and no error", ok, err)
 	}
 
-	want := IngestState{SourcePath: "/t/a.jsonl", ProjectPath: "/work/goat", ByteOffset: 4096, SizeSeen: 8192}
+	want := IngestState{SourcePath: "/t/a.jsonl", ProjectPath: "/work/demo", ByteOffset: 4096, SizeSeen: 8192}
 	if err := s.PutIngestState(ctx, want); err != nil {
 		t.Fatalf("PutIngestState: %v", err)
 	}
@@ -342,11 +342,11 @@ func TestMemoryStats(t *testing.T) {
 	if err := s.UpdateRecap(ctx, "a", "t", "s", "v1"); err != nil {
 		t.Fatalf("UpdateRecap: %v", err)
 	}
-	if err := s.PutNote(ctx, NoteRow{ID: "n1", ProjectPath: "/work/goat", Kind: "decision", Text: "x"}); err != nil {
+	if err := s.PutNote(ctx, NoteRow{ID: "n1", ProjectPath: "/work/demo", Kind: "decision", Text: "x"}); err != nil {
 		t.Fatalf("PutNote: %v", err)
 	}
 
-	st, err := s.MemoryStats(ctx, "/work/goat")
+	st, err := s.MemoryStats(ctx, "/work/demo")
 	if err != nil {
 		t.Fatalf("MemoryStats: %v", err)
 	}
@@ -432,11 +432,11 @@ func TestOpen_IsIdempotentWithMemorySchema(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s2.Close() })
 
-	got, err := s2.RecentEpisodes(ctx, "/work/goat", 10)
+	got, err := s2.RecentEpisodes(ctx, "/work/demo", 10)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("episode did not survive a reopen: %d rows, err=%v", len(got), err)
 	}
-	if hits, _ := s2.SearchEpisodes(ctx, "/work/goat", "finalize", 10); len(hits) != 1 {
+	if hits, _ := s2.SearchEpisodes(ctx, "/work/demo", "finalize", 10); len(hits) != 1 {
 		t.Fatalf("fts index did not survive a reopen: %d hits", len(hits))
 	}
 }

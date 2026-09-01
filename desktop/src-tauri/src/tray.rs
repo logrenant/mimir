@@ -1,6 +1,6 @@
 //! The menu-bar item.
 //!
-//! GOAT lives in the menu bar, not the Dock: the daemon runs whether or not a
+//! Mimir lives in the menu bar, not the Dock: the daemon runs whether or not a
 //! window is open, so a Dock icon would suggest a lifetime the app no longer
 //! has. The tray is therefore the app's only permanent surface — a status line
 //! that says whether the daemon is answering, the way into a quick task, and
@@ -23,7 +23,7 @@ use crate::quick;
 
 /// Matches `app.trayIcon.id` in tauri.conf.json, which is where the icon and
 /// its template flag are declared.
-const TRAY_ID: &str = "goat-tray";
+const TRAY_ID: &str = "mimir-tray";
 /// How often the status line is refreshed. Slow on purpose: it is a
 /// reassurance line, not a monitor, and each tick is an HTTP call.
 const STATUS_INTERVAL: Duration = Duration::from_secs(30);
@@ -51,11 +51,11 @@ pub struct TrayItems {
 fn autostart_marker() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
     std::path::PathBuf::from(home)
-        .join("Library/Application Support/goat-mcp")
+        .join("Library/Application Support/mimir")
         .join(".autostart-initialized")
 }
 
-/// Registers GOAT as a login item the first time it runs.
+/// Registers Mimir as a login item the first time it runs.
 ///
 /// The daemon already comes back at login; a menu-bar app that did not would
 /// leave the operator with a running system and no way into it. Done once, and
@@ -77,12 +77,12 @@ pub fn enable_autostart_on_first_launch(app: &AppHandle) {
 }
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
-    let status = MenuItem::with_id(app, ID_STATUS, "GOAT — connecting…", false, None::<&str>)?;
+    let status = MenuItem::with_id(app, ID_STATUS, "Mimir — connecting…", false, None::<&str>)?;
     let new_task = MenuItem::with_id(app, ID_NEW_TASK, "New task…", true, Some("Cmd+Shift+G"))?;
-    let open = MenuItem::with_id(app, ID_OPEN, "Open GOAT", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, ID_OPEN, "Open Mimir", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, ID_RESTART, "Restart daemon", true, None::<&str>)?;
     let autostart = MenuItem::with_id(app, ID_AUTOSTART, autostart_label(app), true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, ID_QUIT, "Quit GOAT", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, ID_QUIT, "Quit Mimir", true, None::<&str>)?;
 
     let menu = Menu::with_items(
         app,
@@ -130,8 +130,8 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 
 fn autostart_label(app: &AppHandle) -> &'static str {
     match app.autolaunch().is_enabled() {
-        Ok(true) => "✓ Start GOAT at login",
-        _ => "Start GOAT at login",
+        Ok(true) => "✓ Start Mimir at login",
+        _ => "Start Mimir at login",
     }
 }
 
@@ -163,11 +163,11 @@ fn spawn_status_poll(app: AppHandle) {
     std::thread::spawn(move || loop {
         let text = match daemon::status_snapshot(&app) {
             Status::Ready(endpoint) => match daemon::health_version(&endpoint) {
-                Some(version) => format!("GOAT — daemon ok (v{version})"),
-                None => "GOAT — daemon not answering".to_string(),
+                Some(version) => format!("Mimir — daemon ok (v{version})"),
+                None => "Mimir — daemon not answering".to_string(),
             },
-            Status::Starting => "GOAT — connecting…".to_string(),
-            Status::Failed { .. } => "GOAT — daemon unavailable".to_string(),
+            Status::Starting => "Mimir — connecting…".to_string(),
+            Status::Failed { .. } => "Mimir — daemon unavailable".to_string(),
         };
 
         if let Some(item) = app

@@ -6,8 +6,8 @@ import (
 
 func TestMergeResults_Dedup(t *testing.T) {
 	pages := []RefinedPage{
-		{URL: "u1", Title: "t1", Markdown: "- the goat is a farm animal\n- goats eat grass"},
-		{URL: "u2", Title: "t2", Markdown: "- The Goat is a farm animal\n- they climb mountains\n* GOATS EAT GRASS"},
+		{URL: "u1", Title: "t1", Markdown: "- the alpaca is a farm animal\n- alpacas eat grass"},
+		{URL: "u2", Title: "t2", Markdown: "- The Alpaca is a farm animal\n- they climb mountains\n* ALPACAS EAT GRASS"},
 	}
 
 	brief := mergeResults(pages, nil, 1000)
@@ -18,7 +18,7 @@ func TestMergeResults_Dedup(t *testing.T) {
 	}
 
 	// first occurrence preserved
-	if brief.KeyPoints[0] != "- the goat is a farm animal" {
+	if brief.KeyPoints[0] != "- the alpaca is a farm animal" {
 		t.Errorf("unexpected point 0: %q", brief.KeyPoints[0])
 	}
 }

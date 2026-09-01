@@ -1,4 +1,4 @@
-// Package store provides the local SQLite persistence layer for goat-mcp.
+// Package store provides the local SQLite persistence layer for mimir-mcp.
 //
 // It exists to stop the process paying twice for work it has already done:
 // a crawl already fetched, or a refine already distilled by the `claude` CLI.
@@ -22,7 +22,7 @@ import (
 	// Pure-Go SQLite driver: no CGO, so `make release` keeps cross-compiling.
 	_ "modernc.org/sqlite"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 //go:embed migrations/*.sql
@@ -39,7 +39,7 @@ type Store struct {
 }
 
 func unavailable(cause error) error {
-	return fmt.Errorf("%w: %v — goat-mcp runs without a cache until the store path is writable", ErrStoreUnavailable, cause)
+	return fmt.Errorf("%w: %v — mimir-mcp runs without a cache until the store path is writable", ErrStoreUnavailable, cause)
 }
 
 // Open opens (creating if needed) the database at cfg.StorePath and applies
@@ -55,7 +55,7 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 		}
 	}
 
-	// WAL lets the short-lived goat-mcp process and a long-running reader share
+	// WAL lets the short-lived mimir-mcp process and a long-running reader share
 	// the file; busy_timeout absorbs the brief write contention that follows.
 	dsn := cfg.StorePath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)

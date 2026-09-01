@@ -1,12 +1,12 @@
-# ARCHITECTURE.md — GOAT
+# ARCHITECTURE.md — Mimir
 
 Reference for the design. Rules live in [`AGENT_RULES.md`](AGENT_RULES.md); this
 file explains the shape so task implementations are not guesswork.
 
 The repo is built in two tracks (see [`ROADMAP.md`](ROADMAP.md)). §1–§6 below
-describe **Track A** — the research MCP server, `bin/goat-mcp`, shipped and
-stable. §7 describes **Track B** — the GOAT product built on top of it:
-`bin/goat-daemon`, the `internal/{store,project,coderunner,events,api,maps,
+describe **Track A** — the research MCP server, `bin/mimir-mcp`, shipped and
+stable. §7 describes **Track B** — the Mimir product built on top of it:
+`bin/mimir-daemon`, the `internal/{store,project,coderunner,events,api,maps,
 mapscrape,leadgen}` packages, and the Tauri desktop app. Track B extends this
 foundation; it does not replace it.
 
@@ -14,7 +14,7 @@ foundation; it does not replace it.
 
 ## 1. One process, stdio MCP (Track A)
 
-`bin/goat-mcp` is a single macOS binary launched by the end-user's Claude Code as
+`bin/mimir-mcp` is a single macOS binary launched by the end-user's Claude Code as
 an MCP server over **stdio**. It has no HTTP server, no daemon, and no persisted
 state of its own — a repeat query is served from the SQLite cache (`internal/store`,
 Track B / M1) when one is present, and uncached otherwise.
@@ -24,9 +24,9 @@ Claude Code (consumer)
    │  MCP / stdio (JSON-RPC frames on stdout/stdin)
    ▼
 ┌──────────────────────────────────────────────────────────┐
-│ goat-mcp                                                  │
+│ mimir-mcp                                                  │
 │                                                          │
-│  cmd/goat-mcp  ── wiring + lifecycle only                 │
+│  cmd/mimir-mcp  ── wiring + lifecycle only                 │
 │      │                                                    │
 │  internal/mcp ── transport, tool registry, schemas,       │
 │      │           error mapping, response choke-point      │
@@ -54,7 +54,7 @@ Claude Code (consumer)
 
 | Package | Responsibility | Must not |
 |---------|----------------|----------|
-| `cmd/goat-mcp` | build `Config`, construct clients, register tools, start MCP server, handle SIGINT/SIGTERM → context cancel | contain business logic or external calls |
+| `cmd/mimir-mcp` | build `Config`, construct clients, register tools, start MCP server, handle SIGINT/SIGTERM → context cancel | contain business logic or external calls |
 | `internal/config` | `Load() Config`; all constants; enumerated test-only env overrides | expose setters / read a config file / parse flags |
 | `internal/mcp` | wrap the MCP Go SDK, stdio transport, `Tool` interface, JSON-schema registration, panic recovery, error mapping, the SD-2/SD-7 response choke-point | call DDG/Crawl4AI/`claude` directly |
 | `internal/search` | DuckDuckGo free search (`html.duckduckgo.com/html/`, fallback `lite.duckduckgo.com/lite/`); parse to `[]Result{Title,URL,Snippet}`; polite rate-limit + backoff | use a paid API or an API key |
@@ -138,7 +138,7 @@ OpenGraph helpers). Those tools return small structured facts and skip
 | `fetch_page` | `url: string` | `{ url, title, refined: true, markdown }` | ~1500 tokens |
 | `research` | `query: string`, `depth?: int (≤ TopNForResearch)` | `{ summary, key_points: [], sources: [{n, title, url}], gaps: [], refined: true }` | ~2000 tokens |
 | `diagnostics` | none | `{ crawl4ai: {ok, detail}, claude: {ok, detail}, duckduckgo: {ok, detail}, maps_scraper: {ok, detail, optional}, versions: {…} }` | small, fixed |
-| `maps_search` | `query: string`, `count?: int (≤60)`, `language_code?`, `region_code?`, `near?: {lat, lng, radius_meters}` | `{ query, returned, total_found, truncated, companies: [{place_id, name, address, …}] }` | ~2000 tokens; **billed** — registered only when `GOAT_GOOGLE_PLACES_API_KEY` is set |
+| `maps_search` | `query: string`, `count?: int (≤60)`, `language_code?`, `region_code?`, `near?: {lat, lng, radius_meters}` | `{ query, returned, total_found, truncated, companies: [{place_id, name, address, …}] }` | ~2000 tokens; **billed** — registered only when `MIMIR_GOOGLE_PLACES_API_KEY` is set |
 | Stage F: `ecommerce_product_lookup`, `tiktok_profile_lookup`, `gmaps_business_lookup`, `instagram_profile_lookup` | one URL / handle each | small structured facts, no prose | 300–400 tokens; no refine call |
 
 Track A's remaining planned tools are named (no schemas yet) in
@@ -146,7 +146,7 @@ Track A's remaining planned tools are named (no schemas yet) in
 
 ---
 
-## 7. Track B — the GOAT product (M1–M7 shipped)
+## 7. Track B — the Mimir product (M1–M7 shipped)
 
 Track A is a capability. Track B is the desktop product that consumes it: a
 local store, a folder-scoped coding-task runner with live streaming, and a
@@ -155,15 +155,15 @@ Google Maps lead-generation pipeline, all behind a Tauri app.
 ### 7.1 Two binaries, one engine
 
 ```
-                                          launchd  (com.goat.daemon: at login, KeepAlive)
-                                              │ GOAT_DAEMON_PORT + GOAT_DAEMON_TOKEN + PATH
+                                          launchd  (studio.mimir.daemon: at login, KeepAlive)
+                                              │ MIMIR_DAEMON_PORT + MIMIR_DAEMON_TOKEN + PATH
   Claude Code (MCP client)                    ▼
-        │ stdio                         cmd/goat-daemon  ◀── endpoint.json (0600)
+        │ stdio                         cmd/mimir-daemon  ◀── endpoint.json (0600)
         ▼                                → internal/mcp (StreamableHTTPHandler on /mcp)     │
-  cmd/goat-mcp                            → internal/api (REST + /ws + /maps/*)             │
+  cmd/mimir-mcp                            → internal/api (REST + /ws + /maps/*)             │
    → internal/mcp (stdio)                       ▲                                          │
                                                 │ REST via Rust shell · WebSocket           │
-                                          GOAT.app (menu-bar, no Dock) ────────────────────-┘
+                                          Mimir.app (menu-bar, no Dock) ────────────────────-┘
                                             main window · quick window (⌘⇧G)
         └──────────────┬──────────────────────────┘
                        ▼   both import the same packages — one runtime engine
@@ -178,8 +178,8 @@ token launchd was given from `endpoint.json` and attaches. With no endpoint file
 the parent itself, reserving a port and minting a per-launch token. Exactly one
 of the two is ever live: two daemons would contend for the store's write lock.
 
-`cmd/goat-mcp` is unchanged: a thin stdio entrypoint whose lifetime an MCP
-client owns. `cmd/goat-daemon` is the only new orchestration surface — it owns
+`cmd/mimir-mcp` is unchanged: a thin stdio entrypoint whose lifetime an MCP
+client owns. `cmd/mimir-daemon` is the only new orchestration surface — it owns
 the coding-task runner, the event bus, and the Maps pipeline, and re-exposes the
 same `internal/mcp.Registry` over HTTP for parity. Exactly one runtime engine,
 two transports (the direct fix for goat v1's dual DAG/kanban orchestrators).
@@ -188,7 +188,7 @@ two transports (the direct fix for goat v1's dual DAG/kanban orchestrators).
 
 | Package | Responsibility | Must not |
 |---------|----------------|----------|
-| `cmd/goat-daemon` | `ValidateDaemon`; open the store (fatal if it cannot — projects *are* the store); build the runtime engine; serve `internal/api` until SIGTERM, then drain in-flight runs | scrape its own stdout; start unauthenticated |
+| `cmd/mimir-daemon` | `ValidateDaemon`; open the store (fatal if it cannot — projects *are* the store); build the runtime engine; serve `internal/api` until SIGTERM, then drain in-flight runs | scrape its own stdout; start unauthenticated |
 | `internal/store` | SQLite (`modernc.org/sqlite`, no CGO), WAL; append-only embedded migrations; caches + local records: `crawl_pages`, `refined_pages`, `projects`, `coding_runs`, `companies`, `region_searches`, `company_categorization`, `category_gap_analysis`, `outreach_emails`, and the M8 memory tables (`memory_episodes`, `memory_notes`, `memory_ingest_state`, `memory_fts`) | be a source of truth the consumer sees; fail the process on a bad DB (SD-6) |
 | `internal/project` | folder registry; canonicalize (`Abs`+`EvalSymlinks`), reject `/`, `$HOME`, denylisted roots; opaque `project_id` after registration — no default project, ever | accept or re-join a raw path anywhere but registration |
 | `internal/coderunner` | scoped streaming `claude` sessions: `-p --output-format stream-json`, `cmd.Dir` + `--add-dir` = project path, fixed `--permission-mode`; incremental parse → typed events; JSONL transcript + `coding_runs` row | hand-roll a tool loop; derive a run's context from the request |
@@ -279,9 +279,9 @@ from the first pass, before a single model call. Phase 2 spends at most
 `MemoryIngestBatch` calls and yields, so an interrupted backfill loses one batch
 rather than a session's worth of work.
 
-**Who runs it.** `goat-daemon` runs `Memory.Run` for its lifetime — catching up
+**Who runs it.** `mimir-daemon` runs `Memory.Run` for its lifetime — catching up
 first, then ticking on `MemoryIngestInterval` — and re-lists projects each pass
-so one registered after start-up is picked up without a restart. `goat-mcp` is a
+so one registered after start-up is picked up without a restart. `mimir-mcp` is a
 short-lived stdio process with no daemon behind it, so its memory tools fold a
 small `MemoryLazyCatchup` ingest into each read; phase 1 being free is what keeps
 that honest.
@@ -298,22 +298,22 @@ needs.
 
 Tauri (Rust shell) + React + shadcn/ui + Tailwind, macOS/ARM64. A **menu-bar
 app**: accessory activation policy (no Dock icon), a tray item carrying the
-daemon's live status, `New task…`, `Open GOAT`, `Restart daemon`, a login-item
-toggle, and `Quit GOAT` — which quits the app and leaves the daemon running.
+daemon's live status, `New task…`, `Open Mimir`, `Restart daemon`, a login-item
+toggle, and `Quit Mimir` — which quits the app and leaves the daemon running.
 Closing a window hides it.
 
 The shell finds the daemon rather than assuming it owns one: it reads
 `endpoint.json` (refusing it if it is not `0600`, or if `base_url` is not
 loopback) and attaches, asking `launchctl kickstart -k` for a restart if that
 daemon is not answering. Only when there is no endpoint file does it spawn
-`goat-daemon` itself — binding `127.0.0.1:0`, reading and dropping the port,
+`mimir-daemon` itself — binding `127.0.0.1:0`, reading and dropping the port,
 minting a 32-byte per-launch token, and passing exactly two env vars
-(`GOAT_DAEMON_PORT`, `GOAT_DAEMON_TOKEN`). The WebView never parses subprocess
+(`MIMIR_DAEMON_PORT`, `MIMIR_DAEMON_TOKEN`). The WebView never parses subprocess
 output. **REST goes through Rust** (`daemon_request`), because a cross-origin
 `fetch` carrying `Authorization` is preflighted and the daemon answers `OPTIONS`
 with 401 by design — so the token stays out of the WebView for every REST path.
 The one exception is the run WebSocket, whose handshake is preflight-exempt and
-which carries the token as `Sec-WebSocket-Protocol: goat.bearer.<token>`.
+which carries the token as `Sec-WebSocket-Protocol: mimir.bearer.<token>`.
 
 Two windows over one bundle, told apart by window label. **Main**: `Connection`
 (the handshake) → `Dashboard`, whose sidebar switches between `Workspace`
@@ -326,8 +326,8 @@ watching.
 
 ### 7.6 The operator-provisioned credential
 
-`GOAT_GOOGLE_PLACES_API_KEY` is the single exception to `docs/SECURITY.md`'s
-"zero API keys configured by GOAT itself" stance — narrow, documented, and read
+`MIMIR_GOOGLE_PLACES_API_KEY` is the single exception to `docs/SECURITY.md`'s
+"zero API keys configured by Mimir itself" stance — narrow, documented, and read
 once at startup in `config.Load`. It decides *whether* the Places provider is
 reachable, never what the process does with a request. Empty is a normal
 install: `maps_search` and the `/maps/*` routes are simply not offered.

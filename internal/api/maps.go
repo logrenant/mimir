@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/logrenant/goat-mcp/internal/leadgen"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/leadgen"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // nearArg is the optional location-bias circle, matching the maps_search tool's

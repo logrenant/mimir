@@ -1,4 +1,4 @@
-# ROADMAP.md — GOAT
+# ROADMAP.md — Mimir
 
 The single roadmap for this repository. It merges what used to be two documents
 (`docs/ROADMAP.md` and `docs/PHASE2_ROADMAP.md`), which described two different
@@ -9,7 +9,7 @@ resolved here: the word *phase* is gone from the top level. There are two
 | Track | What it is | State |
 |---|---|---|
 | **[Track A](#track-a--the-research-mcp-capability)** | The research MCP server: search, scrape, refine, return compact results to a Claude Code session | MVP + Stage F **shipped**; A.3/A.4 parked |
-| **[Track B](#track-b--goat-desktop--agent-orchestration)** | The GOAT product built on top of it: local store, coding-task runner, live streaming, Maps lead-gen, desktop app, project memory | **M1–M8 shipped** |
+| **[Track B](#track-b--mimir-desktop--agent-orchestration)** | The Mimir product built on top of it: local store, coding-task runner, live streaming, Maps lead-gen, desktop app, project memory | **M1–M8 shipped** |
 
 Track A is a capability. Track B is the product that consumes it. **Both tracks
 are shipped through their planned milestones** (Track A MVP + Stage F; Track B
@@ -116,7 +116,7 @@ Supporting components still unbuilt:
 
 ---
 
-# Track B — GOAT desktop & agent orchestration
+# Track B — Mimir desktop & agent orchestration
 
 Status: **M1 through M7 done.** M6 landed gap analysis (task-30), outreach
 drafting (task-33), the stages-1–4 `Pipeline` orchestrator + `/maps/*` routes
@@ -126,7 +126,8 @@ the Tauri signing/notarization scaffolding.
 
 ## B.0 Why, and what this replaces
 
-The owner has a first version of this tool, `goat` (Node/Electron + an abandoned
+The owner has a first version of this tool, `goat` — the retired predecessor,
+named before the Mimir rebrand — (Node/Electron + an abandoned
 SwiftUI rewrite, `GoatNative/`), that they no longer want to build on. It got
 into a genuinely bad state:
 
@@ -146,7 +147,7 @@ into a genuinely bad state:
   it into typed events for a live "thinking" panel over SSE. That pattern is the
   one piece of v1 this plan ports forward.
 
-This repo (`goat-remastered`) is a clean-room build that already avoids most of
+This repo (`mimir`) is a clean-room build that already avoids most of
 that: constants-only config (SD-1), a fail-closed context-isolation choke-point
 (SD-2/SD-7, `internal/mcp/finalize.go`), bounded/cancellable concurrency (SD-3),
 typed sentinel errors (SD-6), tests on every task (SD-8). It also already
@@ -175,7 +176,7 @@ local `claude` CLI, no Anthropic SDK, no API key, no Ollama.
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
 │ DESKTOP APP LAYER  (desktop/, Tauri + React + shadcn/ui)                  │
-│  - Rust shell (src-tauri): spawns/owns goat-daemon as a sidecar process,  │
+│  - Rust shell (src-tauri): spawns/owns mimir-daemon as a sidecar process,  │
 │    allocates its port + a per-launch bearer token, exposes both to JS via │
 │    Tauri IPC (never stdout-scraped — see B.2.1), hosts the native folder  │
 │    picker (plugin-dialog → NSOpenPanel)                                  │
@@ -186,9 +187,9 @@ local `claude` CLI, no Anthropic SDK, no API key, no Ollama.
                  ▼                                  ▼
 ┌───────────────────────────────────────────────────────────────────────────┐
 │ TRANSPORT LAYER                                                            │
-│  cmd/goat-mcp (existing, untouched entrypoint)                            │
+│  cmd/mimir-mcp (existing, untouched entrypoint)                            │
 │    → internal/mcp.Server + mcp.StdioTransport   (Claude-Code-as-consumer) │
-│  cmd/goat-daemon (long-running, spawned by Tauri)                         │
+│  cmd/mimir-daemon (long-running, spawned by Tauri)                         │
 │    → internal/mcp.Server + mcp.StreamableHTTPHandler on the SAME          │
 │      internal/mcp.Registry tool set (reuses finalize.go verbatim)        │
 │    → internal/api: REST+WS for non-tool-shaped surfaces:                  │
@@ -221,8 +222,8 @@ local `claude` CLI, no Anthropic SDK, no API key, no Ollama.
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Why two binaries, one engine — not two orchestrators.** `cmd/goat-mcp` stays a
-thin stdio entrypoint whose lifecycle Claude Code owns. `cmd/goat-daemon` is the
+**Why two binaries, one engine — not two orchestrators.** `cmd/mimir-mcp` stays a
+thin stdio entrypoint whose lifecycle Claude Code owns. `cmd/mimir-daemon` is the
 *only* new orchestration surface — it owns the coding-task runner, event bus,
 and Maps pipeline, and re-exposes the same `internal/mcp.Registry` tools over
 HTTP for parity. This is the direct fix for goat v1's dual-orchestrator mistake:
@@ -237,8 +238,8 @@ Go.
    runs `claude -p --output-format stream-json --verbose --model <const>
    --permission-mode <const> --add-dir <project.Path> --mcp-config <tmpfile>`
    with `cmd.Dir = project.Path`. The `--mcp-config` tmpfile names the existing
-   `goat-mcp` binary as a nested MCP server, so the coding agent calls back into
-   goat's own tools instead of its own web access (requirement 2 on the
+   `mimir-mcp` binary as a nested MCP server, so the coding agent calls back into
+   Mimir's own tools instead of its own web access (requirement 2 on the
    coding-task path).
 2. **Incremental parse.** A goroutine reads `cmd.StdoutPipe()` line-by-line
    (`bufio.Scanner`); a per-run state struct tracks block ids and cumulative
@@ -256,7 +257,7 @@ Go.
    collapsible shadcn cards with a risk badge.
 
 **Local IPC:** Tauri's Rust shell allocates the port, generates a per-launch
-random bearer token, and passes both to `goat-daemon` via flags/env it controls.
+random bearer token, and passes both to `mimir-daemon` via flags/env it controls.
 The frontend asks Tauri's own IPC (`invoke('get_daemon_endpoint')`), never
 parses subprocess text. The daemon binds `127.0.0.1` only and rejects
 unauthenticated requests. (M3 correction: REST calls are made from Rust, not the
@@ -267,7 +268,7 @@ preflight, so its subprotocol auth is unaffected.)
 ## B.3 Local persistence / cache (`internal/store`)
 
 **Engine:** SQLite via `modernc.org/sqlite` (pure Go, no CGO).
-`PRAGMA journal_mode=WAL` + `busy_timeout` so `goat-mcp` and `goat-daemon` share
+`PRAGMA journal_mode=WAL` + `busy_timeout` so `mimir-mcp` and `mimir-daemon` share
 one DB file safely. Migrations: embedded `.sql` files run once via `embed.FS`,
 append-only.
 
@@ -344,8 +345,8 @@ Carry-forward notes:
 
 - **M2** — the stream schema was captured from the live CLI (v2.1.251), not
   assumed from goat v1: it has events the old code never saw (`rate_limit_event`,
-  `system/thinking_tokens`) and uses `system/subtype:init` as run-start. goat
-  v1's delta tracking was broken (one text-length counter per *run*; the CLI
+  `system/thinking_tokens`) and uses `system/subtype:init` as run-start. goat v1's
+  delta tracking was broken (one text-length counter per *run*; the CLI
   restarts each message at zero) — tracking is now per `message.id`,
   mutation-verified. The daemon's listen address and auth token are process
   plumbing, parent-provided — documented in `internal/config/AGENTS.md`, not an
@@ -354,9 +355,9 @@ Carry-forward notes:
   `Authorization` `fetch` → 401 on the CORS-header-less `OPTIONS`). The shell
   performs REST from Rust instead, which also keeps the token out of the WebView.
 - **M4** — **credential decision:** a narrow, documented exception to
-  `docs/SECURITY.md`'s "zero API keys configured by GOAT-MCP itself" for the
+  `docs/SECURITY.md`'s "zero API keys configured by Mimir itself" for the
   operator-provisioned Places key — read once at startup from
-  `GOAT_GOOGLE_PLACES_API_KEY`, never runtime-tunable, documented in
+  `MIMIR_GOOGLE_PLACES_API_KEY`, never runtime-tunable, documented in
   `internal/config/AGENTS.md` under "operator-provisioned credential".
 - **M5** — `internal/mapscrape` takes/returns the same types as the Places
   client (drop-in fallback), with ids namespaced so a scraped row can never
@@ -385,7 +386,7 @@ The Maps pipeline end to end, surfaced in the app.
   fan-out, `ErrNoData` the only hard failure), `internal/api` (extended —
   `POST /maps/leadgen`, `POST /maps/emails/status`, registered only with a
   Places key), `internal/tools` (`Deps.Maps` shares one Places client),
-  `cmd/goat-daemon` (wiring), `internal/config` (`LeadgenRegionTTL`).
+  `cmd/mimir-daemon` (wiring), `internal/config` (`LeadgenRegionTTL`).
 - **UI (`task-31`, done).** `desktop/src/screens/Leadgen.tsx` — a third screen
   beside `Connection` and `Workspace`, tab-switched in `App.tsx`: the region
   search form, per-category gap analysis cards, and a company list with an
@@ -431,14 +432,14 @@ file.
 **Reused as-is:** `internal/mcp` (Tool interface, Registry, `finalize.go`
 choke-point, logging, `StreamableHTTPHandler` from go-sdk v1.7.0);
 `internal/search`; `internal/crawl`; the exec/parse/clamp machinery in
-`internal/refine`; `cmd/goat-mcp` as an entrypoint.
+`internal/refine`; `cmd/mimir-mcp` as an entrypoint.
 
 **Extended:** `internal/pipeline` (store lookups before crawl/refine);
 `internal/refine` (Maps prompt profiles); `internal/config` (new constants —
 same constants-only pattern, no new user-tunable knobs); `docs/*` (sync pass).
 
 **Net-new:** `internal/store` ✅, `internal/project` ✅, `internal/coderunner` ✅,
-`internal/events` ✅, `internal/api` ✅, `cmd/goat-daemon` ✅, `internal/maps` ✅,
+`internal/events` ✅, `internal/api` ✅, `cmd/mimir-daemon` ✅, `internal/maps` ✅,
 `internal/mapscrape` ✅, `internal/leadgen` ✅ (stages 2–4 + `Pipeline`
 orchestrator done), `deploy/playwright-maps/` ✅, `desktop/` ✅ (lead-gen screen
 shipped — task-31).
@@ -461,7 +462,7 @@ was explicitly **not** ported is its mechanism. See §B.9.
 **Leave behind:** the hand-rolled tool-calling loop; the dual DAG/kanban
 orchestration split; whole-disk default file access (no default project, ever);
 the disconnected `gmaps-scraper.js` script; vendoring an unrelated project's
-files into the repo for RAG indexing; the `GOAT_PORT=<n>` stdout-scrape IPC hack.
+files into the repo for RAG indexing; the `MIMIR_PORT=<n>` stdout-scrape IPC hack.
 
 ---
 

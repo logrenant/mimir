@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/coderunner"
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/project"
+	"github.com/logrenant/mimir/internal/coderunner"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/project"
 	"go.uber.org/goleak"
 )
 

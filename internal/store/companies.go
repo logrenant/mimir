@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/maps"
+	"github.com/logrenant/mimir/internal/maps"
 )
 
 // companyColumns is the single column list every company read shares, so a

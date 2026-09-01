@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	"github.com/logrenant/goat-mcp/internal/ecommerce"
-	"github.com/logrenant/goat-mcp/internal/mcp"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/ecommerce"
+	"github.com/logrenant/mimir/internal/mcp"
 )
 
 // RawFetcher is the narrow interface every free-scraper tool (ecommerce,

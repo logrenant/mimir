@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/crawl"
-	goatmcp "github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/pipeline"
-	"github.com/logrenant/goat-mcp/internal/refine"
-	"github.com/logrenant/goat-mcp/internal/search"
-	"github.com/logrenant/goat-mcp/internal/tools"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/crawl"
+	mimirmcp "github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/pipeline"
+	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/tools"
 )
 
 type mockSearcher struct{}
@@ -97,7 +97,7 @@ func TestLogging_StdoutEmpty_StderrContainsFields(t *testing.T) {
 	researchTool := tools.NewResearch(pipe, cfg)
 
 	var buf bytes.Buffer
-	goatmcp.InitLogging(&buf)
+	mimirmcp.InitLogging(&buf)
 
 	// SD-4: capture the real os.Stdout for the duration of the tool calls and
 	// assert not a single byte lands there — protocol frames are the only thing
@@ -115,17 +115,17 @@ func TestLogging_StdoutEmpty_StderrContainsFields(t *testing.T) {
 	}()
 
 	// Run diagnostics and research tools to generate logs
-	ctx1 := goatmcp.WithLogger(context.Background(), 123, "diagnostics")
-	goatmcp.LogToolStart(ctx1)
+	ctx1 := mimirmcp.WithLogger(context.Background(), 123, "diagnostics")
+	mimirmcp.LogToolStart(ctx1)
 	start1 := time.Now()
 	_, _ = diagTool.Handle(ctx1, json.RawMessage(`{}`))
-	goatmcp.LogToolEnd(ctx1, time.Since(start1).Milliseconds(), nil)
+	mimirmcp.LogToolEnd(ctx1, time.Since(start1).Milliseconds(), nil)
 
-	ctx2 := goatmcp.WithLogger(context.Background(), 456, "research")
-	goatmcp.LogToolStart(ctx2)
+	ctx2 := mimirmcp.WithLogger(context.Background(), 456, "research")
+	mimirmcp.LogToolStart(ctx2)
 	start2 := time.Now()
 	_, err = researchTool.Handle(ctx2, json.RawMessage(`{"query":"test"}`))
-	goatmcp.LogToolEnd(ctx2, time.Since(start2).Milliseconds(), err)
+	mimirmcp.LogToolEnd(ctx2, time.Since(start2).Milliseconds(), err)
 
 	_ = pw.Close()
 	os.Stdout = origStdout

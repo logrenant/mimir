@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/coderunner"
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/project"
+	"github.com/logrenant/mimir/internal/coderunner"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/project"
 )
 
 // Error codes. Wire strings — the desktop app switches on them.
@@ -83,13 +83,13 @@ func (s *Server) guardLoopback(next http.Handler) http.Handler {
 }
 
 // bearerSubprotocol is how a browser presents the token on a WebSocket
-// upgrade: `new WebSocket(url, ["goat.bearer." + token])`.
+// upgrade: `new WebSocket(url, ["mimir.bearer." + token])`.
 //
 // The native WebSocket API cannot set an Authorization header, and the usual
 // workaround — a query parameter — is wrong for a credential that starts
 // coding sessions: URLs end up in access logs, history, and referrers. The
 // subprotocol list is a request header, so it does not.
-const bearerSubprotocol = "goat.bearer."
+const bearerSubprotocol = "mimir.bearer."
 
 // presentedToken extracts the token a request is offering, from either the
 // Authorization header (every normal client) or the WebSocket subprotocol list

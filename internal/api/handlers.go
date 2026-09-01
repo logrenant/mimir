@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/coderunner"
-	goatmcp "github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/project"
-	"github.com/logrenant/goat-mcp/internal/store"
+	"github.com/logrenant/mimir/internal/coderunner"
+	mimirmcp "github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // decodeJSON reads a request body into v, rejecting anything unexpected rather
@@ -35,7 +35,7 @@ type healthzResponse struct {
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, healthzResponse{
 		OK:       true,
-		Version:  goatmcp.Version,
+		Version:  mimirmcp.Version,
 		UptimeMs: time.Since(s.started).Milliseconds(),
 	})
 }
@@ -61,7 +61,7 @@ type diagnosticsResponse struct {
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	health := daemonHealth{
 		OK:               true,
-		Version:          goatmcp.Version,
+		Version:          mimirmcp.Version,
 		UptimeMs:         time.Since(s.started).Milliseconds(),
 		Store:            "ok",
 		PlacesConfigured: s.cfg.PlacesAPIKey != "",

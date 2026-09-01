@@ -7,7 +7,7 @@ import (
 )
 
 // Field clamps for the outreach-email prompt. BusinessName is provider-supplied
-// (a business names itself); GapAnalysis is goat-generated — it already passed
+// (a business names itself); GapAnalysis is Mimir-generated — it already passed
 // clampOutput once as stage 3's output — but still bounded here, because the
 // caller could hand over an arbitrarily long string and nothing downstream
 // would catch it.

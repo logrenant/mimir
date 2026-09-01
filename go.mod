@@ -1,4 +1,4 @@
-module github.com/logrenant/goat-mcp
+module github.com/logrenant/mimir
 
 go 1.25.0
 

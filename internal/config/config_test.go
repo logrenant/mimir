@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
+	"github.com/logrenant/mimir/internal/config"
 )
 
 func TestConfigDefaults(t *testing.T) {
@@ -98,7 +98,7 @@ func TestConfigDefaults(t *testing.T) {
 }
 
 func TestConfigOverrides(t *testing.T) {
-	t.Setenv("GOAT_CLAUDE_CLI_PATH", "/usr/local/bin/claude")
+	t.Setenv("MIMIR_CLAUDE_CLI_PATH", "/usr/local/bin/claude")
 
 	c := config.Load()
 	if c.ClaudeCLIPath != "/usr/local/bin/claude" {
@@ -106,7 +106,7 @@ func TestConfigOverrides(t *testing.T) {
 	}
 
 	// Empty override leaves the default untouched.
-	t.Setenv("GOAT_CLAUDE_CLI_PATH", "")
+	t.Setenv("MIMIR_CLAUDE_CLI_PATH", "")
 	c = config.Load()
 	if c.ClaudeCLIPath != "claude" {
 		t.Errorf("expected default after empty override, got %s", c.ClaudeCLIPath)
@@ -139,7 +139,7 @@ func TestDaemonDefaults(t *testing.T) {
 }
 
 func TestDaemonPortOverride(t *testing.T) {
-	t.Setenv("GOAT_DAEMON_PORT", "51234")
+	t.Setenv("MIMIR_DAEMON_PORT", "51234")
 	if got := config.Load().DaemonPort; got != 51234 {
 		t.Errorf("DaemonPort: got %d, want 51234", got)
 	}
@@ -147,7 +147,7 @@ func TestDaemonPortOverride(t *testing.T) {
 	// Unparseable and out-of-range values keep the default rather than
 	// failing — the same posture as every other override here.
 	for _, bad := range []string{"not-a-port", "-1", "70000"} {
-		t.Setenv("GOAT_DAEMON_PORT", bad)
+		t.Setenv("MIMIR_DAEMON_PORT", bad)
 		if got := config.Load().DaemonPort; got != 0 {
 			t.Errorf("port %q: got %d, want the default 0", bad, got)
 		}
@@ -155,7 +155,7 @@ func TestDaemonPortOverride(t *testing.T) {
 }
 
 func TestValidateDaemonRequiresAToken(t *testing.T) {
-	t.Setenv("GOAT_DAEMON_TOKEN", "")
+	t.Setenv("MIMIR_DAEMON_TOKEN", "")
 
 	c := config.Load()
 	if err := c.Validate(); err != nil {
@@ -168,11 +168,11 @@ func TestValidateDaemonRequiresAToken(t *testing.T) {
 	}
 	// SD-6: the message has to name the fix, and the fix here is the parent
 	// process, not something the operator types.
-	if !strings.Contains(err.Error(), "GOAT_DAEMON_TOKEN") {
+	if !strings.Contains(err.Error(), "MIMIR_DAEMON_TOKEN") {
 		t.Errorf("error should name the missing variable, got %v", err)
 	}
 
-	t.Setenv("GOAT_DAEMON_TOKEN", "a-token")
+	t.Setenv("MIMIR_DAEMON_TOKEN", "a-token")
 	if err := config.Load().ValidateDaemon(); err != nil {
 		t.Errorf("a token should be all that is missing, got %v", err)
 	}
@@ -181,11 +181,11 @@ func TestValidateDaemonRequiresAToken(t *testing.T) {
 // --- operator-provisioned credential (task-24) ------------------------------
 
 func TestPlacesCredentialIsReadButNeverRequired(t *testing.T) {
-	t.Setenv("GOAT_DAEMON_TOKEN", "a-token")
+	t.Setenv("MIMIR_DAEMON_TOKEN", "a-token")
 
 	// Absent is the normal install: the binaries start, and RegisterAll simply
 	// does not offer maps_search.
-	t.Setenv("GOAT_GOOGLE_PLACES_API_KEY", "")
+	t.Setenv("MIMIR_GOOGLE_PLACES_API_KEY", "")
 	c := config.Load()
 	if c.PlacesAPIKey != "" {
 		t.Errorf("PlacesAPIKey: got %q, want empty", c.PlacesAPIKey)
@@ -197,7 +197,7 @@ func TestPlacesCredentialIsReadButNeverRequired(t *testing.T) {
 		t.Errorf("a missing Places key must not stop the daemon: %v", err)
 	}
 
-	t.Setenv("GOAT_GOOGLE_PLACES_API_KEY", "test-key")
+	t.Setenv("MIMIR_GOOGLE_PLACES_API_KEY", "test-key")
 	if got := config.Load().PlacesAPIKey; got != "test-key" {
 		t.Errorf("PlacesAPIKey: got %q, want test-key", got)
 	}

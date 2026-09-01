@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/mcp"
-	"github.com/logrenant/goat-mcp/internal/search"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/mcp"
+	"github.com/logrenant/mimir/internal/search"
 )
 
 // SearchClient is an interface to allow mocking of search.Client

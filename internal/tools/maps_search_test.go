@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/maps"
-	"github.com/logrenant/goat-mcp/internal/mcp"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/mcp"
 )
 
 // fakeSearcher records the query it was handed so the tests can assert on
@@ -165,7 +165,7 @@ func TestMapsSearch_ErrorMapping(t *testing.T) {
 		err  error
 		want string
 	}{
-		{maps.ErrCredentialMissing, "GOAT_GOOGLE_PLACES_API_KEY"},
+		{maps.ErrCredentialMissing, "MIMIR_GOOGLE_PLACES_API_KEY"},
 		{maps.ErrRequestDenied, "rejected"},
 		{maps.ErrQuotaExceeded, "quota"},
 		{maps.ErrBadRequest, "rephrase"},

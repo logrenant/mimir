@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/logrenant/goat-mcp/internal/extract"
+	"github.com/logrenant/mimir/internal/extract"
 )
 
 // ClampText is the isolation control for every free-scraper tool (SD-2's

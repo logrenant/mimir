@@ -1,19 +1,19 @@
-# GOAT
+# Mimir
 
 Two macOS binaries over one runtime engine:
 
-- **`bin/goat-mcp`** — a local, zero-cost **MCP server** for a Claude Code
+- **`bin/mimir-mcp`** — a local, zero-cost **MCP server** for a Claude Code
   session. It searches the web, scrapes pages, and returns **compact, refined**
   results (never raw dumps), plus free no-login scrapers for
   e-commerce / TikTok / Google Maps / Instagram. Refinement rides your existing
   `claude` CLI login — no API key.
-- **`bin/goat-daemon`** — a long-running, loopback-only HTTP service the Tauri
+- **`bin/mimir-daemon`** — a long-running, loopback-only HTTP service the Tauri
   desktop app (`desktop/`) talks to. It owns a folder-scoped coding-task runner
   with live streaming and the Google Maps lead-gen pipeline, and re-exposes the
   same MCP tools at `/mcp`. Installed as a **launchd agent** (`make
   install-agent`), it starts at login and is restarted if it dies — it runs
   whether or not the app is open.
-- **`GOAT.app`** — a **menu-bar app** (no Dock icon) over that daemon. ⌘⇧G, or
+- **`Mimir.app`** — a **menu-bar app** (no Dock icon) over that daemon. ⌘⇧G, or
   the menu-bar item, opens a quick-task window: pick a folder, type what Claude
   should do, `⏎`. The run keeps streaming if you dismiss the window and
   finishes with a notification.
@@ -37,8 +37,8 @@ Quick map:
 
 | Surface | Highlights |
 |---|---|
-| **MCP tools** (`bin/goat-mcp`) | `web_search`, `fetch_page`, `research`, `diagnostics`, `ecommerce_product_lookup`, `tiktok_profile_lookup`, `gmaps_business_lookup`, `instagram_profile_lookup`, `maps_search` (only with a Places key), and the project-memory tools `project_context`, `context_recall`, `context_remember` |
-| **Daemon HTTP** (`bin/goat-daemon`) | `/healthz`, `/diagnostics`, `/projects`, `/coding-tasks`, `GET /ws/runs/{id}` (live run stream), `/maps/leadgen`, `/maps/emails/status`, `/mcp` |
+| **MCP tools** (`bin/mimir-mcp`) | `web_search`, `fetch_page`, `research`, `diagnostics`, `ecommerce_product_lookup`, `tiktok_profile_lookup`, `gmaps_business_lookup`, `instagram_profile_lookup`, `maps_search` (only with a Places key), and the project-memory tools `project_context`, `context_recall`, `context_remember` |
+| **Daemon HTTP** (`bin/mimir-daemon`) | `/healthz`, `/diagnostics`, `/projects`, `/coding-tasks`, `GET /ws/runs/{id}` (live run stream), `/maps/leadgen`, `/maps/emails/status`, `/mcp` |
 | **Desktop app** (`desktop/`) | Menu-bar item (daemon status, new task, login item) · Quick task (⌘⇧G) · Connection handshake · Workspace (pick a folder, run a scoped `claude` coding task, watch its thought/action stream live) · Leadgen (region search → categorize → per-category gap analysis → drafted outreach emails) |
 
 ## Build & verify
@@ -52,9 +52,9 @@ make desktop-check   # desktop gate: typecheck + vitest + cargo fmt/clippy/test
 ## Install it as a running system
 
 ```bash
-make install-agent    # goat-daemon under launchd: at login, restarted if it dies
-make desktop-build    # builds GOAT.app
-cp -R desktop/src-tauri/target/release/bundle/macos/GOAT.app /Applications/
+make install-agent    # mimir-daemon under launchd: at login, restarted if it dies
+make desktop-build    # builds Mimir.app
+cp -R desktop/src-tauri/target/release/bundle/macos/Mimir.app /Applications/
 ```
 
 `make agent-status` · `make agent-logs` · `make agent-restart` ·

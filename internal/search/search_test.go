@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/logrenant/goat-mcp/internal/config"
-	"github.com/logrenant/goat-mcp/internal/search"
+	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/search"
 )
 
 func TestSearch_FallbackAndError(t *testing.T) {
