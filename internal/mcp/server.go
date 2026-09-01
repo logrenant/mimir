@@ -15,7 +15,7 @@ import (
 // operator comparing a running daemon with a GitHub release must see the same
 // number in both places, so a release bumps this constant and tags the same
 // commit `v<Version>`.
-const Version = "1.1.0"
+const Version = "1.1.1"
 
 // SDKVersion is the pinned modelcontextprotocol/go-sdk release (see go.mod).
 const SDKVersion = "v1.7.0"

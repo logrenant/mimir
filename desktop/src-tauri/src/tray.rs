@@ -43,6 +43,39 @@ pub struct TrayItems {
     autostart: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
+/// Marks that the login item has been offered once.
+///
+/// Without it, "enable on first launch" would re-enable the login item every
+/// time someone who had turned it off started the app — the toggle would not
+/// be a toggle.
+fn autostart_marker() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::PathBuf::from(home)
+        .join("Library/Application Support/goat-mcp")
+        .join(".autostart-initialized")
+}
+
+/// Registers GOAT as a login item the first time it runs.
+///
+/// The daemon already comes back at login; a menu-bar app that did not would
+/// leave the operator with a running system and no way into it. Done once, and
+/// only once: after this the tray toggle is the operator's.
+pub fn enable_autostart_on_first_launch(app: &AppHandle) {
+    let marker = autostart_marker();
+    if marker.exists() {
+        return;
+    }
+    if let Some(dir) = marker.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&marker, "1\n");
+
+    let manager = app.autolaunch();
+    if !manager.is_enabled().unwrap_or(false) {
+        let _ = manager.enable();
+    }
+}
+
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, ID_STATUS, "GOAT — connecting…", false, None::<&str>)?;
     let new_task = MenuItem::with_id(app, ID_NEW_TASK, "New task…", true, Some("Cmd+Shift+G"))?;

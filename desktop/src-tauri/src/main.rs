@@ -42,6 +42,8 @@ fn main() {
             // UI asks for the endpoint until it is ready or has failed.
             daemon::start(app.handle().clone());
 
+            // Before the menu is built, so its checkmark reflects the result.
+            tray::enable_autostart_on_first_launch(app.handle());
             tray::build(app.handle())?;
 
             // A shortcut another app already owns is a degraded feature, not a

@@ -4,6 +4,16 @@ Bu dosya [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) biçimini,
 sürüm numaraları [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 kuralını izler.
 
+## [1.1.1] — 2026-09-01
+
+### Eklendi
+
+- Uygulama ilk çalıştırmasında kendini **login item** olarak kaydediyor
+  (`~/Library/Application Support/goat-mcp/.autostart-initialized` işaretiyle
+  bir kez). Daemon zaten login'de geliyordu; menü çubuğu gelmeyince operatörün
+  elinde çalışan bir sistem ve ona giden bir kapı kalmıyordu. Sonrasında karar
+  tray'deki anahtarın.
+
 ## [1.1.0] — 2026-09-01
 
 GOAT artık "açınca çalışan bir uygulama" değil, sistemde sürekli çalışan bir
