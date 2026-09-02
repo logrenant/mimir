@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/coderunner"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/events"
@@ -40,11 +41,30 @@ type ProjectRegistry interface {
 	Get(ctx context.Context, id string) (project.Project, error)
 }
 
-// CodeRunner starts and reports coding sessions.
+// AccountRegistry is the credential slots this API exposes. Same contract as
+// ProjectRegistry: Register validates a directory and the id it returns is the
+// only thing a client passes afterwards.
+type AccountRegistry interface {
+	Register(ctx context.Context, label, configDir string) (account.Account, error)
+	List(ctx context.Context) ([]account.Account, error)
+	Get(ctx context.Context, id string) (account.Account, error)
+	Delete(ctx context.Context, id string) error
+}
+
+// CodeRunner owns the whole life of a coding task, not just its execution.
+// Every state change a client can ask for is a method here, because
+// internal/coderunner is the only thing allowed to decide that a run may begin
+// (docs/ROADMAP.md §B.2.1) — this API asks, it does not schedule.
 type CodeRunner interface {
-	Start(ctx context.Context, projectID, prompt string) (coderunner.Run, error)
+	Create(ctx context.Context, req coderunner.CreateRequest) (coderunner.Run, error)
+	Start(ctx context.Context, req coderunner.CreateRequest) (coderunner.Run, error)
+	Enqueue(ctx context.Context, runID string) (coderunner.Run, error)
+	Stop(ctx context.Context, runID string) (coderunner.Run, error)
+	Delete(ctx context.Context, runID string) error
 	Get(ctx context.Context, runID string) (coderunner.Run, error)
 	List(ctx context.Context, projectID string, limit int) ([]coderunner.Run, error)
+	SaveAttachment(filename string, data []byte) (coderunner.Attachment, error)
+	LoadAttachment(id string) (coderunner.Attachment, []byte, error)
 }
 
 // Healther reports whether the store is usable. *store.Store satisfies it.
@@ -85,6 +105,7 @@ type EmailStatusSetter interface {
 // handlers can be tested without a database, a subprocess, or a port.
 type Deps struct {
 	Projects    ProjectRegistry
+	Accounts    AccountRegistry
 	Runner      CodeRunner
 	Store       Healther
 	MCP         http.Handler
@@ -120,13 +141,36 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /diagnostics", s.handleDiagnostics)
-	mux.HandleFunc("GET /projects", s.handleListProjects)
-	mux.HandleFunc("POST /projects", s.handleRegisterProject)
-	mux.HandleFunc("POST /coding-tasks", s.handleStartCodingTask)
-	mux.HandleFunc("GET /coding-tasks", s.handleListCodingTasks)
-	mux.HandleFunc("GET /coding-tasks/{id}", s.handleGetCodingTask)
+	if s.deps.Projects != nil {
+		mux.HandleFunc("GET /projects", s.handleListProjects)
+		mux.HandleFunc("POST /projects", s.handleRegisterProject)
+	}
+	// Registered together with the runner they call: a nil Runner used to mean
+	// a nil-interface call inside the handler, which recoverPanics turned into
+	// a 500 for what is really a route that does not exist here.
+	if s.deps.Accounts != nil {
+		mux.HandleFunc("GET /accounts", s.handleListAccounts)
+		mux.HandleFunc("POST /accounts", s.handleRegisterAccount)
+		mux.HandleFunc("DELETE /accounts/{id}", s.handleDeleteAccount)
+		mux.HandleFunc("GET /accounts/{id}/status", s.handleAccountStatus)
+	}
 
-	if s.deps.Events != nil && s.deps.Runner != nil {
+	if s.deps.Runner != nil {
+		mux.HandleFunc("GET /coding-models", s.handleListCodingModels)
+		mux.HandleFunc("POST /coding-tasks", s.handleStartCodingTask)
+		mux.HandleFunc("GET /coding-tasks", s.handleListCodingTasks)
+		mux.HandleFunc("POST /coding-tasks/attachments", s.handleUploadAttachment)
+		mux.HandleFunc("GET /coding-tasks/attachments/{id}", s.handleGetAttachment)
+		mux.HandleFunc("GET /coding-tasks/{id}", s.handleGetCodingTask)
+		mux.HandleFunc("DELETE /coding-tasks/{id}", s.handleDeleteCodingTask)
+		mux.HandleFunc("POST /coding-tasks/{id}/enqueue", s.handleEnqueueCodingTask)
+		mux.HandleFunc("POST /coding-tasks/{id}/stop", s.handleStopCodingTask)
+	}
+
+	// Transcripts belongs in this guard too: without it the socket opens, shows
+	// no history and cannot fill a dropped-event gap — a silent degradation
+	// rather than a route that is honestly absent.
+	if s.deps.Events != nil && s.deps.Runner != nil && s.deps.Transcripts != nil {
 		mux.HandleFunc("GET /ws/runs/{id}", s.handleRunStream)
 	}
 

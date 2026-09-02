@@ -19,10 +19,34 @@ decisions, it is in the wrong package.
 - **`/mcp` is the same registry `cmd/mimir-mcp` serves over stdio.** Never build
   a parallel tool path here; that would put a tool response outside
   `finalize.go`'s choke-point (SD-2). Two transports, one engine.
-- **A filesystem path is accepted at exactly one route** — `POST /projects` —
-  and it is handed straight to `project.Registry.Register`. Every other route
-  takes the opaque `project_id`. Do not add a path parameter anywhere else, and
-  do not "helpfully" join, clean, or default one.
+- **A filesystem path is accepted at exactly two routes** — `POST /projects`
+  and `POST /accounts` — and both immediately stop being paths: each hands back
+  an opaque id, and every later call carries that id. The second was added by
+  `tasks/task-37` because a Claude Code credential slot *is* a directory (the
+  CLI hashes it to name a keychain entry), so there is no other shape it could
+  take. The rule that matters is unchanged and is the one to enforce: a path is
+  validated once, at registration, by a package that owns that decision
+  (`internal/project`, `internal/account`). Do not add a path parameter to a
+  third route, and do not let either of these two accept one anywhere but its
+  register handler.
+
+- **The body cap is a table, not a constant.** Everything gets
+  `DaemonMaxRequestBytes`; `POST /coding-tasks/attachments` gets
+  `CodingAttachmentMaxBytes`, because an image is the one payload here that is
+  not text. Raising the ceiling for a route must be a line in `bodyLimits`,
+  never a relaxation of the default.
+- **A route is registered only when its dependency is present.** A nil `Runner`
+  in the `Deps` struct used to mean a nil-interface call inside the handler,
+  which `recoverPanics` turned into a 500 for a route that honestly does not
+  exist. `/ws/runs/{id}` needs `Transcripts` in that guard too, or it serves a
+  socket with no history that cannot fill a dropped-event gap.
+- **Stopping a run is a route, not a frame on the socket.** The socket stays
+  one-directional; `POST /coding-tasks/{id}/stop` carries the same threat model
+  as every other route — loopback, bearer token — and its whole authority is to
+  interrupt a process this daemon started itself.
+- **A conflict is a 409.** `ErrNotStoppable` / `ErrNotDeletable` mean the card
+  the operator clicked was a moment out of date. A 400 would blame the request
+  and a 500 would blame us; neither is true.
 - **No CORS headers, ever.** A browser page on another origin may be able to
   *send* a request to loopback; without CORS it cannot read the reply. Adding a
   permissive header would trade that away for nothing — the only intended
@@ -31,6 +55,10 @@ decisions, it is in the wrong package.
   `internal/project` explain what is wrong and what to do, so they are returned
   as-is. Anything unrecognised is logged and answered with a generic 500; an
   internal failure message belongs in the operator's log, not a response body.
+- **The model list is published, not mirrored.** `GET /coding-models` exists so
+  the desktop picker is a view of `cfg.CodingModels` rather than a second copy
+  of it — a copy would drift the first time a generation ships and start
+  offering options the create route rejects.
 - **`POST /coding-tasks` answers 202 and returns.** It must not wait for the
   run: a session lasts minutes, and the run's lifetime belongs to the daemon
   (`coderunner.New(base, …)`), not to the request context.
@@ -57,7 +85,13 @@ decisions, it is in the wrong package.
 
 It is one-directional. Incoming frames are read only to notice the client is
 gone (`conn.CloseRead`); a control channel for cancelling or steering a run
-would be a different endpoint with a different threat model.
+would be a different endpoint with a different threat model — which is exactly
+what `POST /coding-tasks/{id}/stop` is.
+
+The socket closes on a *terminal* status, not on "not running". A backlog or
+queued task has no events yet but will have, and the desktop app opens a
+terminal for a card the moment it is released rather than polling for the run to
+begin.
 
 ## The `/maps/*` routes (task-34)
 

@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/api"
 	"github.com/logrenant/mimir/internal/coderunner"
 	"github.com/logrenant/mimir/internal/config"
@@ -166,10 +167,23 @@ func run() error {
 
 	// The runner takes the daemon's lifetime, not a request's: a coding session
 	// runs for minutes and must not die when the POST that started it returns.
-	runner := coderunner.New(ctx, cfg, bus, projects, db)
+	// Which Claude Code identity a run spends. Registered like a project: the
+	// path is accepted once and everything afterwards carries an id.
+	accounts := account.NewRegistry(db)
+
+	runner := coderunner.New(ctx, cfg, bus, projects, accounts, db)
+
+	// Before the API is serving: a row still marked running belongs to a daemon
+	// that is gone, and the queue it left behind is meant to be picked up here.
+	// A failure is logged rather than fatal — the daemon is still useful, it
+	// just starts with a stale board.
+	if err := runner.Resume(ctx); err != nil {
+		slog.Warn("resuming coding tasks", "error", err)
+	}
 
 	apiDeps := api.Deps{
 		Projects:    projects,
+		Accounts:    accounts,
 		Runner:      runner,
 		Store:       db,
 		MCP:         srv.MCPHandler(),

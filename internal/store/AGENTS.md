@@ -114,3 +114,25 @@ confirm RawHTML terminates in `internal/extract`-style structured parsing,
 never a verbatim MCP response. Then check that no new `os.Getenv` appeared,
 that migrations were added rather than edited, and that `make race` is
 clean — the store is shared across the pipeline's crawl and refine fan-outs.
+
+## Coding-run statuses
+
+`IsTerminalStatus` is the single definition of "this run is over". The
+websocket, the dispatcher and the memory ingest loop all ask it rather than each
+keeping their own list — which is how the previous three-value set drifted into
+three different opinions about what `running` meant.
+
+`ReconcileRunningRuns` is called once, at daemon startup, before anything is
+dispatched. A `running` row at that moment belongs to a daemon that is gone, and
+leaving it alone is how the board came to show work that was not happening.
+Queued rows are deliberately untouched: they are the durable queue and are meant
+to survive exactly this.
+
+`ClaimNextQueuedRun` is a compare-and-swap, not a transaction. The dispatcher
+calls it from several goroutines as slots free up, and a read-then-write
+transaction would have to upgrade a deferred lock, which SQLite answers with
+`SQLITE_BUSY` rather than by waiting. The conditional `UPDATE` is the atomic
+step; the loser sees zero rows affected and looks again.
+
+`UpdateRunStatus` takes the state the caller believes the row is in. That guard
+is what makes two clicks on the same card resolve to one winner without a lock.

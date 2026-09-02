@@ -218,9 +218,10 @@ fn call_daemon(
     let url = format!("{}{}", endpoint.base_url, path);
     let auth = format!("Bearer {}", endpoint.token);
 
-    // GET and POST only, because those are the only verbs the daemon's routes
-    // answer to. An allowlist here rather than a pass-through keeps this from
-    // becoming a general HTTP client the WebView can steer.
+    // GET, POST and DELETE, because those are the only verbs the daemon's
+    // routes answer to — DELETE since a board card can be thrown away. An
+    // allowlist here rather than a pass-through keeps this from becoming a
+    // general HTTP client the WebView can steer.
     let result = match (method.to_ascii_uppercase().as_str(), body) {
         ("GET", _) => agent.get(&url).header("Authorization", &auth).call(),
         ("POST", Some(payload)) => agent
@@ -229,6 +230,7 @@ fn call_daemon(
             .header("Content-Type", "application/json")
             .send(payload),
         ("POST", None) => agent.post(&url).header("Authorization", &auth).send_empty(),
+        ("DELETE", _) => agent.delete(&url).header("Authorization", &auth).call(),
         (other, _) => return Err(format!("unsupported method {other}")),
     };
 

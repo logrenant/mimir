@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/events"
 	"github.com/logrenant/mimir/internal/project"
@@ -52,6 +53,7 @@ type harness struct {
 	runner    *Runner
 	bus       *events.Bus
 	store     *store.Store
+	accounts  *account.Registry
 	projectID string
 	cfg       config.Config
 	cancel    context.CancelFunc
@@ -59,13 +61,25 @@ type harness struct {
 
 func newHarness(t *testing.T, claudePath string) *harness {
 	t.Helper()
+	return newHarnessWith(t, claudePath, nil)
+}
+
+// newHarnessWith is newHarness with a hook for the settings a test needs to
+// differ on — the concurrency limit above all, since a queue only forms when
+// there are fewer slots than runs.
+func newHarnessWith(t *testing.T, claudePath string, tune func(*config.Config)) *harness {
+	t.Helper()
 
 	tmp := t.TempDir()
 	cfg := config.Load()
 	cfg.StorePath = filepath.Join(tmp, "mimir.db")
 	cfg.TranscriptDir = filepath.Join(tmp, "transcripts")
+	cfg.AttachmentDir = filepath.Join(tmp, "attachments")
 	cfg.ClaudeCLIPath = claudePath
 	cfg.CodingRunTimeout = 30 * time.Second
+	if tune != nil {
+		tune(&cfg)
+	}
 
 	st, err := store.Open(context.Background(), cfg)
 	if err != nil {
@@ -86,10 +100,12 @@ func newHarness(t *testing.T, claudePath string) *harness {
 
 	base, cancel := context.WithCancel(context.Background())
 	bus := events.NewBus()
+	accounts := account.NewRegistry(st)
 	h := &harness{
-		runner:    New(base, cfg, bus, reg, st),
+		runner:    New(base, cfg, bus, reg, accounts, st),
 		bus:       bus,
 		store:     st,
+		accounts:  accounts,
 		projectID: proj.ID,
 		cfg:       cfg,
 		cancel:    cancel,
@@ -110,7 +126,7 @@ func collect(t *testing.T, h *harness, prompt string) (Run, []events.Event) {
 	// rely on the transcript for anything published before we attach. For
 	// these tests the fake CLI is fast enough that we read the transcript
 	// instead, which is the complete record by contract.
-	run, err := h.runner.Start(context.Background(), h.projectID, prompt)
+	run, err := h.runner.Start(context.Background(), CreateRequest{ProjectID: h.projectID, Prompt: prompt})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -203,7 +219,7 @@ func TestStart_PublishesToTheBusAndClosesOnCompletion(t *testing.T) {
 
 	h := newHarness(t, claude)
 
-	run, err := h.runner.Start(context.Background(), h.projectID, "do it")
+	run, err := h.runner.Start(context.Background(), CreateRequest{ProjectID: h.projectID, Prompt: "do it"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -331,7 +347,7 @@ func TestStart_MalformedLineDoesNotKillTheRun(t *testing.T) {
 func TestStart_RejectsUnknownProject(t *testing.T) {
 	h := newHarness(t, writeFakeClaude(t, 0, lineResult))
 
-	_, err := h.runner.Start(context.Background(), "no-such-project", "hello")
+	_, err := h.runner.Start(context.Background(), CreateRequest{ProjectID: "no-such-project", Prompt: "hello"})
 	if !errors.Is(err, project.ErrProjectNotFound) {
 		t.Fatalf("want ErrProjectNotFound, got %v", err)
 	}
@@ -340,7 +356,7 @@ func TestStart_RejectsUnknownProject(t *testing.T) {
 func TestStart_RejectsEmptyPrompt(t *testing.T) {
 	h := newHarness(t, writeFakeClaude(t, 0, lineResult))
 
-	if _, err := h.runner.Start(context.Background(), h.projectID, "   "); err == nil {
+	if _, err := h.runner.Start(context.Background(), CreateRequest{ProjectID: h.projectID, Prompt: "   "}); err == nil {
 		t.Fatal("an empty prompt must be refused")
 	}
 }
@@ -401,7 +417,7 @@ func TestStart_ReturnsBeforeTheRunCompletes(t *testing.T) {
 	h := newHarness(t, slow)
 
 	start := time.Now()
-	run, err := h.runner.Start(context.Background(), h.projectID, "take your time")
+	run, err := h.runner.Start(context.Background(), CreateRequest{ProjectID: h.projectID, Prompt: "take your time"})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Start: %v", err)

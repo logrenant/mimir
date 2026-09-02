@@ -220,3 +220,34 @@ func TestMapsSearchCapsAreConstants(t *testing.T) {
 		t.Error("Validate should reject a default count above the ceiling")
 	}
 }
+
+// The picker can only offer what the list holds, so a default outside it would
+// leave every form unable to represent the run it is about to create.
+func TestValidateRejectsADefaultModelThatIsNotOffered(t *testing.T) {
+	c := config.Load()
+	c.CodingModel = "claude-not-shipped"
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate accepted a CodingModel absent from CodingModels")
+	}
+
+	c = config.Load()
+	c.CodingModels = nil
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate accepted an empty CodingModels")
+	}
+}
+
+func TestDefaultModelIsOffered(t *testing.T) {
+	c := config.Load()
+	if !c.HasCodingModel(c.CodingModel) {
+		t.Fatalf("CodingModel %q is not in CodingModels", c.CodingModel)
+	}
+	if c.HasCodingModel("") {
+		t.Fatal(`"" must not be a model: it means "use the default"`)
+	}
+	for _, m := range c.CodingModels {
+		if m.ID == "" || m.Label == "" {
+			t.Errorf("incomplete model choice: %+v", m)
+		}
+	}
+}

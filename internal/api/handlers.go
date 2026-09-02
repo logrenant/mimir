@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/coderunner"
 	mimirmcp "github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/project"
@@ -144,15 +146,118 @@ func (s *Server) handleRegisterProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, proj)
 }
 
-type startCodingTaskRequest struct {
-	ProjectID string `json:"project_id"`
-	Prompt    string `json:"prompt"`
+type accountListResponse struct {
+	Accounts []account.Account `json:"accounts"`
 }
 
-// handleStartCodingTask returns as soon as the run is recorded and the CLI is
-// spawned — 202, not 200. A coding session runs for minutes; the response
-// carries the id a watcher subscribes with, and the run outlives this request
-// by design (coderunner.New takes the daemon's lifetime, not the request's).
+func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts, err := s.deps.Accounts.List(r.Context())
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	if accounts == nil {
+		accounts = []account.Account{}
+	}
+	writeJSON(w, http.StatusOK, accountListResponse{Accounts: accounts})
+}
+
+type registerAccountRequest struct {
+	Label string `json:"label"`
+	// ConfigDir is the second — and last — place this API accepts a filesystem
+	// path. It is the same discipline as POST /projects and for the same
+	// reason: the path is validated once here, and everything afterwards
+	// carries the opaque id this returns. It is also not a secret. The CLI
+	// hashes it to name a keychain entry; the credential itself never leaves
+	// the keychain and Mimir never reads it.
+	ConfigDir string `json:"config_dir"`
+}
+
+// handleRegisterAccount records a Claude Code credential slot.
+//
+// An empty config_dir registers the CLI's own default slot, which is what a
+// single-account machine has always been using. Registration is idempotent by
+// directory: the same path is the same identity, and a second row for it would
+// let the dispatcher believe one account could run two tasks at once.
+func (s *Server) handleRegisterAccount(w http.ResponseWriter, r *http.Request) {
+	var req registerAccountRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	acct, err := s.deps.Accounts.Register(r.Context(), req.Label, req.ConfigDir)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, acct)
+}
+
+func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "account id is required")
+		return
+	}
+	if err := s.deps.Accounts.Delete(r.Context(), id); err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAccountStatus asks the CLI who is signed in to one slot.
+//
+// It spends nothing — `claude auth status` reads a keychain entry and prints
+// JSON — which is why this is a live probe rather than something cached at
+// registration. A slot whose login has lapsed is a slot whose runs will fail,
+// and the operator should see that on the account, not one run at a time.
+func (s *Server) handleAccountStatus(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "account id is required")
+		return
+	}
+	acct, err := s.deps.Accounts.Get(r.Context(), id)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	status, err := account.Probe(r.Context(), s.cfg.ClaudeCLIPath, acct.ConfigDir)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+type startCodingTaskRequest struct {
+	ProjectID     string   `json:"project_id"`
+	Title         string   `json:"title"`
+	Prompt        string   `json:"prompt"`
+	AttachmentIDs []string `json:"attachment_ids"`
+
+	// AccountID pins the run to one credential slot. Absent or empty means
+	// "any free one", which is the default because it is what makes a second
+	// account worth registering.
+	AccountID string `json:"account_id"`
+
+	// Model is one of the ids GET /coding-models offers. Absent or empty means
+	// the daemon's default — a client that predates the picker keeps working.
+	Model string `json:"model"`
+
+	// Start distinguishes "run this now" from "put this on the board". A
+	// pointer so its absence means the historical behaviour — a client that
+	// predates the board still gets a run, not a card nobody releases.
+	Start *bool `json:"start"`
+}
+
+// handleStartCodingTask returns as soon as the task is recorded — 202, not 200.
+// A coding session runs for minutes; the response carries the id a watcher
+// subscribes with, and the run outlives this request by design (coderunner.New
+// takes the daemon's lifetime, not the request's).
+//
+// A queued task may also wait behind others: the runner's concurrency limit is
+// what decides when it actually spawns, and 202 is honest about both cases.
 func (s *Server) handleStartCodingTask(w http.ResponseWriter, r *http.Request) {
 	var req startCodingTaskRequest
 	if !decodeJSON(w, r, &req) {
@@ -167,12 +272,162 @@ func (s *Server) handleStartCodingTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := s.deps.Runner.Start(r.Context(), req.ProjectID, req.Prompt)
+	create := coderunner.CreateRequest{
+		ProjectID:     req.ProjectID,
+		Title:         req.Title,
+		Prompt:        req.Prompt,
+		AccountID:     req.AccountID,
+		Model:         req.Model,
+		AttachmentIDs: req.AttachmentIDs,
+	}
+
+	start := req.Start == nil || *req.Start
+	var (
+		run coderunner.Run
+		err error
+	)
+	if start {
+		run, err = s.deps.Runner.Start(r.Context(), create)
+	} else {
+		run, err = s.deps.Runner.Create(r.Context(), create)
+	}
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, run)
+}
+
+type codingModel struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}
+
+type codingModelListResponse struct {
+	Models []codingModel `json:"models"`
+}
+
+// handleListCodingModels publishes the model allow-list so the desktop picker
+// is a view of the daemon's constant rather than a second copy of it. Nothing
+// here is per-operator or secret; it is the same list Validate checks against.
+func (s *Server) handleListCodingModels(w http.ResponseWriter, r *http.Request) {
+	models := make([]codingModel, 0, len(s.cfg.CodingModels))
+	for _, m := range s.cfg.CodingModels {
+		models = append(models, codingModel{
+			ID:      m.ID,
+			Label:   m.Label,
+			Default: m.ID == s.cfg.CodingModel,
+		})
+	}
+	writeJSON(w, http.StatusOK, codingModelListResponse{Models: models})
+}
+
+// handleEnqueueCodingTask releases a backlog task. Separate from the create
+// route because they are different decisions: one writes intent down, the other
+// spends tokens on it.
+func (s *Server) handleEnqueueCodingTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "run id is required")
+		return
+	}
+	run, err := s.deps.Runner.Enqueue(r.Context(), id)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+// handleStopCodingTask cancels a run.
+//
+// A route rather than a frame on /ws/runs/{id}: that socket is deliberately
+// one-directional (internal/api/AGENTS.md), and a control channel would give it
+// a second threat model. This one has the same one every other route has — the
+// loopback guard and the bearer token — and its whole authority is to interrupt
+// a process this daemon started itself.
+func (s *Server) handleStopCodingTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "run id is required")
+		return
+	}
+	run, err := s.deps.Runner.Stop(r.Context(), id)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) handleDeleteCodingTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "run id is required")
+		return
+	}
+	if err := s.deps.Runner.Delete(r.Context(), id); err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type uploadAttachmentRequest struct {
+	Filename   string `json:"filename"`
+	DataBase64 string `json:"data_base64"`
+}
+
+type attachmentResponse struct {
+	coderunner.Attachment
+	DataBase64 string `json:"data_base64,omitempty"`
+}
+
+// handleUploadAttachment takes one image for a task prompt.
+//
+// Base64 in JSON rather than multipart because every other route here is JSON
+// and the desktop app reaches the daemon through a Rust proxy that forwards a
+// string body — one encoding for the whole surface is worth the 33% framing.
+// The bytes are typed by the daemon, never by the client: see
+// coderunner.SaveAttachment.
+func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	var req uploadAttachmentRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	data, err := base64.StdEncoding.DecodeString(req.DataBase64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "data_base64 is not valid base64")
+		return
+	}
+
+	att, err := s.deps.Runner.SaveAttachment(req.Filename, data)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, attachmentResponse{Attachment: att})
+}
+
+// handleGetAttachment returns an image as base64 so a preview can be rendered
+// from a data: URI. The desktop app's CSP allows data: images and does not
+// allow http://127.0.0.1 ones, so this is the shape that can actually be shown.
+func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "attachment id is required")
+		return
+	}
+	att, data, err := s.deps.Runner.LoadAttachment(id)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, attachmentResponse{
+		Attachment: att,
+		DataBase64: base64.StdEncoding.EncodeToString(data),
+	})
 }
 
 type codingTaskListResponse struct {
@@ -220,3 +475,4 @@ func (s *Server) handleGetCodingTask(w http.ResponseWriter, r *http.Request) {
 // package asks of them.
 var _ CodeRunner = (*coderunner.Runner)(nil)
 var _ ProjectRegistry = (*project.Registry)(nil)
+var _ AccountRegistry = (*account.Registry)(nil)

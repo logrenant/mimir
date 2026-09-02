@@ -1,14 +1,28 @@
-# tasks/ — task index (archived)
+# tasks/ — task index
 
-> **Every planned task is shipped and every `task-NN` file has been retired.**
-> This directory now holds only this record. For what the built system does
-> today, see [`../docs/CAPABILITIES.md`](../docs/CAPABILITIES.md)
+> **task-01 … task-34 are shipped and their files have been retired.** For what
+> the built system does today, see
+> [`../docs/CAPABILITIES.md`](../docs/CAPABILITIES.md)
 > (Türkçe: [`../docs/CAPABILITIES.tr.md`](../docs/CAPABILITIES.tr.md)).
 >
 > **New work starts with a new `task-NN` file** proposed to the user, written to
 > the schema in [`../docs/AGENT_RULES.md`](../docs/AGENT_RULES.md) §4 and driven
-> by the `do task-NN` protocol in [`../AGENTS.md`](../AGENTS.md) §4. Until then,
-> the rules below describe how this directory worked.
+> by the `do task-NN` protocol in [`../AGENTS.md`](../AGENTS.md) §4.
+
+## Live tasks
+
+| Task | Status | What |
+|---|---|---|
+| [task-35](task-35-coding-task-lifecycle.md) | done | Coding-task lifecycle in the daemon: backlog + durable queue, stop, restart reconciliation, image attachments, live stderr. |
+| [task-36](task-36-desktop-board-terminals.md) | done | Desktop: five-column board with create/run/stop, per-run terminals, image composer, and the run-stream failures that were invisible. |
+| [task-37](task-37-coding-accounts.md) | done | Claude Code credential slots as first-class accounts, and capacity measured in accounts rather than a number: one run per identity. |
+| [task-38](task-38-desktop-accounts-recents.md) | done | Desktop: account manager with a live auth probe, account picker on both composers, and a collapsed Recents list of past terminals. |
+| [task-39](task-39-coding-model-choice.md) | done | Per-task model choice: an allow-list in `internal/config`, published at `GET /coding-models`, carried on the row and into `--model`. |
+| [task-40](task-40-desktop-dashboard.md) | done | Desktop: the home screen becomes a dashboard (live consoles, queue, dependency health, account load), one shared run poll, and the model picker. |
+
+They are split by file, not by package: the odd-numbered tasks own
+`internal/**` and `cmd/**`, the even-numbered ones own `desktop/**`, so a
+daemon task and a desktop task can never conflict.
 
 Each task was one file. The Coder Agent (Gemini) implemented **exactly one per
 run**, triggered by `do task-NN`; `make check` had to be green and `Status: done`

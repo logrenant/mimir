@@ -73,4 +73,23 @@ describe("reduceRun", () => {
     expect(view.rateLimited).toBe(0.8);
     expect(view.finished).toBe(false);
   });
+
+  test("stderr is folded in beside the answer, not lost", () => {
+    let view = emptyRun();
+    view = reduceRun(view, event({ kind: "stderr", seq: 1, text: "run `claude login`" }));
+    view = reduceRun(view, event({ kind: "stderr", seq: 2, text: "aborting" }));
+
+    // A run that could never work said so on stderr; without this the panel
+    // showed a thinking run that never produced a byte.
+    expect(view.stderr).toBe("run `claude login`\naborting");
+  });
+
+  test("a stop finishes the view without marking it failed", () => {
+    let view = emptyRun();
+    view = reduceRun(view, event({ kind: "run.stopped", seq: 1 }));
+
+    expect(view.finished).toBe(true);
+    expect(view.stopped).toBe(true);
+    expect(view.failed).toBe(false);
+  });
 });

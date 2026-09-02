@@ -4,6 +4,184 @@ Bu dosya [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) biçimini,
 sürüm numaraları [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 kuralını izler.
 
+## [2.3.0] — 2026-09-02
+
+**Model seçimi ve gerçek bir dashboard.** Bir task'ın hangi modeli harcayacağı
+artık seçilebiliyor, ve uygulamanın açıldığı ekran ilk kez canlı veri gösteriyor.
+
+### Eklendi
+
+- **Task başına model.** `coding_runs.model` ilk günden beri vardı ama bir karar
+  değil bir yankıydı: `Create` sabiti damgalıyor, `args()` aynı sabiti CLI'a
+  geçiriyordu. Artık task yazılırken seçiliyor. Liste `internal/config`'te bir
+  sabit (SD-1) ve `GET /coding-models` ile yayınlanıyor — masaüstündeki seçici
+  o listenin görünümü, ikinci bir kopyası değil. Bilinmeyen model, üç saniye
+  sonra ölen bir run değil, formdayken gelen bir 400.
+- **Tam ad, takma ad değil.** `opus` "o an en yenisi" demek; backlog'da bir
+  hafta bekleyen kart için yanlış sözleşme. Kart, o gün seçilen modelle çalışır.
+- **Dashboard.** Açılış ekranı bir broşürdü — bir başlık, bir cümle, iki bağlantı
+  — yani uygulamanın açıldığı ekran canlı verisi olmayan tek ekrandı. Artık
+  sırayla: çalışan işler ve **canlı terminal çıktıları**, kuyruk, son bitenler,
+  bağımlılık sağlığı, hesap doluluğu, günlük maliyet.
+- **Çalışan her job kendi terminalini kendisi açıyor.** Eskiden bu yalnız
+  operatörün tıkladığı işler için geçerliydi; kuyruktan çıkan ya da menü
+  çubuğundan başlatılan bir iş kimse aramadan konsol açmıyordu. Artık poll
+  döngüsü onları sahipleniyor. Elle kapatılan sekme kapalı kalıyor.
+- **Bağımlılık sağlığı ilk ekranda.** Crawl4AI bir oturum boyunca kapalıydı;
+  `/diagnostics` bunu — düzeltme komutunu adıyla vererek — söylüyordu ve kabuk
+  hiçbir yerde göstermiyordu. Artık daemon'un kendi cümlesi olduğu gibi
+  gösteriliyor. Uygulama hiçbir şeyi kendisi başlatmıyor: konteyner kaldırmak
+  operatörün kendi makinesindeki kararı.
+
+### Değişti
+
+- **Tek poll döngüsü.** Board ve dashboard aynı diziyi okuyor (`RunsProvider`).
+  Daemon'da projeler arası run rotası yok, yani bir board proje başına bir
+  istek demek — bu fan-out bir kez yapılabilir, iki kez israf.
+- `Dashboard.tsx`'ten `css`/`HoverDiv`/`HoverButton`, modül kaydı, yeni task
+  formu ve diagnostics kancası ayrı dosyalara çıktı; iki ekran aynı formu
+  paylaşıyor, ikinci bir kopya üretmiyor.
+- `internal/api/AGENTS.md`: model listesi yayınlanır, aynalanmaz.
+- `internal/coderunner/AGENTS.md`: model satırdan gelir, config'ten değil.
+
+- **Aynı hesaba bağlı iki yuva uyarısı.** Bir yuva, CLI'ın hash'leyip Keychain
+  girdisi adına çevirdiği bir dizin — zaten kullandığınız hesapla ikinci bir
+  yuvaya giriş yaparsanız iki girdi, iki yeşil satır ve **tek** rate limit
+  olur. Satırlardan anlaşılmıyor, artık hesap yöneticisi açıkça söylüyor.
+
+### Düzeltildi
+
+- **Bir hesap aynı anda iki task çalıştırabiliyordu.** `launch` run'ı sahipleniyor
+  ama yuvayı meşgul olarak *başlattığı goroutine'in içinde* işaretliyordu; `pump`
+  boş yuva kalmayana dek döndüğü için bir sonraki tur, çocuk henüz
+  zamanlanmadan aynı yuvayı boş görüp ikinci bir run'ı aynı kimliğe
+  bağlıyordu. Kuyrukta beş iş varken beşini birden alabiliyordu. Dispatch
+  kilidi bunu kapatmıyor — pencere `launch`'ın dönüşü ile çocuğun
+  zamanlanması arasında. Artık işaretleme goroutine'den önce, senkron yapılıyor.
+  Regresyon testi düzeltme olmadan kesin olarak kırmızı.
+
+### Notlar
+
+- Crawl4AI bu makinede kapalıydı; sebep koddaki bir hata değil, Docker
+  Desktop'ın çalışmıyor oluşuydu. `make crawl-up` sonrası `/diagnostics` yeşil.
+- Model listesi bir sabit: nesil değiştiğinde elle güncellenir, tıpkı
+  `CodingModel` ve `ResearchModel`'in bugün olduğu gibi.
+
+## [2.2.0] — 2026-09-01
+
+**İki Claude Code hesabı, iki paralel iş.** Bir task'ın hangi kimliği
+harcayacağı artık seçilebiliyor ve kapasite bir sayı değil: her hesap aynı anda
+tek task.
+
+### Eklendi
+
+- **Hesaplar.** Bir hesap = bir dizin. Claude Code kimlik bilgilerini macOS
+  Keychain'de tutuyor ve hangi girdiyi kullanacağını
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` yolundan türetiyor — yani dizin sadece bir
+  hash girdisi, Mimir hiçbir kimlik bilgisi görmüyor. Projeler gibi: yol bir kez
+  alınır, sonrası id ile taşınır. Yeni rotalar `GET|POST /accounts`,
+  `DELETE /accounts/{id}`, `GET /accounts/{id}/status`.
+- **Canlı kimlik sorgusu.** `claude auth status` her yuva için `email`,
+  `orgName` ve `subscriptionType` döndürüyor ve hiçbir şey harcamıyor, bu yüzden
+  hesap satırındaki bilgi kayıttan değil o andan geliyor. Login'i düşmüş bir
+  hesap sağlıklı görünmüyor.
+- **Hesap başına tek run.** `CodingMaxConcurrentRuns` sabiti kaldırıldı: aynı
+  kimliği paylaşan iki run aynı rate limit'i ve aynı oturum durumunu paylaşır,
+  yani ikincisi verim değil çekişme. Daha fazla kapasite = bir hesap daha
+  kaydetmek.
+- **Otomatik atama, isteğe bağlı sabitleme.** Task varsayılan olarak ilk boşalan
+  hesaba düşer; istenirse bir hesaba sabitlenir. Dispatcher kuyruğun başını
+  almak yerine kuyruğu yürüyor, böylece meşgul bir hesaba sabitlenmiş bir kart
+  arkasındaki başka hesaba ait işi bekletmiyor.
+- **Recents.** Terminals kenar çubuğunda varsayılan olarak kapalı bir bölüm:
+  geçmiş oturumlar. Açıldığında transcript aynı soketten baştan oynatılıyor —
+  ikinci bir depo değil, board'ın kendi listesi eksi zaten açık olanlar.
+
+### Değişti
+
+- Çocuk süreç ortamı artık miras alınmıyor, kuruluyor. Kimlik yuvası seçiliyor
+  ve daemon'ı başlatan Claude Code oturumunun değişkenleri (`CLAUDECODE`,
+  `CLAUDE_CODE_*`, `AI_AGENT`) temizleniyor — bunları okuyan iç içe bir CLI
+  başkasının oturumunu sürdürdüğünü sanıyordu.
+- `internal/api/AGENTS.md`'deki "dosya sistemi yolu tam olarak tek rotada kabul
+  edilir" kuralı "tam olarak iki rotada" oldu (`POST /projects`,
+  `POST /accounts`). Kuralın koruduğu şey değişmedi: yol bir kez, kaydı sırasında,
+  o kararın sahibi olan paket tarafından doğrulanır.
+
+### Şema
+
+- `0012_accounts.sql` — `accounts` tablosu (`config_dir` üzerinde tekil indeks)
+  ve `coding_runs`'a `requested_account_id` + `account_id`. İkisi ayrı: biri
+  operatörün sabitlemesi, diğeri run'ın gerçekten çalıştığı yuva.
+
+## [2.1.0] — 2026-09-01
+
+**Coding task artık bir yaşam döngüsü.** Bir görev yazılıp bekletilebiliyor,
+kuyruğa alınabiliyor, durdurulabiliyor; görsel eklenebiliyor; ve çalışan her
+job'ın kendi terminali var. Bu sürümün asıl konusu, "çalışıyor yazan ama
+çalışmayan" kartların kökünü kurutmak.
+
+### Eklendi
+
+- **Backlog ve kuyruk.** `POST /coding-tasks` artık `start: false` kabul ediyor:
+  kart önce yazılıyor, token ancak biri çalıştırdığında harcanıyor. Yeni
+  statüler `backlog`, `queued`, `stopped`; yeni rotalar
+  `POST /coding-tasks/{id}/enqueue`, `POST /coding-tasks/{id}/stop`,
+  `DELETE /coding-tasks/{id}`. Kuyruk SQLite'ta durduğu için daemon yeniden
+  başladığında da yerinde kalıyor ve kaldığı yerden dağıtılıyor.
+- **Eşzamanlılık sınırı.** Aynı anda en çok `CodingMaxConcurrentRuns` (2) run;
+  üçüncüsü kuyrukta bekliyor. Dispatcher `internal/coderunner`'ın bir metodu —
+  ikinci bir orkestratör değil, `docs/ROADMAP.md`'nin terk ettiği DAG/kanban
+  ayrımına dönüş yok.
+- **Run durdurma.** Önce SIGINT (CLI kendi `result` satırını yazabilsin diye),
+  `CodingStopGrace` sonra SIGKILL, ikisi de sürece değil süreç grubuna — yoksa
+  `claude`'un çocukları stdout borusunu açık tutuyor.
+- **Görsel eki.** `POST /coding-tasks/attachments` + `GET .../{id}`. Tür,
+  istemcinin dosya adına değil baytlara bakılarak (`http.DetectContentType`)
+  belirleniyor; yalnız PNG/JPEG/GIF/WebP. Dosyalar store'un yanındaki
+  `attachments/` dizinine yazılıyor, prompt'a yol olarak enjekte ediliyor ve
+  o dizin `--add-dir` ile okunabilir kılınıyor.
+- **stderr artık akıyor.** CLI'ın stderr'ı `stderr` olayı olarak yayınlanıyor ve
+  transcript'e yazılıyor. "run `claude login`" gibi bir run'ın neden hiç
+  çalışamayacağını söyleyen tek yer burasıydı ve hiçbir yere ulaşmıyordu.
+- **Terminals ekranı.** Çalışan her job kendi sekmesini alıyor: canlı satırlar,
+  scrollback, kopyala, STOP. Oturumlar `Dashboard`'ın üstünde tutuluyor, yani
+  ekran değiştirmek soketi öldürmüyor. PTY değil — daemon `claude`'u borularla
+  çalıştırıyor, gösterilebilecek dürüst şey o akış ve stderr.
+- **Board artık çalışıyor.** Beş kolon (Backlog · Queued · Running · Done ·
+  Failed), her zaman görünür "+ Yeni task", kart üzerinde run/stop/sil/terminal,
+  ve Backlog↔Queued arası sürükle-bırak. Yoklama aralığı panoya göre değişiyor.
+
+### Düzeltildi
+
+- **Yeniden başlatmadan sağ çıkan "running" satırları.** Daemon açılışta
+  `Resume` ile bunları `failed` + "the daemon restarted while this run was in
+  flight" yapıyor. Bir run'ın sonucu artık `context.WithoutCancel` ile
+  yazılıyor: kapanış sırasında biten her run satırını kaybediyordu ve sonsuza
+  kadar `running` kalıyordu.
+- **Görünmez WebSocket hataları.** `socket.onerror`'ın yazdığı sebebi
+  `socket.onclose` siliyordu; bağlanamayan bir soket tamamen sessizdi. Ayrıca
+  `openRunStream`'in reddi yutuluyordu (`void … .then(…)`), rozet sonsuza kadar
+  "running" kalıyordu. Soket terminal olay görmeden kapanırsa artık
+  `GET /coding-tasks/{id}` ile yoklamaya düşülüyor.
+- **`/coding-tasks` rotaları `Runner` yokken de kayıtlıydı** ve nil-interface
+  çağrısı 500 üretiyordu; `/ws/runs/{id}` koruması `Transcripts`'i kontrol
+  etmiyor, geçmişsiz soket sunuyordu.
+- **Yalan söyleyen bağlantı göstergeleri.** Başlıktaki yeşil nokta, overlay'deki
+  "ready" ve kart etiketleri sabit yazılmıştı; artık gerçek daemon durumundan
+  geliyor.
+- **Klasör seçicinin sessiz hatası** (try/catch dışındaydı), başarısız bir
+  `start`'ın önceki run'ı boş panelle yeniden çizmesi, ve run akarken "Start
+  run"ın yeniden etkinleşip ilk akışı terk etmesi.
+- `consume`'un yuttuğu `scanner.Err()` artık başarısızlık nedeni olarak
+  raporlanıyor; zaman aşımı da kendi mesajını alıyor.
+
+### Şema
+
+- `0011_coding_task_lifecycle.sql` — `coding_runs`'a `title`, `created_at`,
+  `queued_at`, `attachments` kolonları ve `(status, queued_at)` indeksi.
+  `started_at = 0` artık "hiç başlamadı" demek.
+
 ## [2.0.0] — 2026-09-01
 
 **GOAT artık Mimir.** Marka adı, tüm görsel sistem ve kodun içindeki her

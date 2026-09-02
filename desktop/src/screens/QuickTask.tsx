@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { Wordmark } from "../components/brand";
+import { defaultModelID, useModels } from "../components/ModelPicker";
 import { Badge } from "../components/ui/badge";
 import { api, DaemonError, type Project, type Run } from "../lib/daemon";
 import { canStart, defaultProject, finishedNotification, isDismissKey, isSubmitKey } from "../lib/quickTask";
@@ -30,6 +31,8 @@ export function QuickTask() {
   const [view, setView] = useState<RunView>(emptyRun);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [modelID, setModelID] = useState("");
+  const { models } = useModels();
   const input = useRef<HTMLTextAreaElement>(null);
   // Whether the operator picked the project themselves. Until they do, every
   // summon follows the daemon's most-recently-used folder.
@@ -46,6 +49,10 @@ export function QuickTask() {
       setError(describe(err));
     }
   }, []);
+
+  useEffect(() => {
+    setModelID((current) => current || defaultModelID(models));
+  }, [models]);
 
   useEffect(() => {
     void refresh();
@@ -68,7 +75,7 @@ export function QuickTask() {
     setBusy(true);
     setView(emptyRun());
     try {
-      const started = await api.startCodingTask(selected, text);
+      const started = await api.startCodingTask(selected, text, { model: modelID });
       setRun(started);
       setPrompt("");
     } catch (err) {
@@ -115,6 +122,22 @@ export function QuickTask() {
           {projects.map((project) => (
             <option key={project.id} value={project.id}>
               {project.display_name}
+            </option>
+          ))}
+        </select>
+        {/* The quick task spends the same limits as any other, so it gets the
+            same choice — the one thing worth deciding in a popover this small
+            is how expensive this is going to be. */}
+        <select
+          value={modelID}
+          onChange={(event) => setModelID(event.target.value)}
+          className="shrink-0 rounded border border-edge bg-ground px-2 py-1 text-xs outline-none focus:border-electric/60"
+          title="Model"
+        >
+          {models === null && <option value="">…</option>}
+          {(models ?? []).map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.label}
             </option>
           ))}
         </select>
@@ -187,10 +210,16 @@ function QuickStream({
       run.id,
       (event) => setView((previous) => reduceRun(previous, event)),
       (reason) => setClosed(reason ?? null),
-    ).then((closer) => {
-      if (cancelled) closer();
-      else close = closer;
-    });
+    )
+      .then((closer) => {
+        if (cancelled) closer();
+        else close = closer;
+      })
+      // Without this the rejection was swallowed and the panel sat on
+      // "running" over an empty stream for the life of the window.
+      .catch((err: unknown) => {
+        if (!cancelled) setClosed(describe(err));
+      });
 
     return () => {
       cancelled = true;
@@ -216,8 +245,14 @@ function QuickStream({
     notified.current = false;
   }, [run.id]);
 
-  const tone = view.failed ? "bad" : view.finished ? "ok" : "warn";
-  const label = view.failed ? "failed" : view.finished ? "completed" : "running";
+  const tone = view.failed ? "bad" : view.stopped ? "muted" : view.finished ? "ok" : "warn";
+  const label = view.failed
+    ? "failed"
+    : view.stopped
+      ? "stopped"
+      : view.finished
+        ? "completed"
+        : "running";
 
   return (
     <div className="space-y-2">
@@ -244,8 +279,9 @@ function QuickStream({
       )}
 
       <pre className="whitespace-pre-wrap text-sm leading-relaxed">{view.text}</pre>
+      {view.stderr && <pre className="whitespace-pre-wrap text-xs text-warn">{view.stderr}</pre>}
       {view.error && <p className="text-xs text-bad">{view.error}</p>}
-      {closed && !view.finished && <p className="text-xs text-warn">{closed}</p>}
+      {closed && <p className="text-xs text-warn">{closed}</p>}
       <div ref={bottom} />
     </div>
   );

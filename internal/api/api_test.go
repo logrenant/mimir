@@ -56,13 +56,61 @@ type fakeRunner struct {
 	err           error
 	lastPrompt    string
 	lastProjectID string
+	lastCreate    coderunner.CreateRequest
+	created       bool
+	enqueued      string
+	stopped       string
+	deleted       string
+	attachment    coderunner.Attachment
+	attachmentRaw []byte
 }
 
-func (f *fakeRunner) Start(_ context.Context, projectID, prompt string) (coderunner.Run, error) {
+func (f *fakeRunner) Start(_ context.Context, req coderunner.CreateRequest) (coderunner.Run, error) {
 	f.calls++
-	f.lastPrompt = prompt
-	f.run.ProjectID = projectID
+	f.lastPrompt = req.Prompt
+	f.lastCreate = req
+	f.run.ProjectID = req.ProjectID
 	return f.run, f.err
+}
+
+func (f *fakeRunner) Create(_ context.Context, req coderunner.CreateRequest) (coderunner.Run, error) {
+	f.calls++
+	f.created = true
+	f.lastPrompt = req.Prompt
+	f.lastCreate = req
+	f.run.ProjectID = req.ProjectID
+	return f.run, f.err
+}
+
+func (f *fakeRunner) Enqueue(_ context.Context, runID string) (coderunner.Run, error) {
+	f.calls++
+	f.enqueued = runID
+	return f.run, f.err
+}
+
+func (f *fakeRunner) Stop(_ context.Context, runID string) (coderunner.Run, error) {
+	f.calls++
+	f.stopped = runID
+	return f.run, f.err
+}
+
+func (f *fakeRunner) Delete(_ context.Context, runID string) error {
+	f.calls++
+	f.deleted = runID
+	return f.err
+}
+
+func (f *fakeRunner) SaveAttachment(filename string, data []byte) (coderunner.Attachment, error) {
+	f.calls++
+	f.attachmentRaw = data
+	f.attachment.Filename = filename
+	f.attachment.Bytes = len(data)
+	return f.attachment, f.err
+}
+
+func (f *fakeRunner) LoadAttachment(string) (coderunner.Attachment, []byte, error) {
+	f.calls++
+	return f.attachment, f.attachmentRaw, f.err
 }
 
 func (f *fakeRunner) Get(context.Context, string) (coderunner.Run, error) {

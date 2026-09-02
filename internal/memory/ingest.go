@@ -207,8 +207,9 @@ func (m *Memory) discoverRuns(ctx context.Context, p Project) []source {
 
 	var out []source
 	for _, r := range rows {
-		if r.TranscriptPath == "" || r.Status == store.RunStatusRunning {
-			// A run still in flight will be read on a later pass, when its
+		if r.TranscriptPath == "" || !store.IsTerminalStatus(r.Status) {
+			// A run that has not ended — in flight, queued, or still only a
+			// card on the board — will be read on a later pass, when its
 			// transcript is complete and its cost is known.
 			continue
 		}

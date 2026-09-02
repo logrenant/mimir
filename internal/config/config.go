@@ -79,6 +79,28 @@ type Config struct {
 	CodingRunTimeout     time.Duration
 	TranscriptDir        string
 
+	// CodingModels is what the operator may pick from, and the only thing
+	// --model is ever handed. A constant list rather than a knob (SD-1): it
+	// describes the model lineup, which changes when Anthropic ships one, not
+	// when an operator has a preference. CodingModel is the entry used when a
+	// task names none, and Validate requires it to be in here — a default
+	// nobody can choose is a bug, not a policy.
+	CodingModels []CodingModelChoice
+
+	// How long a stopped run is given to write its own result line before it
+	// is killed, and how much of a run's stderr is carried as live events.
+	// Constants for the same reason the rest of this struct is (SD-1): they
+	// describe the machine's behaviour, not an operator's preference.
+	//
+	// There is deliberately no "max concurrent runs" here. Capacity is one run
+	// per registered credential slot, which is a fact about the accounts the
+	// operator has, not a number to tune: two runs sharing one Claude Code
+	// identity share its rate limit and its session state.
+	CodingStopGrace          time.Duration
+	CodingStderrMaxBytes     int
+	CodingAttachmentMaxBytes int64
+	AttachmentDir            string
+
 	// Project memory (M8). Long-lived per-project context distilled from
 	// session transcripts, so a new session is told what this repository
 	// already learned instead of rediscovering it. Losing it costs tokens,
@@ -209,6 +231,25 @@ func defaultClaudeProjectsDir() string {
 	return filepath.Join(home, ".claude", "projects")
 }
 
+// CodingModelChoice is one entry in the coding-task model picker: the string
+// `claude --model` receives, and the name a human reads. Two fields because
+// the CLI's identifiers are not written for a dropdown.
+type CodingModelChoice struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// HasCodingModel reports whether id is offerable. The empty string is not a
+// model, it is "use the default", and callers decide that before asking.
+func (c Config) HasCodingModel(id string) bool {
+	for _, m := range c.CodingModels {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // Load returns the fully-populated default Config.
 // It parses specific environment variables for test overrides but ignores invalid values.
 func Load() Config {
@@ -271,6 +312,17 @@ func Load() Config {
 		GMapsWaitForSelector:       "h1",
 
 		CodingModel: "claude-sonnet-5",
+		// Full names, not the CLI's `opus`/`sonnet` aliases. An alias means
+		// "whatever is latest when this runs", which is the wrong contract for
+		// a card that can sit in the backlog for a week: the operator picked a
+		// model and the run should be that model. The price is that this list
+		// is edited when a generation ships — the same price CodingModel and
+		// ResearchModel above already pay.
+		CodingModels: []CodingModelChoice{
+			{ID: "claude-opus-5", Label: "Opus 5"},
+			{ID: "claude-sonnet-5", Label: "Sonnet 5"},
+			{ID: "claude-haiku-4-5-20251001", Label: "Haiku 4.5"},
+		},
 		// In headless -p mode "default" does not prompt, it DENIES — a run
 		// would finish having changed nothing. "acceptEdits" accepts file
 		// edits while still withholding Bash; "bypassPermissions" would hand
@@ -278,6 +330,18 @@ func Load() Config {
 		// real boundary is the directory (internal/project), not this mode.
 		CodingPermissionMode: "acceptEdits",
 		CodingRunTimeout:     30 * time.Minute,
+
+		// A stopped run gets SIGINT first and this long to report its own
+		// outcome; the CLI writes a `result` line on interrupt, and that line
+		// carries the cost and turn count a SIGKILL would throw away.
+		CodingStopGrace: 5 * time.Second,
+		// stderr is diagnostic, not output. Enough to carry a stack trace or a
+		// "run `claude login`", capped so a looping child cannot fill the bus.
+		CodingStderrMaxBytes: 256 << 10,
+		// An attachment is a screenshot, not a dataset. 10 MiB before base64
+		// framing is generous for a retina screenshot and still small enough
+		// that the daemon holds one in memory without thinking about it.
+		CodingAttachmentMaxBytes: 10 << 20,
 
 		// 60 is the Places API's own ceiling for places:searchText, not a
 		// preference. The token ceiling is the same order as a research brief:
@@ -380,6 +444,7 @@ func Load() Config {
 	// Derived after the override above so a test pointing StorePath at a temp
 	// directory gets an isolated transcript directory for free.
 	c.TranscriptDir = filepath.Join(filepath.Dir(c.StorePath), "transcripts")
+	c.AttachmentDir = filepath.Join(filepath.Dir(c.StorePath), "attachments")
 
 	return c
 }
@@ -451,6 +516,14 @@ func (c Config) Validate() error {
 	if c.CodingModel == "" {
 		return errors.New("CodingModel is empty")
 	}
+	if len(c.CodingModels) == 0 {
+		return errors.New("CodingModels is empty")
+	}
+	// A default nobody can pick would leave the picker unable to represent the
+	// run it is about to create.
+	if !c.HasCodingModel(c.CodingModel) {
+		return errors.New("CodingModel is not one of CodingModels")
+	}
 	if c.CodingPermissionMode == "" {
 		return errors.New("CodingPermissionMode is empty")
 	}
@@ -459,6 +532,18 @@ func (c Config) Validate() error {
 	}
 	if c.TranscriptDir == "" {
 		return errors.New("TranscriptDir is empty")
+	}
+	if c.AttachmentDir == "" {
+		return errors.New("AttachmentDir is empty")
+	}
+	if c.CodingStopGrace <= 0 {
+		return errors.New("CodingStopGrace must be > 0")
+	}
+	if c.CodingStderrMaxBytes <= 0 {
+		return errors.New("CodingStderrMaxBytes must be > 0")
+	}
+	if c.CodingAttachmentMaxBytes <= 0 {
+		return errors.New("CodingAttachmentMaxBytes must be > 0")
 	}
 
 	if c.GMapsWaitForSelector == "" {

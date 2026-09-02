@@ -3,8 +3,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
-import { api, DaemonError, type Project, type Run } from "../lib/daemon";
+import { api, DaemonError, isTerminalStatus, type Project, type Run } from "../lib/daemon";
 import { emptyRun, openRunStream, reduceRun, type RunView } from "../lib/runStream";
+import { TaskComposer, type Attached } from "../components/TaskComposer";
+import { AccountManager, AccountSelect } from "../components/AccountPicker";
+import { useAccounts } from "../components/AccountsProvider";
+import { defaultModelID, ModelSelect, useModels } from "../components/ModelPicker";
+import { useTerminals } from "../components/TerminalsProvider";
 
 /**
  * Pick a folder, give it a task, watch the run.
@@ -13,14 +18,26 @@ import { emptyRun, openRunStream, reduceRun, type RunView } from "../lib/runStre
  * afterwards carries the project id the daemon handed back — the frontend never
  * sends a filesystem path a second time (docs/ROADMAP.md §B.4).
  */
-export function Workspace() {
+export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [attachments, setAttachments] = useState<Attached[]>([]);
+  const [accountID, setAccountID] = useState("");
+  const [modelID, setModelID] = useState("");
   const [run, setRun] = useState<Run | null>(null);
   const [view, setView] = useState<RunView>(emptyRun);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const terminals = useTerminals();
+  const { accounts, statuses, refresh: refreshAccounts } = useAccounts();
+  const { models } = useModels();
+
+  // Opens on the daemon's default rather than on a blank that means "whatever":
+  // the runner is where a model choice is most likely to be deliberate.
+  useEffect(() => {
+    setModelID((current) => current || defaultModelID(models));
+  }, [models]);
 
   const refresh = useCallback(async () => {
     try {
@@ -37,14 +54,16 @@ export function Workspace() {
   }, [refresh]);
 
   const pickFolder = async () => {
-    // The native NSOpenPanel, via Tauri's dialog plugin — one maintained
-    // picker, replacing goat v1's two divergent ones.
-    const picked = await open({ directory: true, multiple: false, title: "Choose a project folder" });
-    if (typeof picked !== "string") return;
-
     setError(null);
     setBusy(true);
     try {
+      // The native NSOpenPanel, via Tauri's dialog plugin — one maintained
+      // picker, replacing goat v1's two divergent ones. Inside the try: the
+      // picker can reject, and a button that silently does nothing is worse
+      // than one that says why.
+      const picked = await open({ directory: true, multiple: false, title: "Choose a project folder" });
+      if (typeof picked !== "string") return;
+
       const project = await api.registerProject(picked);
       setSelected(project.id);
       await refresh();
@@ -61,10 +80,21 @@ export function Workspace() {
     if (!selected || !prompt.trim()) return;
     setError(null);
     setBusy(true);
-    setView(emptyRun());
     try {
-      const started = await api.startCodingTask(selected, prompt.trim());
+      const started = await api.createCodingTask({
+        project_id: selected,
+        prompt: prompt.trim(),
+        account_id: accountID,
+        model: modelID,
+        attachment_ids: attachments.map((a) => a.id),
+      });
+      // Only once the run exists: setting the view first meant a failed start
+      // re-rendered the *previous* run with a blank panel, reading "running"
+      // over nothing.
+      setView(emptyRun());
       setRun(started);
+      setAttachments([]);
+      terminals.open(started);
     } catch (err) {
       setError(describe(err));
     } finally {
@@ -72,14 +102,19 @@ export function Workspace() {
     }
   };
 
+  // Held until the run is over, not until the POST returns: re-enabling on the
+  // response let a second click replace `run` and abandon the first stream
+  // with nothing watching it.
+  const running = run !== null && !view.finished;
+
   return (
-    <div className="mx-auto grid h-full max-w-5xl grid-rows-[auto_auto_1fr] gap-4 p-6">
+    <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-y-auto p-6">
       <Card>
         <CardHeader
           title="Project"
           subtitle="Registered once; every later call carries only its id"
           aside={
-            <Button variant="ghost" onClick={() => void pickFolder()} disabled={busy}>
+            <Button variant="ghost" onClick={() => void pickFolder()} disabled={busy || running}>
               Choose folder…
             </Button>
           }
@@ -116,19 +151,55 @@ export function Workspace() {
       </Card>
 
       <Card>
+        <CardHeader
+          title="Accounts"
+          subtitle="One run per Claude Code identity — a second account is how you get two at once"
+        />
+        <CardBody>
+          <AccountManager accounts={accounts} onChanged={() => refreshAccounts()} />
+        </CardBody>
+      </Card>
+
+      <Card>
         <CardHeader title="Task" subtitle="Runs in the selected folder, with file tools" />
         <CardBody className="space-y-3">
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            rows={3}
-            placeholder="What should Claude do in this folder?"
-            className="w-full resize-y rounded border border-edge bg-ground p-3 text-sm outline-none focus:border-electric/60"
+          <TaskComposer
+            prompt={prompt}
+            onPromptChange={setPrompt}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
+            disabled={busy || running}
+            rows={4}
+            onSubmit={() => void start()}
+            placeholder="What should Claude do in this folder? Paste or drop an image to attach it."
           />
-          <div className="flex items-center gap-3">
-            <Button onClick={() => void start()} disabled={busy || !selected || !prompt.trim()}>
-              Start run
+          <div className="flex flex-wrap items-center gap-3">
+            <AccountSelect
+              accounts={accounts}
+              statuses={statuses}
+              value={accountID}
+              onChange={setAccountID}
+              disabled={busy || running}
+            />
+            <ModelSelect
+              models={models}
+              value={modelID}
+              onChange={setModelID}
+              disabled={busy || running}
+            />
+            <Button onClick={() => void start()} disabled={busy || running || !selected || !prompt.trim()}>
+              {running ? "Running…" : "Start run"}
             </Button>
+            {run && onGoTerminals && (
+              <Button variant="ghost" onClick={onGoTerminals}>
+                Watch in Terminals
+              </Button>
+            )}
+            {running && (
+              <Button variant="ghost" onClick={() => void api.stopCodingTask(run.id).catch((err: unknown) => setError(describe(err)))}>
+                Stop
+              </Button>
+            )}
             {error && <span className="text-sm text-bad">{error}</span>}
           </div>
         </CardBody>
@@ -169,10 +240,16 @@ function RunPanel({
       run.id,
       (event) => setView((previous) => reduceRun(previous, event)),
       (reason) => setClosed(reason ?? null),
-    ).then((closer) => {
-      if (cancelled) closer();
-      else close = closer;
-    });
+    )
+      .then((closer) => {
+        if (cancelled) closer();
+        else close = closer;
+      })
+      // The rejection used to be swallowed by `void`, which left the badge
+      // reading "running" over an empty panel for the whole session.
+      .catch((err: unknown) => {
+        if (!cancelled) setClosed(describe(err));
+      });
 
     return () => {
       cancelled = true;
@@ -184,8 +261,18 @@ function RunPanel({
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [view.text, view.tools.length]);
 
-  const tone = view.failed ? "bad" : view.finished ? "ok" : "warn";
-  const label = view.failed ? "failed" : view.finished ? "completed" : "running";
+  const tone = view.failed ? "bad" : view.stopped ? "muted" : view.finished ? "ok" : "warn";
+  const label = view.failed
+    ? "failed"
+    : view.stopped
+      ? "stopped"
+      : view.finished
+        ? "completed"
+        : isTerminalStatus(run.status)
+          ? run.status
+          : run.status === "queued"
+            ? "queued"
+            : "running";
 
   return (
     <Card className="flex min-h-0 flex-col">
@@ -227,8 +314,17 @@ function RunPanel({
 
         <pre className="whitespace-pre-wrap text-sm leading-relaxed">{view.text}</pre>
 
+        {/* The CLI's stderr, which is where "run `claude login`" is written and
+            where a run that could never work says so. */}
+        {view.stderr && (
+          <details className="mt-3 rounded border border-edge bg-ground/60 p-3" open={!view.text}>
+            <summary className="cursor-pointer text-xs text-warn">stderr</summary>
+            <pre className="mt-2 whitespace-pre-wrap text-xs text-warn">{view.stderr}</pre>
+          </details>
+        )}
+
         {view.error && <p className="mt-3 text-sm text-bad">{view.error}</p>}
-        {closed && !view.finished && <p className="mt-3 text-sm text-warn">{closed}</p>}
+        {closed && <p className="mt-3 text-sm text-warn">{closed}</p>}
         <div ref={bottom} />
       </CardBody>
     </Card>

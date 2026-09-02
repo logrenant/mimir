@@ -99,7 +99,11 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 	// A run that was already over when we looked, and whose transcript did not
 	// contain a terminal event, will never publish one either — nothing is
 	// listening on the other end of that bus. Close rather than hang.
-	if run.Status != store.RunStatusRunning {
+	//
+	// Terminal, not "not running": a backlog or queued task has no events yet
+	// but will have, and the desktop app opens a terminal for a card the moment
+	// it is released rather than polling for the run to begin.
+	if store.IsTerminalStatus(run.Status) {
 		closeNormally(conn, "run finished")
 		return
 	}

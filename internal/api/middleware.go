@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/coderunner"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/project"
@@ -21,6 +22,7 @@ const (
 	codeUnauthorized = "unauthorized"
 	codeForbidden    = "forbidden"
 	codeNotFound     = "not_found"
+	codeConflict     = "conflict"
 	codeInternal     = "internal"
 )
 
@@ -49,8 +51,23 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
 	case errors.Is(err, project.ErrProjectNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
-	case errors.Is(err, coderunner.ErrRunNotFound):
+	case errors.Is(err, account.ErrInvalidDir):
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
+	case errors.Is(err, account.ErrAccountNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
+	case errors.Is(err, account.ErrAccountInUse):
+		writeError(w, http.StatusConflict, codeConflict, err.Error())
+	case errors.Is(err, coderunner.ErrRunNotFound),
+		errors.Is(err, coderunner.ErrAttachmentNotFound):
+		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
+	case errors.Is(err, coderunner.ErrNotStoppable),
+		errors.Is(err, coderunner.ErrNotDeletable):
+		// The card the operator clicked was a moment out of date. 409 says
+		// that, where a 400 would blame the request and a 500 would blame us.
+		writeError(w, http.StatusConflict, codeConflict, err.Error())
+	case errors.Is(err, coderunner.ErrAttachmentType),
+		errors.Is(err, coderunner.ErrUnknownModel):
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
 	case errors.Is(err, coderunner.ErrClaudeUnavailable):
 		// Actionable and the operator's to fix (SD-6), so it is worth echoing.
 		writeError(w, http.StatusServiceUnavailable, codeInternal, err.Error())
@@ -151,12 +168,28 @@ func (s *Server) requireToken(next http.Handler) http.Handler {
 	})
 }
 
-// limitBody caps request bodies. A prompt is text; nothing here has a reason
-// to be large, and the daemon should not be a memory sink for a bug upstream.
+// bodyLimits names the routes whose payload is not text. Everything absent
+// from this table gets DaemonMaxRequestBytes, and the table is exhaustive on
+// purpose: raising the cap for one route must be a decision someone made here,
+// not a side effect of a handler reading more than it should.
+var bodyLimits = map[string]func(config.Config) int64{
+	"POST /coding-tasks/attachments": func(c config.Config) int64 {
+		return c.CodingAttachmentMaxBytes
+	},
+}
+
+// limitBody caps request bodies. A prompt is text; almost nothing here has a
+// reason to be large, and the daemon should not be a memory sink for a bug
+// upstream. The exception is an image upload, which is bounded by its own
+// constant rather than by relaxing the cap for every route.
 func limitBody(cfg config.Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, cfg.DaemonMaxRequestBytes)
+			limit := cfg.DaemonMaxRequestBytes
+			if f, ok := bodyLimits[r.Method+" "+r.URL.Path]; ok {
+				limit = f(cfg)
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)
 	})

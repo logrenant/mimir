@@ -1,4 +1,11 @@
-import { endpoint, isTerminal, wsURL, type RunEvent } from "./daemon";
+import {
+  api,
+  endpoint,
+  isTerminal,
+  isTerminalStatus,
+  wsURL,
+  type RunEvent,
+} from "./daemon";
 
 /**
  * The rendered shape of a run: what the socket's flat event stream means once
@@ -21,10 +28,13 @@ export type ToolCard = {
 export type RunView = {
   text: string;
   reasoning: string;
+  /** The CLI's own stderr, which is where "run `claude login`" is written. */
+  stderr: string;
   tools: ToolCard[];
   lastSeq: number;
   finished: boolean;
   failed: boolean;
+  stopped: boolean;
   error?: string;
   costUSD?: number;
   numTurns?: number;
@@ -32,7 +42,16 @@ export type RunView = {
 };
 
 export function emptyRun(): RunView {
-  return { text: "", reasoning: "", tools: [], lastSeq: 0, finished: false, failed: false };
+  return {
+    text: "",
+    reasoning: "",
+    stderr: "",
+    tools: [],
+    lastSeq: 0,
+    finished: false,
+    failed: false,
+    stopped: false,
+  };
 }
 
 /**
@@ -88,6 +107,9 @@ export function reduceRun(view: RunView, event: RunEvent): RunView {
       }
       break;
     }
+    case "stderr":
+      next.stderr = view.stderr + (view.stderr ? "\n" : "") + (event.text ?? "");
+      break;
     case "rate_limit":
       next.rateLimited = event.utilization;
       break;
@@ -101,6 +123,11 @@ export function reduceRun(view: RunView, event: RunEvent): RunView {
       next.failed = true;
       next.error = event.error;
       break;
+    case "run.stopped":
+      // Not a failure: nobody should be asked to debug a cancellation.
+      next.finished = true;
+      next.stopped = true;
+      break;
     default:
       break;
   }
@@ -109,35 +136,113 @@ export function reduceRun(view: RunView, event: RunEvent): RunView {
 }
 
 /**
- * Opens the run socket.
+ * Opens the run socket, and keeps watching if it drops.
  *
  * The token rides `Sec-WebSocket-Protocol` because the browser WebSocket API
  * cannot set headers and the daemon refuses it in a query string. Returns a
  * closer; call it on unmount.
+ *
+ * Two failures used to be invisible here, and both left a panel reading
+ * "running" over nothing at all:
+ *
+ *  - a browser fires `error` and then `close` on a socket that never connected,
+ *    so the reason set by the first was erased by the second before anything
+ *    could render it. The first non-empty reason is the one that survives now.
+ *  - a socket that ended without a terminal event had no recovery path. It now
+ *    falls back to polling GET /coding-tasks/{id}, so a run that finished while
+ *    the connection was gone is still reported as finished.
  */
 export async function openRunStream(
   runID: string,
   onEvent: (event: RunEvent) => void,
   onClose: (reason?: string) => void,
 ): Promise<() => void> {
+  let disposed = false;
+  let notified = false;
+  let sawTerminal = false;
+  let reason: string | undefined;
+  let socket: WebSocket | null = null;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Told once, and told immediately: a watcher that has lost its stream should
+  // say so while it recovers, not after.
+  const notify = () => {
+    if (disposed || notified) return;
+    notified = true;
+    onClose(reason);
+  };
+
+  // The socket is the fast path, not the only one. If it ends without telling
+  // us how the run turned out, the daemon still knows — so ask it, backing off
+  // rather than hammering a daemon that may itself be restarting.
+  const pollUntilTerminal = (delay: number) => {
+    if (disposed || sawTerminal) return;
+    pollTimer = setTimeout(() => {
+      void api
+        .getCodingTask(runID)
+        .then((run) => {
+          if (disposed || sawTerminal) return;
+          if (!isTerminalStatus(run.status)) {
+            pollUntilTerminal(Math.min(delay * 2, 60_000));
+            return;
+          }
+          sawTerminal = true;
+          onEvent({
+            kind:
+              run.status === "completed"
+                ? "run.completed"
+                : run.status === "stopped"
+                  ? "run.stopped"
+                  : "run.failed",
+            run_id: run.id,
+            // Past anything the socket delivered, so the reducer's replay
+            // guard cannot drop the one event that ends the view.
+            seq: Number.MAX_SAFE_INTEGER,
+            at: run.ended_at ?? new Date().toISOString(),
+            error: run.error,
+            cost_usd: run.cost_usd,
+            num_turns: run.num_turns,
+          });
+        })
+        .catch(() => pollUntilTerminal(Math.min(delay * 2, 60_000)));
+    }, delay);
+  };
+
   const ep = await endpoint();
   const { url, protocol } = wsURL(runID, ep);
-  const socket = new WebSocket(url, protocol);
+  socket = new WebSocket(url, protocol);
 
   socket.onmessage = (message) => {
     try {
       const event = JSON.parse(String(message.data)) as RunEvent;
       onEvent(event);
-      if (isTerminal(event)) socket.close();
+      if (isTerminal(event)) {
+        sawTerminal = true;
+        socket?.close();
+      }
     } catch {
       /* a frame we cannot parse is dropped: the transcript remains the record */
     }
   };
-  socket.onerror = () => onClose("the run stream connection failed");
-  socket.onclose = () => onClose();
+  socket.onerror = () => {
+    reason ??= "the run stream connection failed";
+  };
+  socket.onclose = () => {
+    if (!sawTerminal) {
+      // Ended without an outcome: say so now, and keep asking the daemon.
+      reason ??= "the run stream connection closed before the run finished";
+      pollUntilTerminal(2000);
+    }
+    notify();
+  };
 
   return () => {
-    socket.onclose = null;
-    socket.close();
+    if (pollTimer) clearTimeout(pollTimer);
+    disposed = true;
+    if (socket) {
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.close();
+    }
   };
 }

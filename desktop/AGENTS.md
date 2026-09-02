@@ -110,3 +110,94 @@ the token anywhere but Tauri IPC and the socket subprotocol? Does any screen
 keep a filesystem path after registration? Does the reducer still dedupe on
 `seq` and match results by `call_id`? Does the lead-gen screen force
 `gap_analysis` on when `emails` is set, and does it ever send a prompt version?
+
+## Terminals, the board, and attachments (task-36)
+
+- **Terminal sessions live in `TerminalsProvider`, mounted above `Dashboard`.**
+  A run's socket has to outlive the screen that opened it: switching from
+  Terminals to the Board and back must show what happened in between, not a
+  panel that starts again. Putting the subscription in the Terminals screen's
+  own lifetime would lose it on every navigation.
+- **The terminal is not a PTY and must not pretend to be one.** The daemon runs
+  `claude` over pipes and parses its stream-json, so what a console here can
+  honestly show is that typed stream plus the CLI's stderr. The lines are
+  synthesised in `lib/terminals.ts`, which is also why there is no xterm.js:
+  there is no ANSI to parse, and the house palette and fonts are the point.
+- **Two board columns belong to the operator and three to the runner.** Backlog
+  and Queued accept a drop because they are decisions; Running, Done and Failed
+  do not because they are facts. `allowedMove` is that rule, and its refusals
+  carry a reason — a drop that silently springs back reads as a broken board.
+- **`"dragDropEnabled": false` on the main window is load-bearing.** Tauri's
+  native file-drop handler otherwise swallows the event and hands back a path
+  the WebView could not read anyway: there is no `fs` plugin and none is added.
+  With it off, paste, drop and `<input type="file">` all yield a `File`, which
+  needs no plugin, no capability and no Rust command.
+- **An attachment preview is a `data:` URI.** The CSP allows those and does not
+  allow an `http://127.0.0.1` image, so a stored attachment is rebuilt from the
+  base64 the daemon returns rather than linked to.
+- **`openRunStream` must never fail silently.** Two ways it used to: a browser
+  fires `error` then `close`, so the reason set by the first was erased by the
+  second; and a socket that ended without a terminal event had no recovery. The
+  first non-empty reason now survives, and the watcher falls back to polling
+  `GET /coding-tasks/{id}`. Both are covered by `openRunStream.test.ts` — the
+  socket had zero tests before, and both bugs were invisible without them.
+
+## Accounts and Recents (task-38)
+
+- **An account is a credential slot, and the app says so.** Registering one is
+  pointing at a directory — the same shape as registering a project, and the
+  path leaves the app exactly once. The app never sees a credential, and
+  "unut" forgets a slot rather than logging anybody out. Do not add a login
+  flow here: signing into a slot is `CLAUDE_SECURESTORAGE_CONFIG_DIR=<dir>
+  claude auth login`, and the manager says that in plain text.
+- **`claude auth status` is free, so the identity shown is live.** No API call,
+  no tokens. Caching it at registration would mean a slot whose login has
+  lapsed still reads as healthy, which is exactly the failure the row exists to
+  surface.
+- **Two slots can be the same person, and the rows will not say so.** A slot is
+  a directory hashed into a keychain entry name; registering one and signing it
+  into the account already in use gives two entries, two green rows, and one
+  rate limit. `identityClashes` compares the live probes and says it out loud —
+  verified on this machine, where both slots resolved to the same address.
+- **"Otomatik" is the default and stays first in the select.** A pin is the
+  exception; automatic assignment across slots is what makes a second account
+  worth registering at all.
+- **Recents is not a second store.** A finished run still has its transcript
+  and the socket replays it, so opening one is the same operation as opening a
+  live one — `recentRuns` is the board's own list minus what is already open.
+  Backlog and queued runs are excluded: there is nothing to replay, and an
+  empty console reads as broken. It fetches on expand, not on a timer, because
+  the daemon has no cross-project run route and this is an N+1 fan-out.
+
+## The dashboard and the model picker (task-40)
+
+- **One poll loop for the whole app: `RunsProvider`.** The daemon has no
+  cross-project run route, so a board is one `GET /coding-tasks` per registered
+  project. That fan-out is affordable once and wasteful twice — the dashboard
+  and the board read the same array. A new screen that shows runs subscribes to
+  it; it does not start a timer.
+- **A running job gets a terminal without being asked.** `adopt` runs from the
+  poll loop, because that is the only thing that sees a card the dispatcher
+  released or a task started from the menu bar. Only `running` is adopted:
+  adopting `queued` would open a console per released card with nothing to
+  print.
+- **Closing a tab has to stick.** The provider remembers dismissals or the next
+  poll reopens them and the close button appears not to work. The set is keyed
+  by run and cleared when the run ends — a dismissal is about that run, not
+  about that id forever.
+- **The mini console is a tail of the same `Session`, not a second
+  subscription.** One socket per run whichever screen is drawing it.
+- **Dependency health belongs on the first screen.** Crawl4AI was down for a
+  whole session while `/diagnostics` had been saying so — in a sentence that
+  even names the command. The strip shows that sentence verbatim; do not
+  paraphrase it, and do not add a button that runs it. Starting a container is
+  the operator's call on their own machine.
+- **The model list comes from `GET /coding-models`.** Never hardcode model ids
+  here: the daemon validates against its own allow-list and answers 400, so a
+  local copy would start offering options the daemon rejects the first time a
+  generation ships.
+- **The model select has no "automatic" entry.** The operator asked to be able
+  to tell the models apart, and a card that says "default" tells them apart
+  from nothing; the daemon's default is the option that starts selected. The
+  empty string still means "you decide" on the wire, for clients written before
+  the picker.

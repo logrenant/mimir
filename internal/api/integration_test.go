@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/coderunner"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/crawl"
@@ -117,7 +118,7 @@ func newLive(t *testing.T, claudePath string) *live {
 
 	bus := events.NewBus()
 	registry := project.NewRegistry(db)
-	runner := coderunner.New(ctx, cfg, bus, registry, db)
+	runner := coderunner.New(ctx, cfg, bus, registry, account.NewRegistry(db), db)
 
 	srv := httptest.NewServer(New(cfg, Deps{
 		Projects:    registry,

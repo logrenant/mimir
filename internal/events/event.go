@@ -26,6 +26,18 @@ const (
 	KindRateLimit      Kind = "rate_limit"
 	KindRunCompleted   Kind = "run.completed"
 	KindRunFailed      Kind = "run.failed"
+
+	// KindStderr is a line the CLI wrote to stderr. It is not part of the
+	// stream-json protocol and carries no structure — it exists because the
+	// reasons a run cannot work ("run `claude login`", a crash trace) are
+	// written there, and a watcher that never sees them cannot tell a broken
+	// run from a thinking one.
+	KindStderr Kind = "stderr"
+
+	// KindRunStopped ends a run the operator cancelled. Distinct from
+	// KindRunFailed because nothing is wrong: nobody should be asked to
+	// diagnose a stop.
+	KindRunStopped Kind = "run.stopped"
 )
 
 // Risk classifies what a tool call can do, so a watcher can weight what it
@@ -79,5 +91,6 @@ type Event struct {
 // Terminal reports whether this event ends its run. After a terminal event no
 // further events are published for that RunID.
 func (e Event) Terminal() bool {
-	return e.Kind == KindRunCompleted || e.Kind == KindRunFailed
+	return e.Kind == KindRunCompleted || e.Kind == KindRunFailed ||
+		e.Kind == KindRunStopped
 }
