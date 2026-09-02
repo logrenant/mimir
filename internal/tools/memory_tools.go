@@ -43,20 +43,9 @@ type memoryBase struct {
 // without one it reads interactive sessions alone, which is a smaller memory,
 // not a broken one.
 func (b *memoryBase) resolve(ctx context.Context, path string) (memory.Project, error) {
-	if path == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return memory.Project{}, fmt.Errorf("no project_path given and the working directory is unreadable: %w", err)
-		}
-		path = cwd
-	}
-
-	resolved, err := project.Canonicalize(path)
+	resolved, err := canonicalProject(path)
 	if err != nil {
-		if errors.Is(err, project.ErrPathNotAllowed) {
-			return memory.Project{}, fmt.Errorf("%q is not an allowed project directory", path)
-		}
-		return memory.Project{}, fmt.Errorf("%q is not a usable project directory: %w", path, err)
+		return memory.Project{}, err
 	}
 
 	p := memory.Project{Path: resolved}
@@ -66,6 +55,31 @@ func (b *memoryBase) resolve(ctx context.Context, path string) (memory.Project, 
 		}
 	}
 	return p, nil
+}
+
+// canonicalProject turns an optional caller-supplied path into a canonical one.
+//
+// It is shared with the brain tools rather than reimplemented there, because
+// "which directory is this" has to keep having exactly one answer
+// (internal/project/AGENTS.md) — a second copy is how a denylisted path
+// eventually gets through one door and not the other.
+func canonicalProject(path string) (string, error) {
+	if path == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("no project_path given and the working directory is unreadable: %w", err)
+		}
+		path = cwd
+	}
+
+	resolved, err := project.Canonicalize(path)
+	if err != nil {
+		if errors.Is(err, project.ErrPathNotAllowed) {
+			return "", fmt.Errorf("%q is not an allowed project directory", path)
+		}
+		return "", fmt.Errorf("%q is not a usable project directory: %w", path, err)
+	}
+	return resolved, nil
 }
 
 // catchUp folds a small amount of ingest into a read.

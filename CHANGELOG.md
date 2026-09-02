@@ -4,6 +4,81 @@ Bu dosya [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) biçimini,
 sürüm numaraları [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 kuralını izler.
 
+## [2.4.0] — 2026-09-02
+
+**Brain yeniden kuruldu, ve ucuz iş ucuz modele taşındı.** Bir önceki sürümde
+eklenen düğüm katmanı hiç çalışmıyordu; bu sürüm onu store'un üstüne yeniden
+kuruyor ve aynı anda model çağrılarını tek bir çıkışın arkasına alıyor.
+
+### Düzeltildi
+
+- **Brain'in üç aracı da her çağrıda hata veriyordu.** Handler'lar düz `string`
+  döndürüyordu; `internal/mcp/finalize.go` fail-closed olduğu için her çağrı
+  `mcp: response not refined` ile düşüyordu. Testler yeşildi çünkü kanonik liste
+  testi araçların yalnızca *adını* sayıyor, hiçbirini çağırmıyor — ve üç yanıt
+  tipi `chokepoint_test.go`'ya, yani tam bu hatayı yakalamak için var olan teste,
+  eklenmemişti. Dördü de artık orada.
+- **Aynı kaynağı iki kez ingest etmek iki düğüm üretiyordu.** Kimlik `UnixNano`
+  ile tuzlanmıştı, dolayısıyla bir repo iki kez okununca birbirine bağlanan iki
+  ayrı düğüm çıkıyordu. Kimlik artık `(project_path, kind, source_key)`.
+- **Özet başarısız olunca hiçbir şey kaydedilmiyordu.** Commit mesajı "bağlama
+  hatası ingest'i düşürmüyor" diyordu ama özetleyici düşünce `IngestData` erken
+  dönüyordu. Artık düğüm önce yazılıyor, sonra bağlanıyor: sağlayıcı yoksa düğüm
+  başlığıyla ve etiketsiz duruyor, aranabilir kalıyor.
+- **Testler ağa çıkıyordu.** Sahte bir `claude` yazan testler, distil'in birincil
+  sağlayıcısı `agy` olunca PATH'teki gerçek binary'e gidiyordu. `e2e` bu yüzden
+  29 saniye sürüyordu; şimdi 7. Boş bir `AgyCLIPath` artık `"agy"`ye
+  varsayılmıyor, sağlayıcı kendini kullanılamaz ilan ediyor.
+
+### Değişti
+
+- **Model çağrıları sınıfa göre yönlendiriliyor** (`internal/llm`). Damıtma —
+  sayfa özeti, episode recap'i, düğüm etiketi, sınıflandırma — `agy` ile
+  `gemini-3.7-flash-low` üzerinde; sentez ve gap analizi `claude-haiku-4-5` ile;
+  coding runner'a dokunulmadı. `agy` yoksa ya da kotası dolduysa router claude'a
+  düşüyor. `docs/ROADMAP.md` §B.1'in ilk maddesi sahip kararıyla bu doğrultuda
+  yeniden yazıldı.
+- **İki kopya exec kodu teke indi.** `internal/refine` ve eski Brain aynı
+  subprocess dansının iki elle yazılmış kopyasını taşıyordu ve ikisi çoktan
+  ayrışmıştı. `internal/refine` artık `internal/llm`'i çağırıyor;
+  `ErrClaudeUnavailable` sentinel'i yerinde duruyor.
+- **Etiket çıkarımı metin ayrıştırmayı bıraktı.** `agy --json-schema` ile
+  yapılandırılmış çıktı alınıyor. Eski kod `SUMMARY:` öneki bulamayınca ham
+  yanıtı değerlendirme sanıp sıfır etiketle kaydediyordu — ve sıfır etiketli bir
+  düğüm ne aramada ne kümelemede görünüyordu. Sıfır etiket artık reddediliyor.
+- **Kümeleme ingest başına O(N)'den O(1) yazmaya indi.** Eski `LinkNode` diskteki
+  her düğümü okuyor, tek ortak etiketi olan herkese kenar atıyor ve her komşunun
+  dosyasını yeniden yazıyordu. Şimdi adaylar tek bir FTS sorgusundan geliyor,
+  ucuz kenarlar yerel Jaccard ile hesaplanıyor, ve gerisine tek bir ilişki
+  geçişi karar veriyor — kenarlar tek yönde, tek transaction'da yazılıyor.
+
+### Eklendi
+
+- **`brain_related`** — bir düğümden komşularına yürüyor, ikinci bir arama
+  gerekmeden.
+- **Alias'lar.** Damıtma, düğümün metninde geçmeyen eşanlamlı ve komşu terimleri
+  de üretiyor ve bunlar FTS indeksine giriyor. Vektör indeksi olmadan semantik
+  erişimin karşılığı bu: "corruption prevention" araması, o kelimelerin hiçbiri
+  geçmeyen bir düğümü buluyor.
+- **`MIMIR_GITHUB_TOKEN`.** Eskiden `os.Getenv("GITHUB_TOKEN")` istek yolunun
+  ortasında okunuyordu (SD-1 ihlali). Artık `config.Load`'da, bir kez, ve
+  `docs/SECURITY.md`'de ikinci operatör kimlik bilgisi olarak yazılı.
+
+### Şema
+
+- `0013_brain.sql` — `brain_nodes`, `brain_edges`, `brain_fts`. Markdown dosya
+  deposu tamamen kaldırıldı; `data/brain/` `.gitignore`'dan çıktı.
+
+### Notlar
+
+- `agy`'nin araç kısıtlama bayrağı yok. Yerine `--sandbox`, repo olmayan boş bir
+  scratch çalışma dizini ve `MIMIR_NESTED=1` var — sonuncusu `mimir-mcp`'nin
+  sıfır araçla açılmasını sağlıyor, yani global kayıtlı Mimir'a özyineleme
+  kapalı. Bu, claude yolunun garantisinden zayıf ve `docs/SECURITY.md` bunu
+  olduğu gibi yazıyor.
+- `docs/CAPABILITIES.md` coding runner'ın `--mcp-config` ile Mimir'ı iç içe
+  yüklediğini iddia ediyordu; kod hiçbir zaman öyle yapmadı. İddia kaldırıldı.
+
 ## [2.3.0] — 2026-09-02
 
 **Model seçimi ve gerçek bir dashboard.** Bir task'ın hangi modeli harcayacağı

@@ -20,11 +20,13 @@ import (
 
 	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/api"
+	"github.com/logrenant/mimir/internal/brain"
 	"github.com/logrenant/mimir/internal/coderunner"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/crawl"
 	"github.com/logrenant/mimir/internal/events"
 	"github.com/logrenant/mimir/internal/leadgen"
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/maps"
 	"github.com/logrenant/mimir/internal/mapscrape"
 	mimirmcp "github.com/logrenant/mimir/internal/mcp"
@@ -124,6 +126,11 @@ func run() error {
 	// executed itself.
 	mem := memory.New(cfg, db, refineClient, db)
 
+	// The node core shares the store the memory does. Unlike the memory it is
+	// not project-scoped by construction: a node about a public repository
+	// belongs to no checkout, and the store keeps those under the empty scope.
+	knowledge := brain.New(cfg, db, llm.NewRouter(cfg))
+
 	srv := mimirmcp.NewServer(cfg)
 	if err := tools.RegisterAll(srv.Registry(), cfg, tools.Deps{
 		Search:   searchClient,
@@ -133,6 +140,7 @@ func run() error {
 		Maps:     mapsClient,
 		Memory:   mem,
 		Projects: projects,
+		Brain:    knowledge,
 	}); err != nil {
 		return err
 	}

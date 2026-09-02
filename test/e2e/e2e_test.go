@@ -81,6 +81,13 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 		"MIMIR_DDG_LITE_URL="+ddgSrv.URL,
 		"MIMIR_CRAWL4AI_URL="+crawlSrv.URL,
 		"MIMIR_CLAUDE_CLI_PATH="+fakeClaudePath,
+		// The distil tier's primary provider is agy, and this spawns the real
+		// binary. Without pointing it somewhere that does not exist, the test
+		// would send its prompts to whatever agy is installed on the machine
+		// and assert against that answer. Pointing it at a missing path makes
+		// the provider unavailable, which is exactly the case the router falls
+		// back to the fake claude for.
+		"MIMIR_AGY_CLI_PATH="+filepath.Join(t.TempDir(), "no-agy-here"),
 		"MIMIR_STORE_PATH="+filepath.Join(t.TempDir(), "mimir.db"),
 	)
 
@@ -104,7 +111,7 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 	defer func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		
+
 		// For debugging if something goes wrong
 		if t.Failed() {
 			t.Logf("Stderr output:\n%s", stderrBuf.String())
@@ -139,7 +146,7 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 	if id, ok := initRes["id"].(float64); !ok || id != 1 {
 		t.Fatalf("expected init response id 1")
 	}
-	
+
 	initNotif := `{"jsonrpc":"2.0","method":"notifications/initialized"}`
 	_, _ = stdin.Write([]byte(initNotif + "\n"))
 
@@ -148,13 +155,13 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 	toolsRes := sendReq(toolsReq)
 	result := toolsRes["result"].(map[string]any)
 	toolsList := result["tools"].([]any)
-	
+
 	foundTools := make(map[string]bool)
 	for _, toolItem := range toolsList {
 		toolMap := toolItem.(map[string]any)
 		foundTools[toolMap["name"].(string)] = true
 	}
-	
+
 	expectedTools := []string{"web_search", "fetch_page", "research", "diagnostics"}
 	for _, expected := range expectedTools {
 		if !foundTools[expected] {
@@ -201,7 +208,7 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 	if fetchResult["isError"] == true {
 		t.Fatalf("expected fetch_page success")
 	}
-	
+
 	// We expect fetch_page to return a JSON string with metadata
 	fetchContent := fetchResult["content"].([]any)[0].(map[string]any)["text"].(string)
 	var fetchOut map[string]any
@@ -253,7 +260,7 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 
 	// Shutdown gracefully
 	_ = stdin.Close()
-	
+
 	// Give process a moment to exit
 	select {
 	case err := <-func() chan error {

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/logrenant/mimir/internal/llm"
 )
 
 // Field clamps for the gap-analysis prompt. A business names itself, so Name is
@@ -56,7 +58,10 @@ func (c *Client) AnalyzeGaps(ctx context.Context, in GapInput) (Output, error) {
 
 	system, user := buildGapPrompt(in)
 
-	result, err := c.run(ctx, system, user)
+	// The one profile that is not distil work: this reads several classified
+	// companies at once and argues about what is missing between them, which is
+	// the synthesis tier's job (ROADMAP §B.1).
+	result, err := c.runClass(ctx, llm.Reason, system, user)
 	if err != nil {
 		return Output{}, err
 	}

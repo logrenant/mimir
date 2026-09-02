@@ -70,11 +70,13 @@ internal/
     AGENTS.md
   search/           (task-01) ← DuckDuckGo free search client
   crawl/            (task-01) ← Crawl4AI Docker HTTP client
-  refine/           (task-01) ← claude CLI refine client — the context-isolation firewall (4 prompt profiles)
+  llm/              (task-41) ← the one exit point for model calls: two CLI providers, routed by class of work
+    AGENTS.md
+  refine/           (task-01) ← the five prompt profiles — the context-isolation firewall
     AGENTS.md
   pipeline/         (task-01) ← Track A orchestration: search → crawl → refine → merge
     AGENTS.md
-  tools/            (task-01) ← MCP tool handlers (web_search, fetch_page, research, diagnostics, Stage F, maps_search, M8 memory tools)
+  tools/            (task-01) ← MCP tool handlers (web_search, fetch_page, research, diagnostics, Stage F, maps_search, M8 memory tools, brain tools)
   extract/          (Stage F) ← network-free HTML/JSON structured-data helpers
   ecommerce/ tiktok/ gmaps/ instagram/  (Stage F) ← free, no-login scrapers
   store/            (task-17) ← SQLite cache + local records (no CGO), append-only migrations
@@ -93,6 +95,8 @@ internal/
   sessionlog/       (M8)      ← inert parser: Claude Code / coding-run JSONL transcripts → Episodes
     AGENTS.md
   memory/           (M8)      ← long-lived per-project memory: bounded ingest, per-episode recap, read-time brief
+    AGENTS.md
+  brain/            (task-41) ← the node core: nodes + edges in the store, distilled and linked, read by every client
     AGENTS.md
 deploy/crawl4ai/    (task-07) ← pinned docker-compose for the local scraper
 deploy/playwright-maps/ (task-28) ← pinned Playwright sidecar for the Maps fallback

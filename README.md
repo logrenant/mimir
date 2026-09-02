@@ -37,7 +37,7 @@ Quick map:
 
 | Surface | Highlights |
 |---|---|
-| **MCP tools** (`bin/mimir-mcp`) | `web_search`, `fetch_page`, `research`, `diagnostics`, `ecommerce_product_lookup`, `tiktok_profile_lookup`, `gmaps_business_lookup`, `instagram_profile_lookup`, `maps_search` (only with a Places key), and the project-memory tools `project_context`, `context_recall`, `context_remember` |
+| **MCP tools** (`bin/mimir-mcp`) | `web_search`, `fetch_page`, `research`, `diagnostics`, `ecommerce_product_lookup`, `tiktok_profile_lookup`, `gmaps_business_lookup`, `instagram_profile_lookup`, `maps_search` (only with a Places key), the project-memory tools `project_context`, `context_recall`, `context_remember`, and the knowledge-base tools `brain_ingest_data`, `brain_ingest_github`, `brain_query_nodes`, `brain_related` |
 | **Daemon HTTP** (`bin/mimir-daemon`) | `/healthz`, `/diagnostics`, `/projects`, `/coding-tasks`, `GET /ws/runs/{id}` (live run stream), `/maps/leadgen`, `/maps/emails/status`, `/mcp` |
 | **Desktop app** (`desktop/`) | Menu-bar item (daemon status, new task, login item) · Quick task (⌘⇧G) · Connection handshake · Workspace (pick a folder, run a scoped `claude` coding task, watch its thought/action stream live) · Leadgen (region search → categorize → per-category gap analysis → drafted outreach emails) |
 

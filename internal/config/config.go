@@ -23,6 +23,50 @@ type Config struct {
 	ClaudeCLIPath string
 	ClaudeModel   string
 
+	// Provider routing (ROADMAP §B.1, amended 2026-09-02). Work is routed by
+	// class, not by taste: one-shot compression goes to the cheap tier, and
+	// synthesis stays where the capability is worth paying for. Both tiers are
+	// a local CLI riding an existing login — still no SDK and no API key — and
+	// both models are pinned to an exact version (SD-5).
+	//
+	// DistillFallback is availability only, not a retry policy: `agy` missing
+	// or out of quota must not take the distil path down, because every caller
+	// already has a claude login.
+	AgyCLIPath      string
+	AgyPrintTimeout time.Duration
+	DistillProvider string
+	DistillModel    string
+	DistillFallback string
+	ReasonProvider  string
+
+	// Brain — the node core (task-41). Nodes live in the same store as the
+	// project memory, keyed by (project_path, kind, source_key) so re-ingesting
+	// a source updates one row instead of minting another.
+	//
+	// There is no vector index and no embedding model here on purpose
+	// (ROADMAP §A.4 stays parked): semantic neighbours come from one relation
+	// pass over the FTS candidates, and semantic recall from alias terms the
+	// distil writes into the index.
+	//
+	// Invalidation: BrainPromptVersion. Bumping it makes every stored
+	// assessment stale and the distiller re-derives it; the deterministic
+	// columns and the edges survive.
+	BrainRelateCandidates    int
+	BrainRelateMinWeight     float64
+	BrainTagJaccardMin       float64
+	BrainNeighborCap         int
+	BrainSearchLimit         int
+	BrainAssessmentMaxTokens int
+	BrainBodyMaxChars        int
+	BrainSearchMaxTokens     int
+	BrainPromptVersion       string
+
+	// GitHubToken is the second operator-provisioned credential, and it earns
+	// that category the same way PlacesAPIKey does: empty is a valid, normal
+	// state (brain_ingest_github then reads public repositories only), and it
+	// is read once in Load and nowhere else.
+	GitHubToken string
+
 	// Timeouts
 	SearchTimeout   time.Duration
 	CrawlTimeout    time.Duration
@@ -259,6 +303,12 @@ func Load() Config {
 		DuckDuckGoLiteURL:      "https://lite.duckduckgo.com/lite/",
 		ClaudeCLIPath:          "claude",
 		ClaudeModel:            "claude-haiku-4-5-20251001",
+		AgyCLIPath:             "agy",
+		AgyPrintTimeout:        90 * time.Second,
+		DistillProvider:        "agy",
+		DistillModel:           "gemini-3.7-flash-low",
+		DistillFallback:        "claude",
+		ReasonProvider:         "claude",
 		SearchTimeout:          10 * time.Second,
 		CrawlTimeout:           45 * time.Second,
 		RefineTimeout:          60 * time.Second,
@@ -300,6 +350,16 @@ func Load() Config {
 		MemoryOpenEpisodeGrace: 10 * time.Minute,
 		MemoryIngestInterval:   5 * time.Minute,
 		MemoryPromptVersion:    "v1",
+
+		BrainRelateCandidates:    20,
+		BrainRelateMinWeight:     0.5,
+		BrainTagJaccardMin:       0.34,
+		BrainNeighborCap:         8,
+		BrainSearchLimit:         8,
+		BrainAssessmentMaxTokens: 160,
+		BrainBodyMaxChars:        8000,
+		BrainSearchMaxTokens:     1400,
+		BrainPromptVersion:       "brain-v2",
 
 		EcommerceLookupMaxTokens:   400,
 		TikTokProfileMaxTokens:     400,
@@ -400,6 +460,9 @@ func Load() Config {
 			c.Crawl4AIBaseURL = val
 		}
 	}
+	if val := os.Getenv("MIMIR_AGY_CLI_PATH"); val != "" {
+		c.AgyCLIPath = val
+	}
 	if val := os.Getenv("MIMIR_CLAUDE_CLI_PATH"); val != "" {
 		c.ClaudeCLIPath = val
 	}
@@ -441,6 +504,11 @@ func Load() Config {
 	// rather than advertising a tool that cannot work.
 	c.PlacesAPIKey = os.Getenv("MIMIR_GOOGLE_PLACES_API_KEY")
 
+	// The second one, same category and same rules. It is MIMIR_-prefixed
+	// rather than the bare GITHUB_TOKEN the wider ecosystem uses so that a
+	// token exported for some unrelated tool is never spent here by accident.
+	c.GitHubToken = os.Getenv("MIMIR_GITHUB_TOKEN")
+
 	// Derived after the override above so a test pointing StorePath at a temp
 	// directory gets an isolated transcript directory for free.
 	c.TranscriptDir = filepath.Join(filepath.Dir(c.StorePath), "transcripts")
@@ -467,6 +535,43 @@ func (c Config) Validate() error {
 	}
 	if c.ClaudeCLIPath == "" {
 		return errors.New("ClaudeCLIPath is empty")
+	}
+	if c.AgyCLIPath == "" {
+		return errors.New("AgyCLIPath is empty")
+	}
+	if c.DistillModel == "" {
+		return errors.New("DistillModel is empty")
+	}
+	if c.AgyPrintTimeout <= 0 {
+		return errors.New("AgyPrintTimeout must be > 0")
+	}
+	// A provider name that resolves to nothing would silently fall back to
+	// claude for every class, which is a working system that quietly stopped
+	// doing what the roadmap says it does.
+	for name, field := range map[string]string{
+		"DistillProvider": c.DistillProvider,
+		"DistillFallback": c.DistillFallback,
+		"ReasonProvider":  c.ReasonProvider,
+	} {
+		if field != "claude" && field != "agy" {
+			return errors.New(name + " must be \"claude\" or \"agy\", got: " + field)
+		}
+	}
+
+	if c.BrainRelateCandidates <= 0 || c.BrainNeighborCap <= 0 || c.BrainSearchLimit <= 0 {
+		return errors.New("brain count fields must be > 0")
+	}
+	if c.BrainRelateMinWeight <= 0 || c.BrainRelateMinWeight > 1 {
+		return errors.New("BrainRelateMinWeight must be in (0, 1]")
+	}
+	if c.BrainTagJaccardMin <= 0 || c.BrainTagJaccardMin > 1 {
+		return errors.New("BrainTagJaccardMin must be in (0, 1]")
+	}
+	if c.BrainAssessmentMaxTokens <= 0 || c.BrainBodyMaxChars <= 0 || c.BrainSearchMaxTokens <= 0 {
+		return errors.New("brain size fields must be > 0")
+	}
+	if c.BrainPromptVersion == "" {
+		return errors.New("BrainPromptVersion is empty")
 	}
 
 	if c.SearchTimeout <= 0 || c.CrawlTimeout <= 0 || c.RefineTimeout <= 0 || c.ResearchTimeout <= 0 {

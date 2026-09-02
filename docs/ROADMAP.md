@@ -101,7 +101,10 @@ Supporting components still unbuilt:
 
 - **Local embeddings + vector index** — for semantic dedup and recall, fully
   local. An embedding model would be this repo's only local-model dependency
-  and needs its own justification.
+  and needs its own justification. Still parked, and the Brain layer (§B.10)
+  deliberately did not take it: semantic neighbours there come from one `agy`
+  pass over FTS5 candidates, and semantic *recall* from alias terms written
+  into the index at ingest. Neither adds a runtime dependency.
 - **Multi-model refine routing** — `claude-haiku-4-5` for fast distillation, a
   Sonnet-tier model for cross-source synthesis. Track B / M2's second pinned
   model constant (`config.CodingModel`) is the seed; routing would generalize it.
@@ -151,12 +154,32 @@ This repo (`mimir`) is a clean-room build that already avoids most of
 that: constants-only config (SD-1), a fail-closed context-isolation choke-point
 (SD-2/SD-7, `internal/mcp/finalize.go`), bounded/cancellable concurrency (SD-3),
 typed sentinel errors (SD-6), tests on every task (SD-8). It also already
-satisfies requirement 1 — `internal/refine.Client.Distil()` shells out to the
-local `claude` CLI, no Anthropic SDK, no API key, no Ollama.
+satisfies requirement 1 — `internal/refine.Client.Distil()` shells out to a
+local CLI riding an existing login, no Anthropic SDK, no API key, no Ollama.
 
 ## B.1 Requirements (the owner's ask)
 
-1. LLM: exclusively Claude Code models, no other provider.
+1. LLM: work is routed by class, not by taste, and every provider is a local
+   CLI riding an existing login — no SDK, no API key.
+   - **distill** — page summaries, recaps, tags, classification, markdown and
+     repo scanning: the `agy` CLI, pinned `gemini-3.7-flash-low`, falling back
+     to `claude-haiku-4-5-20251001` when `agy` is unavailable.
+   - **reason** — cross-source synthesis, gap analysis, task framing:
+     `claude`, pinned `claude-haiku-4-5-20251001`.
+   - **code** — the folder-scoped coding runner: `claude`, one of
+     `config.CodingModels`, chosen per task.
+
+   *Amended 2026-09-02 at the owner's direction, outside a task file, the same
+   way M8 shipped. The original requirement read "exclusively Claude Code
+   models, no other provider" and it held for as long as there was one call
+   shape. It stopped being the right constraint once the cheap half of the work
+   — distilling one page, tagging one node — became the majority of the calls:
+   paying a reasoning-tier model for it buys nothing, and `agy` does it on a
+   free quota with structured output the old text parsing never had. What the
+   requirement was actually protecting is unchanged and still enforced: no API
+   keys, no vendored SDK, no model that is not pinned to an exact version
+   (SD-5), and the fail-closed choke-point still decides what reaches the
+   consumer regardless of which provider produced it.*
 2. Minimize Claude Code token spend on repetitive operations via dedicated
    scraper/data APIs, with the data managed inside this tool.
 3. Pick a project folder (Finder-style picker), then run agents/APIs scoped to

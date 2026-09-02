@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/logrenant/mimir/internal/account"
+	"github.com/logrenant/mimir/internal/brain"
 	"github.com/logrenant/mimir/internal/coderunner"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/crawl"
 	"github.com/logrenant/mimir/internal/events"
+	"github.com/logrenant/mimir/internal/llm"
 	mimirmcp "github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/pipeline"
 	"github.com/logrenant/mimir/internal/project"
@@ -111,6 +113,10 @@ func newLive(t *testing.T, claudePath string) *live {
 		Crawl:    crawlClient,
 		Refine:   refineClient,
 		Pipeline: pipe,
+		// The node core follows the store the daemon's does, so the canonical
+		// list below actually covers the brain tools instead of silently
+		// dropping them the moment they became conditional.
+		Brain: brain.New(cfg, db, llm.NewRouter(cfg)),
 	}); err != nil {
 		cancel()
 		t.Fatalf("RegisterAll: %v", err)
@@ -327,9 +333,9 @@ func TestLive_MCPRouteExposesTheCanonicalToolSet(t *testing.T) {
 	// provisioned (see newLive, and TestRegisterAll_MapsSearchFollowsTheCredential).
 	want := []string{
 		"brain_ingest_data", "brain_ingest_github", "brain_query_nodes",
-		"diagnostics", "ecommerce_product_lookup", "fetch_page",
-		"gmaps_business_lookup", "instagram_profile_lookup", "research",
-		"tiktok_profile_lookup", "web_search",
+		"brain_related", "diagnostics", "ecommerce_product_lookup",
+		"fetch_page", "gmaps_business_lookup", "instagram_profile_lookup",
+		"research", "tiktok_profile_lookup", "web_search",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("tool set over HTTP:\n got %v\nwant %v", got, want)

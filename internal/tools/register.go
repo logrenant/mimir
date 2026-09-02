@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 
+	"github.com/logrenant/mimir/internal/brain"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/crawl"
 	"github.com/logrenant/mimir/internal/maps"
@@ -35,6 +36,11 @@ type Deps struct {
 	// read interactive sessions only.
 	Memory   *memory.Memory
 	Projects ProjectFinder
+
+	// Brain is optional for the same reason Memory is, and follows the same
+	// store: a knowledge base with nowhere to keep nodes is not a degraded
+	// knowledge base, it is none.
+	Brain *brain.Core
 }
 
 // RegisterAll registers the canonical Mimir tool set on reg.
@@ -50,11 +56,6 @@ func RegisterAll(reg *mcp.Registry, cfg config.Config, d Deps) error {
 		NewFetchPage(cfg, d.Pipeline),
 		NewResearch(d.Pipeline, cfg),
 		NewDiagnostics(cfg, d.Crawl, d.Refine, d.Search, d.Memory),
-
-		// Brain (Nervous System) tools
-		NewBrainIngestData(cfg),
-		NewBrainIngestGitHub(cfg),
-		NewBrainQueryNodes(cfg),
 
 		// Stage F — free, self-scraped providers. No refine call (see each
 		// package's doc comment), so the pipeline is used only for FetchRaw.
@@ -82,6 +83,17 @@ func RegisterAll(reg *mcp.Registry, cfg config.Config, d Deps) error {
 			NewProjectContext(cfg, d.Memory, d.Projects),
 			NewContextRecall(cfg, d.Memory, d.Projects),
 			NewContextRemember(cfg, d.Memory, d.Projects),
+		)
+	}
+
+	// task-41 — the node core. Availability follows the store, exactly as the
+	// memory tools' does, and for the same reason.
+	if d.Brain != nil && d.Brain.Available() {
+		toolSet = append(toolSet,
+			NewBrainIngestData(cfg, d.Brain),
+			NewBrainIngestGitHub(cfg, d.Brain),
+			NewBrainQueryNodes(cfg, d.Brain),
+			NewBrainRelated(cfg, d.Brain),
 		)
 	}
 

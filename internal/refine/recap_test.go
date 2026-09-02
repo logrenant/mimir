@@ -57,6 +57,10 @@ func recapClient(t *testing.T, body string) *Client {
 	t.Helper()
 	cfg := config.Load()
 	cfg.ClaudeCLIPath = writeFakeClaude(t, false, body)
+	// config.Load() names the real agy binary. Left in place, these tests
+	// would send their prompts to whatever is installed on the machine instead
+	// of the fake CLI they just wrote, and pass or fail on its mood.
+	cfg.AgyCLIPath = ""
 	return New(cfg)
 }
 

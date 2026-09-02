@@ -124,9 +124,17 @@ OpenGraph helpers). Those tools return small structured facts and skip
 - Health: `GET /health` (or a cheap known route) used by `diagnostics` and at
   first use.
 
-### claude CLI (local, headless, pinned model)
-- `exec.CommandContext(ctx, cliPath, "-p", "--model", "claude-haiku-4-5-20251001", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--restricted", "--effort", "low", "--system-prompt", system, "--disallowedTools", "...")`, page content piped over stdin, response parsed from the `result` field of the CLI's JSON stdout.
-- Health: `claude --version` succeeds; no API key required — auth rides the operator's existing `claude login` session.
+### The model providers (local, headless, pinned models)
+
+Both live in `internal/llm`, which is the only place outside
+`internal/coderunner` that spawns a model subprocess. Work is routed by class:
+`Distill` (page summaries, recaps, node assessments, classification) to `agy`,
+`Reason` (cross-source synthesis, gap analysis) to `claude`. See
+`docs/ROADMAP.md` §B.1.
+
+- **agy** — `exec.CommandContext(ctx, cliPath, "--model", "gemini-3.7-flash-low", "--output-format", "json", "--input-format", "text", "--sandbox", "--disable-slash-commands", "--print-timeout", d, "--json-schema", schema)`, content piped over stdin, response read from `structured_output` when a schema was given and `response` otherwise; `status != "SUCCESS"` is an error. `cmd.Dir` is an empty scratch directory and the environment carries `MIMIR_NESTED=1`. Health: `agy models` succeeds.
+- **claude** — `exec.CommandContext(ctx, cliPath, "-p", "--model", "claude-haiku-4-5-20251001", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--restricted", "--effort", "low", "--system-prompt", system, "--disallowedTools", "...")`, content piped over stdin, response parsed from the `result` field. Health: `claude --version` succeeds.
+- Neither needs an API key — each rides its own CLI's existing sign-in. `agy` being absent or out of quota falls back to `claude`; that is availability, not preference.
 
 ---
 
@@ -294,6 +302,36 @@ truncating it. Paths are resolved by `internal/project.Canonicalize` and never
 registered: reading a project's history does not mint the permission a coding run
 needs.
 
+### 7.8 The node core (`internal/brain` + `internal/llm`)
+
+Where §7.7's memory answers "what happened in this checkout", Brain answers "what
+do we know about this thing", across projects and across every client that has
+Mimir registered. It is the derived half: nothing in it is a second source of
+truth for what the memory already records.
+
+**Shape.** `brain_nodes` + `brain_edges` + a `brain_fts` external-content index,
+migration `0013_brain.sql`, in the same store. Identity is
+`(project_path, kind, source_key)`, so re-ingesting a source updates one row;
+`project_path = ''` is the global scope, visible from every project.
+
+**One ingest.** Sanitize and store the node, *then* link it — a failure in the
+linking leaves a stored, searchable node with fewer edges. The distil is one node
+in, a validated title/assessment/tags/aliases out, through `internal/llm` with a
+JSON schema; a rejection costs the assessment and nothing else, exactly as a
+rejected recap does in §7.7. Linking is one FTS query for candidates, free
+tag-Jaccard edges, and one relation pass over the same candidates that sees only
+titles, kinds and tags — never a body.
+
+**Why there is no vector index.** `ROADMAP` §A.4 keeps local embeddings parked
+and this layer did not need to unpark them: semantic neighbours come from that
+relation pass, and semantic *recall* from alias terms the distil writes into the
+index, which is what lets bm25 match a query whose words appear nowhere in the
+node. Neither adds a runtime dependency.
+
+**The rule it exists to enforce.** No ingest ever rewrites another node. The
+layer this replaced kept a Markdown file per node and rewrote each neighbour's
+file on every ingest, swallowing the errors — the shape §B.9 exists to forbid.
+
 ### 7.5 Desktop app (`desktop/`)
 
 Tauri (Rust shell) + React + shadcn/ui + Tailwind, macOS/ARM64. A **menu-bar
@@ -324,7 +362,7 @@ same `reduceRun`. Dismissing it does not cancel the run; a system notification
 reports the result, because a task started from the menu bar is one nobody is
 watching.
 
-### 7.6 The operator-provisioned credential
+### 7.6 The operator-provisioned credentials
 
 `MIMIR_GOOGLE_PLACES_API_KEY` is the single exception to `docs/SECURITY.md`'s
 "zero API keys configured by Mimir itself" stance — narrow, documented, and read

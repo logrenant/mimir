@@ -53,6 +53,26 @@ spend part of every session's context advertising a dead end.
 | `context_recall` | `query: string`, `limit?: int` (≤20), `project_path?: string` | `{ query, hits[{at,title,summary,files[]}], notes[], guidance, refined: true }` | ~1100 tokens | store |
 | `context_remember` | `text: string`, `kind: decision\|convention\|trap\|todo`, `project_path?: string` | `{ stored{at,kind,text}, metadata_only: true }` | ~400 tokens | store |
 
+### The knowledge base (task-41)
+
+Where the project memory answers "what happened in this checkout", these answer
+"what do we know about this thing" — across projects, and across every model
+that writes into it. Availability follows the store, exactly as above.
+
+| Tool | Input | Output | Ceiling | Needs |
+|---|---|---|---|---|
+| `brain_ingest_data` | `source: string`, `content: string`, `kind?: note\|research\|decision\|session\|file\|commit`, `project_path?: string` | `{ node{id,kind,source,title,assessment,tags[],neighbors[]}, distilled, note?, linked, refined: true }` | ~1400 tokens | store; a distil provider (stored without an assessment if none answers) |
+| `brain_ingest_github` | `repo: string` (owner/name or URL) | same as above, stored globally | ~1400 tokens | store; `api.github.com`; `MIMIR_GITHUB_TOKEN` for private repos |
+| `brain_query_nodes` | `query: string`, `limit?: int` (≤20), `project_path?: string` | `{ query, nodes[…], refined: true }` | ~1400 tokens | store |
+| `brain_related` | `node_id: string`, `limit?: int` (≤40) | `{ node{…,neighbors[]}, refined: true }` | ~1400 tokens | store |
+
+Identity is `(project_path, kind, source_key)`, so re-ingesting one source
+updates a row rather than minting another. A node's `aliases` — synonyms and
+adjacent terms the distil writes into the FTS index — are what let a search
+match a node whose text does not contain the query's words; there is no vector
+index. Nodes with an empty `project_path` are global and visible from every
+project.
+
 `context_recall` returns **pointers, not file contents** — the titles, dates and
 file paths an answer lives in. Re-reading the named files is cheap; rediscovering
 *which* files they are is what costs a context window.
@@ -121,10 +141,11 @@ second-by-second.
 - **Scoping is hard.** `internal/coderunner` sets `cmd.Dir = project.Path` *and*
   passes `--add-dir <project.Path>`, plus a fixed `--permission-mode` constant.
   The runner can only see the folder you picked.
-- **It calls back into Mimir's own tools.** The session is launched with an
-  `--mcp-config` naming `mimir-mcp` as a nested MCP server, so the coding agent
-  uses Mimir's refined web access instead of its own — keeping repetitive
-  scraping off the token bill.
+- **It reaches Mimir the way any other session does.** Through the client's own
+  MCP registration, not a nested `--mcp-config` — that was planned in
+  `docs/ROADMAP.md` §B.2.1, parked in `task-35`'s *Out of scope*, and this
+  document previously claimed it as shipped. It is not, and the runner passes no
+  such flag.
 - **Live streaming.** stdout is parsed line-by-line (`stream-json`), cumulative
   text/thinking length tracked **per `message.id`**, and only deltas are emitted
   as typed events — published on an in-process bus *and* appended to a JSONL
@@ -172,7 +193,7 @@ spawns `mimir-daemon` with exactly those two env vars, and reaps it on quit. The
 WebView never parses subprocess output; REST goes through Rust (`daemon_request`)
 so the token never enters the WebView.
 
-Three screens:
+Seven screens:
 
 | Screen | What you do there |
 |---|---|

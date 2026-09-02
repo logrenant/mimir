@@ -7,8 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/logrenant/mimir/internal/brain"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/llm"
 	mimirmcp "github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/memory"
 	"github.com/logrenant/mimir/internal/pipeline"
@@ -54,6 +56,19 @@ func run() error {
 
 	srv := mimirmcp.NewServer(cfg)
 
+	// A nested instance serves the protocol and nothing else.
+	//
+	// Mimir is registered as a global MCP server in every client on this
+	// machine, and the distil provider is itself one of those clients: without
+	// this, every page summary would start a second mimir-mcp, which would open
+	// the store, register a dozen tools and offer the refiner the very tools it
+	// is being isolated from. The subprocess sets MIMIR_NESTED=1
+	// (internal/llm), and this is the other half of that contract.
+	if os.Getenv("MIMIR_NESTED") == "1" {
+		slog.Info("nested instance: serving no tools")
+		return srv.Run(ctx)
+	}
+
 	searchClient := search.New(cfg)
 	crawlClient := crawl.New(cfg)
 	refineClient := refine.New(cfg)
@@ -82,9 +97,11 @@ func run() error {
 	// remembers interactive sessions only.
 	var mem *memory.Memory
 	var projects tools.ProjectFinder
+	var knowledge *brain.Core
 	if pageStore != nil {
 		mem = memory.New(cfg, pageStore, refineClient, nil)
 		projects = project.NewRegistry(pageStore)
+		knowledge = brain.New(cfg, pageStore, llm.NewRouter(cfg))
 	}
 
 	// One canonical tool list, shared with cmd/mimir-daemon (task-22).
@@ -95,6 +112,7 @@ func run() error {
 		Pipeline: pipe,
 		Memory:   mem,
 		Projects: projects,
+		Brain:    knowledge,
 	}); err != nil {
 		return err
 	}

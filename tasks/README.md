@@ -19,6 +19,7 @@
 | [task-38](task-38-desktop-accounts-recents.md) | done | Desktop: account manager with a live auth probe, account picker on both composers, and a collapsed Recents list of past terminals. |
 | [task-39](task-39-coding-model-choice.md) | done | Per-task model choice: an allow-list in `internal/config`, published at `GET /coding-models`, carried on the row and into `--model`. |
 | [task-40](task-40-desktop-dashboard.md) | done | Desktop: the home screen becomes a dashboard (live consoles, queue, dependency health, account load), one shared run poll, and the model picker. |
+| [task-41](task-41-brain-core.md) | done | Brain v2: the node core rebuilt on the store (`0013_brain.sql`), and `internal/llm` — one exit point for model calls, routed by class of work. |
 
 They are split by file, not by package: the odd-numbered tasks own
 `internal/**` and `cmd/**`, the even-numbered ones own `desktop/**`, so a
@@ -113,6 +114,12 @@ numbering in two places, both recorded below.
   `internal/tools/register.go`, both `cmd/` mains — which is exactly why the
   parallelism rule below would have put all of them in one task.
 
+- **The first Brain layer (commit `013f7d7`) also shipped without a task file**,
+  and unlike M8 it was not recorded here at the time. It did not work: all three
+  of its tools failed the SD-2 choke-point on every call, and the suite stayed
+  green because the canonical-list test asserts names without ever invoking one.
+  `task-41` replaces it and is the file that should have existed first. Recorded
+  so the chain of record stays honest.
 
 - **M3 was split in two** because the shell and the screens are different risks:
   the handshake is process plumbing with a security boundary (port, token, child

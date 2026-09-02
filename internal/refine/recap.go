@@ -245,3 +245,14 @@ func asciiRatio(s string) float64 {
 	}
 	return float64(ascii) / float64(total)
 }
+
+// ValidateProse is validateRecap under a name other packages can call.
+//
+// It exists so the Brain distiller (internal/brain) rejects the same shapes on
+// the same rules rather than growing a second, drifting copy of them — the
+// mistake the first Brain layer made with this package's subprocess handling.
+// `source` is the untrusted input the text was derived from; it is used only by
+// the script-drift rule, which is conditional on the input being ASCII.
+func ValidateProse(text, source string) error {
+	return validateRecap(text, source)
+}

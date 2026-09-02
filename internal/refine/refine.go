@@ -1,16 +1,12 @@
 package refine
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
-	"strings"
-	"time"
 
 	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/llm"
 )
 
 var (
@@ -19,13 +15,6 @@ var (
 	// dependency (AGENT_RULES §1.4).
 	ErrClaudeUnavailable = errors.New("refine: claude CLI unavailable")
 )
-
-// disallowedTools are force-denied on every headless refine call so the
-// refiner can never act on injected content — it only ever produces text.
-var disallowedTools = []string{
-	"Bash", "Read", "Write", "Edit", "Grep", "Glob",
-	"WebFetch", "WebSearch", "Task", "NotebookEdit", "TodoWrite",
-}
 
 type Input struct {
 	Query        string
@@ -41,52 +30,51 @@ type Output struct {
 	TokenEstimate int
 }
 
+// Client is the five prompt profiles. It no longer owns a subprocess: the
+// exec, the flags and the retry live in internal/llm, which is also where the
+// second provider is, so the profiles here choose a *class of work* and let
+// the router decide which CLI answers it.
 type Client struct {
-	cliPath string
-	model   string
-	cfg     config.Config
+	router *llm.Router
 }
 
 func New(cfg config.Config) *Client {
-	cliPath := cfg.ClaudeCLIPath
-	if cliPath == "" {
-		cliPath = "claude"
-	}
-	return &Client{
-		cliPath: cliPath,
-		model:   cfg.ClaudeModel,
-		cfg:     cfg,
-	}
+	return &Client{router: llm.NewRouter(cfg)}
 }
 
+// unavailable keeps this package's own sentinel over whatever the router
+// reported. Callers across the repo test for ErrClaudeUnavailable and turn it
+// into the "run `claude login`" remedy line, and a provider swap underneath is
+// not a reason for those branches to stop matching.
 func (c *Client) unavailable(cause error) error {
-	return fmt.Errorf("%w: `%s` CLI not usable (model %s) — run `claude login` to authenticate, or check it is on PATH (cause: %v)",
-		ErrClaudeUnavailable, c.cliPath, c.model, cause)
+	return fmt.Errorf("%w: %v", ErrClaudeUnavailable, cause)
 }
 
-// Health checks that the `claude` CLI is installed and runnable.
+// Health checks that the refiner's providers are usable. It reports healthy if
+// the distil tier answers, because that is the tier every profile but the gap
+// analysis rides.
 func (c *Client) Health(ctx context.Context) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.RefineTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, c.cliPath, "--version")
-	if err := cmd.Run(); err != nil {
-		return false, c.unavailable(err)
+	p := c.router.Provider(llm.Distill)
+	if p == nil {
+		return false, c.unavailable(errors.New("no distil provider configured"))
+	}
+	if err := p.Health(ctx); err != nil {
+		// A fallback that answers is a healthy refiner: the primary being down
+		// costs speed, not capability.
+		alt := c.router.Provider(llm.Reason)
+		if alt == nil || alt.Name() == p.Name() {
+			return false, c.unavailable(err)
+		}
+		if altErr := alt.Health(ctx); altErr != nil {
+			return false, c.unavailable(err)
+		}
 	}
 	return true, nil
 }
 
-// cliResult is the shape of `claude -p --output-format json`'s stdout.
-type cliResult struct {
-	Result  string `json:"result"`
-	IsError bool   `json:"is_error"`
-	Subtype string `json:"subtype"`
-}
-
-// Distil sends the markdown and query to the local `claude` CLI (headless,
-// tool-less, single-turn) to be distilled. This is the context-isolation
-// firewall (SD-2): untrusted scraped Markdown goes in, compact factual text
-// comes out.
+// Distil sends the markdown and query to the distil provider (headless,
+// single-turn) to be distilled. This is the context-isolation firewall (SD-2):
+// untrusted scraped Markdown goes in, compact factual text comes out.
 func (c *Client) Distil(ctx context.Context, in Input) (Output, error) {
 	cleanMd, mdTruncated := sanitizePage(in.PageMarkdown, in.MaxTokens*8)
 	in.PageMarkdown = cleanMd
@@ -113,68 +101,31 @@ func (c *Client) Distil(ctx context.Context, in Input) (Output, error) {
 	}, nil
 }
 
-// run is the one place the refiner's subprocess is invoked. Both prompt
-// profiles — Distil's page summary and Classify's closed-vocabulary choice —
-// go through it, so the flags that make the subprocess harmless (headless,
-// `--restricted`, every built-in tool force-denied, no session persistence, no
-// MCP config to recurse into) are chosen once and cannot drift apart.
+// run is the default route: distil work.
 //
-// It returns the model's raw `result` string. Deciding whether that string is
-// acceptable belongs to the caller's profile: prose is clamped, JSON is parsed
-// against a closed set.
+// It returns the model's raw text. Deciding whether that text is acceptable
+// belongs to the caller's profile — prose is clamped and validated, JSON is
+// parsed against a closed set — which is why nothing is checked here.
 func (c *Client) run(ctx context.Context, systemPrompt, userContent string) (string, error) {
-	args := []string{
-		"-p",
-		"--model", c.model,
-		"--output-format", "json",
-		"--no-session-persistence",
-		"--strict-mcp-config",
-		"--restricted",
-		"--effort", "low",
-		"--system-prompt", systemPrompt,
-		"--disallowedTools", strings.Join(disallowedTools, " "),
-	}
+	return c.runClass(ctx, llm.Distill, systemPrompt, userContent)
+}
 
-	var stdout, stderr bytes.Buffer
-	var lastErr error
-
-	for attempt := 1; attempt <= 2; attempt++ {
-		stdout.Reset()
-		stderr.Reset()
-
-		runCtx, cancel := context.WithTimeout(ctx, c.cfg.RefineTimeout)
-		cmd := exec.CommandContext(runCtx, c.cliPath, args...)
-		cmd.Stdin = strings.NewReader(userContent)
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		lastErr = cmd.Run()
-		cancel()
-
-		if lastErr == nil {
-			break
+// runClass is the one place a prompt profile becomes a model call.
+//
+// The class, not the profile, is what picks the provider: compressing one page
+// or one episode is distil work and goes to the cheap tier, while synthesis
+// across sources is not (ROADMAP §B.1). Deciding it here rather than in each
+// profile is what keeps that mapping legible in one screen.
+func (c *Client) runClass(ctx context.Context, class llm.Class, systemPrompt, userContent string) (string, error) {
+	resp, err := c.router.Complete(ctx, class, llm.Request{
+		System: systemPrompt,
+		User:   userContent,
+	})
+	if err != nil {
+		if errors.Is(err, llm.ErrProviderUnavailable) {
+			return "", c.unavailable(err)
 		}
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return "", ctx.Err()
-		}
-		if attempt < 2 {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
+		return "", err
 	}
-
-	if lastErr != nil {
-		return "", c.unavailable(fmt.Errorf("%w: %s", lastErr, stderr.String()))
-	}
-
-	var raw cliResult
-	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
-		return "", fmt.Errorf("failed to parse claude CLI JSON output: %w", err)
-	}
-
-	if raw.IsError {
-		return "", c.unavailable(fmt.Errorf("claude CLI reported an error (subtype %s)", raw.Subtype))
-	}
-
-	return raw.Result, nil
+	return resp.Text, nil
 }

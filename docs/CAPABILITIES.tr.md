@@ -55,6 +55,25 @@ oturumun context'inden pay alıp çıkmaz sokak reklamı yapar.
 | `context_recall` | `query: string`, `limit?: int` (≤20), `project_path?: string` | `{ query, hits[{at,title,summary,files[]}], notes[], guidance, refined: true }` | ~1100 token | store |
 | `context_remember` | `text: string`, `kind: decision\|convention\|trap\|todo`, `project_path?: string` | `{ stored{at,kind,text}, metadata_only: true }` | ~400 token | store |
 
+### Bilgi çekirdeği (task-41)
+
+Proje hafızası "bu klasörde ne oldu" sorusunu yanıtlıyor; bunlar "bu şey
+hakkında ne biliyoruz" sorusunu — projeler arası ve içine yazan her model için.
+Kullanılabilirlik yukarıdakiyle aynı şekilde store'u izler.
+
+| Araç | Girdi | Çıktı | Tavan | Gerektirir |
+|---|---|---|---|---|
+| `brain_ingest_data` | `source: string`, `content: string`, `kind?: note\|research\|decision\|session\|file\|commit`, `project_path?: string` | `{ node{id,kind,source,title,assessment,tags[],neighbors[]}, distilled, note?, linked, refined: true }` | ~1400 token | store; bir damıtma sağlayıcısı (hiçbiri yanıtlamazsa düğüm değerlendirmesiz saklanır) |
+| `brain_ingest_github` | `repo: string` (owner/name veya URL) | yukarıdakiyle aynı, global kapsamda | ~1400 token | store; `api.github.com`; özel repolar için `MIMIR_GITHUB_TOKEN` |
+| `brain_query_nodes` | `query: string`, `limit?: int` (≤20), `project_path?: string` | `{ query, nodes[…], refined: true }` | ~1400 token | store |
+| `brain_related` | `node_id: string`, `limit?: int` (≤40) | `{ node{…,neighbors[]}, refined: true }` | ~1400 token | store |
+
+Kimlik `(project_path, kind, source_key)`; aynı kaynağı yeniden ingest etmek yeni
+bir düğüm üretmez, mevcut satırı günceller. Damıtmanın FTS indeksine yazdığı
+`aliases` terimleri — eşanlamlılar ve komşu kavramlar — bir aramanın, sorgunun
+kelimelerini hiç içermeyen bir düğümü bulmasını sağlayan şeydir; vektör indeksi
+yoktur. `project_path` boş olan düğümler globaldir ve her projeden görünür.
+
 `context_recall` **içerik değil işaretçi** döndürür: cevabın yaşadığı başlıklar,
 tarihler ve dosya yolları. Adı verilen dosyaları yeniden okumak ucuzdur; *hangi*
 dosyalar olduğunu yeniden keşfetmek bir context penceresine mal olur.
@@ -126,10 +145,11 @@ düşünce/eylem akışını canlı, saniye saniye izleyin.
   ayarlar *ve* `--add-dir <project.Path>` geçirir, ayrıca sabit bir
   `--permission-mode` sabiti kullanır. Çalıştırıcı yalnızca seçtiğiniz klasörü
   görebilir.
-- **Mimir'ın kendi araçlarını geri çağırır.** Oturum, `mimir-mcp`'yi iç içe bir
-  MCP sunucusu olarak adlandıran bir `--mcp-config` ile başlatılır; böylece kod
-  ajanı kendi web erişimi yerine Mimir'ın rafine web erişimini kullanır —
-  tekrarlayan kazımayı token faturasından uzak tutar.
+- **Mimir'a diğer her oturum gibi ulaşır.** İç içe bir `--mcp-config` ile değil,
+  istemcinin kendi MCP kaydı üzerinden. İç içe yapılandırma
+  `docs/ROADMAP.md` §B.2.1'de planlanmış, `task-35`'in *Out of scope* maddesinde
+  ertelenmişti; bu belge onu yanlışlıkla gönderilmiş gibi anlatıyordu.
+  Çalıştırıcı böyle bir bayrak geçirmiyor.
 - **Canlı akış.** stdout satır satır ayrıştırılır (`stream-json`), kümülatif
   metin/düşünme uzunluğu **`message.id` başına** izlenir ve yalnızca farklar
   (delta) tipli olaylar olarak yayınlanır — bir süreç içi veri yolunda yayınlanır
@@ -179,7 +199,7 @@ kabuğu boş bir loopback portu seçer, her başlatmada 32 baytlık bir bearer t
 onu sonlandırır. WebView, alt süreç çıktısını asla ayrıştırmaz; REST, Rust
 üzerinden gider (`daemon_request`), böylece token WebView'e hiç girmez.
 
-Üç ekran:
+Yedi ekran:
 
 | Ekran | Orada ne yaparsınız |
 |---|---|

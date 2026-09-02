@@ -18,7 +18,7 @@ The single source of every operational value. Enforces **SD-1**.
   | `MIMIR_DDG_HTML_URL` | `DuckDuckGoHTMLURL` | `https://html.duckduckgo.com/html/` |
   | `MIMIR_DDG_LITE_URL` | `DuckDuckGoLiteURL` | `https://lite.duckduckgo.com/lite/` |
   | `MIMIR_MAPSCRAPE_URL` | `MapScrapeBaseURL` | `http://127.0.0.1:11236` |
-  | `MIMIR_STORE_PATH` | `StorePath` | `<os.UserConfigDir()>/mimir-mcp/mimir.db` |
+  | `MIMIR_STORE_PATH` | `StorePath` | `<os.UserConfigDir()>/mimir/mimir.db` |
   | `MIMIR_CLAUDE_PROJECTS_DIR` | `ClaudeProjectsDir` | `<os.UserHomeDir()>/.claude/projects` |
 
   There is **no** override for timeouts, concurrency limits, result caps, output
