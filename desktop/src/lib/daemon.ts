@@ -400,6 +400,14 @@ export type BrainScanStatus = {
   last_error?: string;
 };
 
+export type BrainScanEvent = {
+  seq: number;
+  at: string;
+  kind: "sweep" | "project" | "file" | "failed" | "unreadable" | "pass" | "control" | "backoff";
+  project?: string;
+  text: string;
+};
+
 export type BrainGraphNode = {
   id: string;
   kind: string;
@@ -517,6 +525,12 @@ export const api = {
   pauseBrainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan/pause", { method: "POST" }),
   resumeBrainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan/resume", { method: "POST" }),
   scanBrainNow: () => request<{ scan: BrainScanStatus }>("/brain/scan/now", { method: "POST" }),
+  // `after` is the last sequence the console rendered, so an open tab asks for
+  // the handful of lines it is missing rather than the whole buffer.
+  brainScanLog: (after: number) =>
+    request<{ events: BrainScanEvent[]; seq: number }>(
+      `/brain/scan/log?after=${encodeURIComponent(String(after))}`,
+    ),
   brainProjects: () => request<{ projects: BrainProject[] }>("/brain/projects"),
   // `project` is the opaque id from /brain/projects, never a path: the daemon
   // accepts a filesystem path at exactly two routes and this is not one of

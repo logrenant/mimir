@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sort"
@@ -98,6 +99,39 @@ type scanCursor struct {
 	LastProject    string `json:"last_project"`
 }
 
+// Event kinds, as the console prints them.
+const (
+	EventSweep      = "sweep"
+	EventProject    = "project"
+	EventFile       = "file"
+	EventFailed     = "failed"
+	EventUnreadable = "unreadable"
+	EventPass       = "pass"
+	EventControl    = "control"
+	EventBackoff    = "backoff"
+)
+
+// ScanEvent is one line of the scan's own console.
+//
+// The scan is not a coding run: it has no transcript, no bus and no run id, so
+// none of internal/events applies to it. What a person watching it wants is
+// narrower than a run's event stream anyway — which file, in which project,
+// and whether it worked — so this is a bounded ring buffer read by polling,
+// not a second streaming mechanism.
+type ScanEvent struct {
+	Seq     int64     `json:"seq"`
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind"`
+	Project string    `json:"project,omitempty"`
+	Text    string    `json:"text"`
+}
+
+// scanLogSize is how much of the scan's history is kept. A sweep of this
+// machine is a few thousand files; keeping all of them in memory to render a
+// console nobody may open is the wrong trade, and the store already holds the
+// permanent record — one node per file.
+const scanLogSize = 600
+
 // Supervisor keeps a scan running for as long as the daemon lives, so there is
 // always an agy working.
 //
@@ -125,6 +159,12 @@ type Supervisor struct {
 	// clicks are one wake-up, and a send must never block the caller of an HTTP
 	// handler.
 	wake chan struct{}
+
+	// The console's ring buffer, under the same mutex as the status: a reader
+	// that saw a status from one moment and a log from another would be looking
+	// at two different scans.
+	events   []ScanEvent
+	eventSeq int64
 
 	backoff time.Duration
 }
@@ -203,6 +243,8 @@ func (s *Supervisor) sweep(ctx context.Context) {
 	s.startSweep()
 
 	projects := s.discover()
+	s.emit(EventSweep, "", fmt.Sprintf("tur başladı — %d proje, %s · %s",
+		len(projects), s.cfg.DistillProvider, s.cfg.DistillModel))
 	s.withStatus(func(st *ScanStatus) {
 		st.ProjectCount = len(projects)
 		st.Phase = PhaseScanning
@@ -217,6 +259,7 @@ func (s *Supervisor) sweep(ctx context.Context) {
 			st.ProjectLabel = filepath.Base(project)
 			st.ProjectIndex = i + 1
 		})
+		s.emit(EventProject, project, fmt.Sprintf("%s (%d/%d)", filepath.Base(project), i+1, len(projects)))
 		s.scanProject(ctx, project)
 		s.remember(ctx, project)
 	}
@@ -234,8 +277,10 @@ func (s *Supervisor) scanProject(ctx context.Context, project string) {
 		s.passCancel = cancel
 		s.mu.Unlock()
 
+		started := time.Now()
 		res, err := s.deps.Core.Scan(passCtx, project, s.deps.Hashes, ScanOptions{})
 		cancel()
+		s.report(project, res, err, time.Since(started))
 
 		s.mu.Lock()
 		s.passCancel = nil
@@ -278,6 +323,33 @@ func (s *Supervisor) scanProject(ctx context.Context, project string) {
 	}
 }
 
+// report turns one pass into console lines: the files by name, then a summary.
+//
+// The names are the point. A console that can only say "twelve files" is a
+// progress bar with extra steps; one that says which file agy is reading is
+// something a person can recognise their own work in.
+func (s *Supervisor) report(project string, res ScanResult, err error, took time.Duration) {
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.emit(EventFailed, project, "geçiş başarısız: "+err.Error())
+		}
+		return
+	}
+	for _, f := range res.Files {
+		s.emit(EventFile, project, f)
+	}
+	for _, f := range res.FailedFiles {
+		s.emit(EventFailed, project, f+" — damıtılamadı, sonraki turda yeniden denenecek")
+	}
+	if res.Unreadable > 0 {
+		s.emit(EventUnreadable, project, fmt.Sprintf("%d dosya okunamadı (metin katmanı yok ya da çıkarıcı kurulu değil)", res.Unreadable))
+	}
+	if res.Scanned > 0 || res.Failed > 0 {
+		s.emit(EventPass, project, fmt.Sprintf("%d damıtıldı · %d başarısız · %d kaldı · %s",
+			res.Scanned, res.Failed, res.Remaining, took.Round(time.Second)))
+	}
+}
+
 // backOff waits out a provider that is not answering, doubling the wait each
 // time, and returns false when the caller should stop.
 //
@@ -304,6 +376,8 @@ func (s *Supervisor) backOff(ctx context.Context) bool {
 	s.mu.Unlock()
 
 	s.log.Warn("the distil provider is not answering; backing off", "wait", wait.String())
+	s.emit(EventBackoff, "", fmt.Sprintf("%s yanıt vermiyor — %s sonra yeniden denenecek",
+		s.cfg.DistillProvider, wait.Round(time.Second)))
 
 	if !s.waitFor(ctx, wait) {
 		return false
@@ -388,6 +462,7 @@ func (s *Supervisor) Pause() {
 	if cancel != nil {
 		cancel()
 	}
+	s.emit(EventControl, "", "duraklatıldı")
 	// Wake the loop as well: without this, a pause pressed while the
 	// supervisor is between sweeps is not visible in the status until the idle
 	// interval expires, which is fifteen minutes of a screen saying "idle"
@@ -403,6 +478,7 @@ func (s *Supervisor) Resume() {
 	s.status.Paused = false
 	s.status.Phase = PhaseIdle
 	s.mu.Unlock()
+	s.emit(EventControl, "", "sürdürüldü")
 	s.signal()
 }
 
@@ -431,6 +507,50 @@ func (s *Supervisor) Status() ScanStatus {
 	out := s.status
 	out.Roots = append([]string(nil), s.status.Roots...)
 	return out
+}
+
+// --- the console -------------------------------------------------------------
+
+// emit appends one line, dropping the oldest when the buffer is full.
+func (s *Supervisor) emit(kind, project, text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.eventSeq++
+	s.events = append(s.events, ScanEvent{
+		Seq:     s.eventSeq,
+		At:      time.Now().UTC(),
+		Kind:    kind,
+		Project: project,
+		Text:    text,
+	})
+	if len(s.events) > scanLogSize {
+		s.events = append([]ScanEvent(nil), s.events[len(s.events)-scanLogSize:]...)
+	}
+}
+
+// Events returns what happened after seq, and the sequence to ask from next.
+//
+// A caller that has fallen further behind than the buffer is deep gets what is
+// left rather than an error: a console that missed a hundred lines while its
+// tab was closed wants the recent ones, not a failure.
+func (s *Supervisor) Events(after int64, limit int) ([]ScanEvent, int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if limit <= 0 || limit > scanLogSize {
+		limit = scanLogSize
+	}
+	out := make([]ScanEvent, 0, limit)
+	for _, e := range s.events {
+		if e.Seq > after {
+			out = append(out, e)
+		}
+	}
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, s.eventSeq
 }
 
 // --- bookkeeping -------------------------------------------------------------
@@ -506,6 +626,9 @@ func (s *Supervisor) finishSweep(ctx context.Context) {
 			st.NodesTotal = nodes
 		}
 	})
+	st := s.Status()
+	s.emit(EventSweep, "", fmt.Sprintf("tur bitti — %d damıtıldı, %d düğüm; sıradaki tur %s",
+		st.ScannedSession, st.NodesTotal, s.cfg.BrainScanIdleInterval))
 	s.remember(ctx, "")
 }
 

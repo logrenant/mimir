@@ -15,6 +15,7 @@ import (
 // *brain.Supervisor satisfies it.
 type BrainScanner interface {
 	Status() brain.ScanStatus
+	Events(after int64, limit int) ([]brain.ScanEvent, int64)
 	Pause()
 	Resume()
 	ScanNow() bool
@@ -66,6 +67,45 @@ func (s *Server) handleBrainScanNow(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, scanStatusResponse{Scan: s.deps.BrainScan.Status()})
+}
+
+type scanLogResponse struct {
+	Events []brain.ScanEvent `json:"events"`
+	Seq    int64             `json:"seq"`
+}
+
+// handleBrainScanLog is the scan's console.
+//
+// `after` is the sequence the caller last saw, so a tab that has been open for
+// an hour asks for the handful of lines it is missing rather than the whole
+// buffer. A caller that has fallen further behind than the buffer is deep gets
+// the tail: a console that missed a hundred lines wants the recent ones, not an
+// error about the ninety-nine it cannot have.
+func (s *Server) handleBrainScanLog(w http.ResponseWriter, r *http.Request) {
+	after, err := parseSeq(r.URL.Query().Get("after"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
+		return
+	}
+	limit, err := graphLimit(r.URL.Query().Get("limit"), 200, 600)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
+		return
+	}
+
+	events, seq := s.deps.BrainScan.Events(after, limit)
+	writeJSON(w, http.StatusOK, scanLogResponse{Events: append([]brain.ScanEvent{}, events...), Seq: seq})
+}
+
+func parseSeq(raw string) (int64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 0 {
+		return 0, errBadSeq
+	}
+	return n, nil
 }
 
 // --- the graph ---------------------------------------------------------------

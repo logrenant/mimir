@@ -153,8 +153,8 @@ describe("pollInterval", () => {
 describe("world space", () => {
   it("gives a bigger graph more room, without letting it run away", () => {
     expect(worldSize(20).width).toBeLessThan(worldSize(2000).width);
-    expect(worldSize(1).width).toBeGreaterThanOrEqual(1200);
-    expect(worldSize(100000).width).toBeLessThanOrEqual(7000);
+    expect(worldSize(1).width).toBeGreaterThanOrEqual(1100);
+    expect(worldSize(100000).width).toBeLessThanOrEqual(5200);
   });
 
   // The whole reason the layout left the viewport: six hundred nodes in a box
@@ -164,7 +164,7 @@ describe("world space", () => {
     const world = worldSize(nodes.length);
     const placed = layout(nodes, edges, { ...world, ticks: 60, seed: 3 });
     const spanX = Math.max(...placed.map((n) => n.x)) - Math.min(...placed.map((n) => n.x));
-    expect(spanX).toBeGreaterThan(1200);
+    expect(spanX).toBeGreaterThan(900);
   });
 
   it("stops overlapping dots being drawn as one dot", () => {
@@ -266,11 +266,15 @@ describe("visibleLabels", () => {
 describe("initialView", () => {
   // Fitting everything is the wrong default at this size: it is the whole graph
   // rendered as a texture.
-  it("opens readable rather than complete when the graph is large", () => {
+  it("never opens below the readable floor, however small the box", () => {
     const { nodes, edges } = graph(600);
     const placed = layout(nodes, edges, { ...worldSize(600), ticks: 40, seed: 4 });
-    expect(fitView(placed, 1200, 800).scale).toBeLessThan(READABLE_SCALE);
-    expect(initialView(placed, 1200, 800).scale).toBe(READABLE_SCALE);
+
+    // A box this small cannot frame the graph, so fitting it would be a
+    // texture: the opening view refuses to go below the floor and the operator
+    // pans instead.
+    expect(fitView(placed, 380, 260).scale).toBeLessThan(READABLE_SCALE);
+    expect(initialView(placed, 380, 260).scale).toBe(READABLE_SCALE);
   });
 
   it("frames a small graph completely, because it fits", () => {

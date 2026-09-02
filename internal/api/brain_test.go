@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 type fakeScanner struct {
 	status brain.ScanStatus
+	events []brain.ScanEvent
 	paused bool
 	woken  int
 }
@@ -26,6 +28,23 @@ func (f *fakeScanner) Status() brain.ScanStatus {
 		s.Phase = brain.PhasePaused
 	}
 	return s
+}
+
+func (f *fakeScanner) Events(after int64, limit int) ([]brain.ScanEvent, int64) {
+	var out []brain.ScanEvent
+	for _, e := range f.events {
+		if e.Seq > after {
+			out = append(out, e)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	var seq int64
+	for _, e := range f.events {
+		seq = e.Seq
+	}
+	return out, seq
 }
 
 func (f *fakeScanner) Pause()  { f.paused = true }
@@ -106,7 +125,14 @@ func graphDeps() (Deps, *fakeGraphStore, *fakeScanner) {
 			{ProjectPath: "", Nodes: 1, UpdatedAt: time.Now()},
 		},
 	}
-	sc := &fakeScanner{status: brain.ScanStatus{Phase: brain.PhaseScanning, Roots: []string{"/roots"}}}
+	sc := &fakeScanner{
+		status: brain.ScanStatus{Phase: brain.PhaseScanning, Roots: []string{"/roots"}},
+		events: []brain.ScanEvent{
+			{Seq: 1, Kind: brain.EventSweep, Text: "tur başladı"},
+			{Seq: 2, Kind: brain.EventFile, Project: "/repo", Text: "internal/brain/scan.go"},
+			{Seq: 3, Kind: brain.EventPass, Project: "/repo", Text: "12 damıtıldı"},
+		},
+	}
 	return Deps{BrainScan: sc, BrainGraph: gs, Brain: &fakeBrainReader{node: brain.NodeView{ID: "n1", Title: "scan.go"}}}, gs, sc
 }
 
@@ -155,6 +181,46 @@ func TestBrainScan_PauseResumeRoundTrip(t *testing.T) {
 	}
 	if sc.woken != 1 {
 		t.Errorf("the supervisor was woken %d times, want 1", sc.woken)
+	}
+}
+
+// The console is a tail, not a dump: a tab that has been open for an hour asks
+// for what it is missing.
+func TestBrainScanLog_ReturnsOnlyWhatIsNewerThanTheCallersSeq(t *testing.T) {
+	deps, _, _ := graphDeps()
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodGet, "/brain/scan/log", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("log = %d, body %s", w.Code, w.Body.String())
+	}
+	var first scanLogResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Events) != 3 || first.Seq != 3 {
+		t.Fatalf("first read = %+v", first)
+	}
+
+	w = do(h, http.MethodGet, "/brain/scan/log?after=2", testToken, "")
+	var next scanLogResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &next); err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Events) != 1 || next.Events[0].Seq != 3 {
+		t.Errorf("after=2 returned %+v", next.Events)
+	}
+
+	// A caught-up reader gets an empty array, never null: the client renders it.
+	w = do(h, http.MethodGet, "/brain/scan/log?after=3", testToken, "")
+	if body := w.Body.String(); !strings.Contains(body, `"events":[]`) {
+		t.Errorf("a caught-up read is not an empty array: %s", body)
+	}
+
+	for _, bad := range []string{"after=abc", "after=-1"} {
+		if w := do(h, http.MethodGet, "/brain/scan/log?"+bad, testToken, ""); w.Code != http.StatusBadRequest {
+			t.Errorf("?%s = %d, want 400", bad, w.Code)
+		}
 	}
 }
 
