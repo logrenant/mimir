@@ -201,3 +201,29 @@ keep a filesystem path after registration? Does the reducer still dedupe on
   from nothing; the daemon's default is the option that starts selected. The
   empty string still means "you decide" on the wire, for clients written before
   the picker.
+
+## Brain tab (task-52)
+
+- **Brain is a tab, not a module.** `MODULES` is "one entry per screen wired to
+  a real daemon route", and Brain qualifies — but it is the store every module
+  writes into rather than one more thing the daemon can do, so it sits with
+  Genel / Board / Terminals.
+- **The layout is ours.** `lib/brainGraph.ts` is a seeded Fruchterman–Reingold
+  with grid-approximated repulsion, and it is pure: positions in, positions out,
+  tested. Five dependencies is the whole front end; a graph library would be a
+  sixth, and a layout nobody can unit-test is one that drifts. The repulsion is
+  approximated because the honest O(n²) pass at three thousand nodes is nine
+  million pairs a tick, which is a frozen window.
+- **Four colours here too.** The obvious thing is a hue per node kind, the way
+  every knowledge-graph screenshot does it. The kinds are separated by *role*
+  instead — Electric for what a person decided, Lime for what the machine
+  recorded, Mist for files — and by size, which is degree. Eleven hues would say
+  these categories are unrelated; the picture is one body of knowledge.
+- **Labels are for hubs only.** Every node labelled is the screenshot everyone
+  has seen and nobody can read.
+- **The status is polled, adaptively** (2 s scanning, 30 s idle) in the screen's
+  own hook. `RunsProvider` is the board's shared poll and nothing else reads the
+  scan, so joining it would be coupling for its own sake.
+- **The scan's error text is shown verbatim**, like every other daemon message.
+- **The project filter is the id the daemon handed over**, never a path — the
+  daemon rejects a path here on purpose.

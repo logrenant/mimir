@@ -137,7 +137,12 @@ export type Diagnostics = {
   daemon: { ok: boolean; version: string; uptime_ms: number; store: string; projects: number };
   dependencies?: {
     crawl4ai?: DiagnosticsDependency;
+    // The distil tier and the reason tier, separately: since task-51 agy has
+    // no fallback, so a healthy claude says nothing about whether a page can
+    // be summarised or a file distilled.
+    agy?: DiagnosticsDependency;
     claude?: DiagnosticsDependency;
+    pdftotext?: DiagnosticsDependency;
     duckduckgo?: DiagnosticsDependency;
     maps_scraper?: DiagnosticsDependency;
     versions?: Record<string, string>;
@@ -356,6 +361,102 @@ export type LeadgenRequest = {
 
 export type EmailStatus = "sent" | "skipped" | "draft";
 
+// --- brain -------------------------------------------------------------------
+//
+// The resident scan and the graph it builds. One definition per Go struct, tags
+// included: brain.ScanStatus, api.graphNode, api.graphEdge, api.brainProject.
+
+export type ScanPhase = "idle" | "discovering" | "scanning" | "backoff" | "paused";
+
+export type BrainScanStatus = {
+  phase: ScanPhase;
+  paused: boolean;
+  roots: string[];
+  provider: string;
+  model: string;
+  project?: string;
+  project_label?: string;
+  project_index: number;
+  project_count: number;
+
+  remaining: number;
+  skipped_unchanged: number;
+  eligible: number;
+
+  scanned_session: number;
+  failed_session: number;
+  unreadable_session: number;
+  scanned_total: number;
+  sweeps: number;
+  nodes_total: number;
+
+  sweep_started?: string;
+  last_pass_at?: string;
+  last_sweep_ended?: string;
+  next_sweep_at?: string;
+
+  provider_down: boolean;
+  backoff_until?: string;
+  last_error?: string;
+};
+
+export type BrainGraphNode = {
+  id: string;
+  kind: string;
+  title: string;
+  project?: string;
+  tags?: string[];
+  degree: number;
+  updated_at: number;
+};
+
+export type BrainGraphEdge = {
+  source: string;
+  target: string;
+  kind: string;
+  weight: number;
+};
+
+export type BrainGraph = {
+  nodes: BrainGraphNode[];
+  edges: BrainGraphEdge[];
+  project?: string;
+  total_nodes: number;
+  truncated: boolean;
+};
+
+export type BrainProject = {
+  id: string;
+  label: string;
+  path: string;
+  nodes: number;
+  files: number;
+  updated_at: number;
+};
+
+export type BrainNeighbor = {
+  id: string;
+  title: string;
+  kind: string;
+  relation: string;
+  weight: number;
+};
+
+export type BrainNodeDetail = {
+  id: string;
+  project_path?: string;
+  kind: string;
+  source: string;
+  title: string;
+  assessment: string;
+  tags?: string[];
+  aliases?: string[];
+  provider?: string;
+  model?: string;
+  updated_at?: string;
+  neighbors?: BrainNeighbor[];
+};
+
 export const api = {
   health: () => request<Health>("/healthz"),
   diagnostics: () => request<Diagnostics>("/diagnostics"),
@@ -409,6 +510,26 @@ export const api = {
       method: "POST",
       body: { place_id: placeID, status },
     }),
+
+  // The Brain tab. The three controls take no body: there is nothing to
+  // configure about a scan, and the daemon's handlers do not decode one.
+  brainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan"),
+  pauseBrainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan/pause", { method: "POST" }),
+  resumeBrainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan/resume", { method: "POST" }),
+  scanBrainNow: () => request<{ scan: BrainScanStatus }>("/brain/scan/now", { method: "POST" }),
+  brainProjects: () => request<{ projects: BrainProject[] }>("/brain/projects"),
+  // `project` is the opaque id from /brain/projects, never a path: the daemon
+  // accepts a filesystem path at exactly two routes and this is not one of
+  // them (internal/api/AGENTS.md).
+  brainGraph: (opts?: { project?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.project) q.set("project", opts.project);
+    if (opts?.limit) q.set("limit", String(opts.limit));
+    const query = q.toString();
+    return request<BrainGraph>("/brain/graph" + (query ? "?" + query : ""));
+  },
+  brainNode: (id: string) =>
+    request<{ node: BrainNodeDetail }>(`/brain/nodes/${encodeURIComponent(id)}`),
 };
 
 /** Test seam: drops the cached endpoint so a test can hand over a new one. */

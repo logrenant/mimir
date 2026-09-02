@@ -187,3 +187,48 @@ describe("wsURL", () => {
     expect(url).toBe("ws://127.0.0.1:51423/ws/runs/..%2F..%2Fhealthz");
   });
 });
+
+describe("brain routes", () => {
+  test("sends the scan controls as POSTs with no body", async () => {
+    const calls: { method: string; path: string; body?: string }[] = [];
+    invoke.mockImplementation(async (command: string, args: unknown) => {
+      if (command === "get_daemon_endpoint") return READY;
+      calls.push(args as { method: string; path: string; body?: string });
+      return { status: 200, body: JSON.stringify({ scan: { phase: "idle" } }) };
+    });
+
+    await api.pauseBrainScan();
+    await api.resumeBrainScan();
+    await api.scanBrainNow();
+
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "POST /brain/scan/pause",
+      "POST /brain/scan/resume",
+      "POST /brain/scan/now",
+    ]);
+    // The daemon's handlers deliberately do not decode a body: there is nothing
+    // to configure about a scan, and DisallowUnknownFields would turn one into
+    // a 400 on every click.
+    for (const c of calls) expect(c.body ?? "").toBe("");
+  });
+
+  // The daemon accepts a filesystem path at exactly two routes and the graph is
+  // not one of them, so the filter travels as the opaque id it was handed.
+  test("passes the project as an opaque id, never a path", async () => {
+    let path = "";
+    invoke.mockImplementation(async (command: string, args: unknown) => {
+      if (command === "get_daemon_endpoint") return READY;
+      path = (args as { path: string }).path;
+      return {
+        status: 200,
+        body: JSON.stringify({ nodes: [], edges: [], total_nodes: 0, truncated: false }),
+      };
+    });
+
+    await api.brainGraph({ project: "proj-abc123", limit: 500 });
+    expect(path).toBe("/brain/graph?project=proj-abc123&limit=500");
+
+    await api.brainGraph();
+    expect(path).toBe("/brain/graph");
+  });
+});

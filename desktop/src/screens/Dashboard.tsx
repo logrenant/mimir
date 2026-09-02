@@ -38,6 +38,7 @@ import { NewTaskOverlay } from "../components/NewTaskOverlay";
 import { useDiagnostics } from "../components/DiagnosticsPanel";
 import { Home } from "./Home";
 import { Leadgen } from "./Leadgen";
+import { Brain } from "./Brain";
 import { Terminals } from "./Terminals";
 import { Workspace } from "./Workspace";
 
@@ -73,7 +74,10 @@ function navDotStyle(on: boolean): CSSProperties {
 // main component
 // ---------------------------------------------------------------------------
 
-type Screen = "home" | "board" | "terminals" | "module";
+// Brain sits with Genel/Board/Terminals rather than under MODÜLLER: it is not
+// a module the daemon happens to expose, it is the store everything else
+// writes into.
+type Screen = "home" | "board" | "terminals" | "brain" | "module";
 
 export function Dashboard() {
   const [screen, setScreen] = useState<Screen>("home");
@@ -115,6 +119,7 @@ export function Dashboard() {
   const goHome = () => setScreen("home");
   const goBoard = () => setScreen("board");
   const goTerminals = () => setScreen("terminals");
+  const goBrain = () => setScreen("brain");
   const goModule = (mod: ModuleDef) => {
     setActiveModule(mod);
     setScreen("module");
@@ -136,6 +141,7 @@ export function Dashboard() {
           onGoHome={goHome}
           onGoBoard={goBoard}
           onGoTerminals={goTerminals}
+          onGoBrain={goBrain}
           onGoModule={goModule}
           onOpenDiagnostics={openDiagnostics}
         />
@@ -144,6 +150,7 @@ export function Dashboard() {
           {screen === "home" && <Home onGoBoard={goBoard} onGoTerminals={goTerminals} onGoModule={goModule} />}
           {screen === "board" && <BoardScreen onGoTerminals={goTerminals} />}
           {screen === "terminals" && <Terminals />}
+          {screen === "brain" && <Brain />}
           {screen === "module" && <ModuleScreen mod={activeModule} onGoHome={goHome} onGoTerminals={goTerminals} />}
         </div>
       </div>
@@ -218,6 +225,7 @@ function Sidebar({
   onGoHome,
   onGoBoard,
   onGoTerminals,
+  onGoBrain,
   onGoModule,
   onOpenDiagnostics,
 }: {
@@ -227,6 +235,7 @@ function Sidebar({
   onGoHome: () => void;
   onGoBoard: () => void;
   onGoTerminals: () => void;
+  onGoBrain: () => void;
   onGoModule: (mod: ModuleDef) => void;
   onOpenDiagnostics: () => void;
 }) {
@@ -251,6 +260,10 @@ function Sidebar({
                 {terminalCount}
               </span>
             )}
+          </button>
+          <button type="button" onClick={onGoBrain} style={css(navStyle(screen === "brain"))}>
+            <span style={navDotStyle(screen === "brain")} />
+            Brain
           </button>
         </div>
 
@@ -735,7 +748,11 @@ function ModuleScreen({
 // diagnostics overlay — the daemon's own /diagnostics answer, verbatim
 // ---------------------------------------------------------------------------
 
-const DEP_NAMES = ["crawl4ai", "claude", "duckduckgo", "maps_scraper"] as const;
+// agy first: it is the distil tier and, since task-51, it has no fallback, so
+// it is the row an operator has to look at before any of the others. pdftotext
+// is optional in the same sense the maps sidecar is — absent, PDFs are skipped
+// and everything else still works.
+const DEP_NAMES = ["agy", "crawl4ai", "claude", "pdftotext", "duckduckgo", "maps_scraper"] as const;
 
 function DiagnosticsOverlay({
   baseUrl,
