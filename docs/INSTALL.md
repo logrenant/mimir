@@ -115,14 +115,35 @@ copying the app, not by distributing an image.
 `cargo clippy`, `cargo test`). It is deliberately **not** part of `make check`,
 so contributing to the Go side never requires a Node or Rust toolchain.
 
-## Registering with Claude Code
-
-To add the Mimir server to your Claude Code session, use the absolute path to the binary you just built.
+## Registering with your MCP clients
 
 ```bash
-claude mcp add mimir-mcp -- /absolute/path/to/mimir/bin/mimir-mcp
+make install-mcp
 ```
-*(Replace `/absolute/path/to` with your actual path)*
+
+One command, every client on the machine. It installs `mimir-mcp` under
+`~/Library/Application Support/mimir/bin/` — not left in the checkout, so moving
+the repository later does not break four configurations at once — and registers
+it with whichever of these are present:
+
+| Client | Where it lands |
+|---|---|
+| `claude` CLI | `~/.claude.json`, **user** scope, so it follows you between directories |
+| `agy` (Antigravity CLI) **and Antigravity IDE** | `~/.gemini/config/mcp_config.json`, which both read |
+| `gemini` CLI | `~/.gemini/settings.json` |
+| VS Code | its user MCP config |
+
+It also installs a **session preflight**: a `SessionStart` hook for Claude Code
+and a `PreInvocation` hook for agy. At the start of a session it checks the
+binary, re-registers if a client's config has lost the entry, health-checks the
+daemon and restarts it through launchd if it is down, then tells the model that
+a memory exists and to call `project_context` before exploring a repository it
+has worked in before. It never blocks a session and never takes more than about
+five seconds, even when nothing can be recovered.
+
+Running it again is a no-op. `make uninstall-mcp` reverses it — except the
+VS Code entry, which VS Code has no command to remove; the script tells you
+which file to edit.
 
 ## Verification
 

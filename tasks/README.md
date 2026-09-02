@@ -20,6 +20,7 @@
 | [task-39](task-39-coding-model-choice.md) | done | Per-task model choice: an allow-list in `internal/config`, published at `GET /coding-models`, carried on the row and into `--model`. |
 | [task-40](task-40-desktop-dashboard.md) | done | Desktop: the home screen becomes a dashboard (live consoles, queue, dependency health, account load), one shared run poll, and the model picker. |
 | [task-41](task-41-brain-core.md) | done | Brain v2: the node core rebuilt on the store (`0013_brain.sql`), and `internal/llm` — one exit point for model calls, routed by class of work. |
+| [task-43](task-43-mcp-enforcement.md) | done | `make install-mcp`: registration on every MCP client on the machine, plus a session preflight hook that checks the binary and brings the daemon back. |
 
 They are split by file, not by package: the odd-numbered tasks own
 `internal/**` and `cmd/**`, the even-numbered ones own `desktop/**`, so a

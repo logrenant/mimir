@@ -64,6 +64,22 @@ kuruyor ve aynı anda model çağrılarını tek bir çıkışın arkasına alı
   ortasında okunuyordu (SD-1 ihlali). Artık `config.Load`'da, bir kez, ve
   `docs/SECURITY.md`'de ikinci operatör kimlik bilgisi olarak yazılı.
 
+- **`make install-mcp`.** Bu repoda hiçbir şey mimir-mcp'yi bir istemciye
+  kaydetmiyordu; `claude mcp add` yalnızca INSTALL.md'de elle yazılacak bir
+  komut olarak duruyordu ve bu makinedeki sonucu, başka bir dizine geçince
+  sessizce yok olan proje kapsamlı bir kayıttı. Artık tek komut: `claude` (user
+  scope), `agy` + Antigravity IDE (ikisi aynı `mcp_config.json`'ı okuyor),
+  `gemini` CLI ve VS Code. Dördünün de kendi `mcp add`'i var, o yüzden JSON'ları
+  elle birleştirilmiyor. İkili checkout'ta bırakılmıyor, support dizinine
+  kuruluyor: repo taşınınca dört yapılandırma birden kırılmasın.
+- **Oturum ön-kontrolü.** Claude Code'da `SessionStart`, agy'de `PreInvocation`
+  (agy'nin `SessionStart` olayı yok; `invocationNum` koruması olayı konuşma
+  başına bire indiriyor). İkiliyi kontrol ediyor, istemcinin kaydı düşmüşse
+  yeniden kaydediyor, daemon cevap vermiyorsa `launchctl kickstart` ile
+  kaldırıyor — on yarım saniyelik deneme, sonra dürüst bir notla vazgeçiyor — ve
+  modele bir hafıza olduğunu, repoyu yeniden okumadan önce `project_context`
+  çağırmasını söylüyor. Oturumu asla bloklamıyor, her yolda exit 0.
+
 ### Şema
 
 - `0013_brain.sql` — `brain_nodes`, `brain_edges`, `brain_fts`. Markdown dosya

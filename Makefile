@@ -1,4 +1,4 @@
-.PHONY: build test race vet lint check e2e install-agent uninstall-agent agent-status agent-logs agent-restart install-app crawl-up crawl-down crawl-logs maps-up maps-down maps-logs desktop-sidecar desktop-dev desktop-build desktop-check
+.PHONY: build test race vet lint check e2e install-mcp uninstall-mcp install-agent uninstall-agent agent-status agent-logs agent-restart install-app crawl-up crawl-down crawl-logs maps-up maps-down maps-logs desktop-sidecar desktop-dev desktop-build desktop-check
 
 build:
 	go build -o bin/mimir-mcp ./cmd/mimir-mcp
@@ -18,6 +18,8 @@ lint:
 	tools/lint/check_context.sh
 	golangci-lint run
 	sh -n scripts/install-agent.sh
+	sh -n scripts/install-mcp.sh
+	sh -n scripts/mimir-preflight.sh
 	sh -n scripts/uninstall-agent.sh
 
 e2e:
@@ -52,6 +54,16 @@ release:
 
 AGENT_LABEL := studio.mimir.daemon
 AGENT_DOMAIN := gui/$(shell id -u)
+
+# Register mimir-mcp with every MCP client on this machine and install the
+# session preflight. Separate from install-agent because they are separate
+# things: this one is what a Claude Code / agy / gemini / VS Code session talks
+# to, the other is the long-running daemon behind the desktop app.
+install-mcp:
+	scripts/install-mcp.sh
+
+uninstall-mcp:
+	scripts/install-mcp.sh --uninstall
 
 install-agent:
 	scripts/install-agent.sh

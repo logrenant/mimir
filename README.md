@@ -52,10 +52,18 @@ make desktop-check   # desktop gate: typecheck + vitest + cargo fmt/clippy/test
 ## Install it as a running system
 
 ```bash
+make install-mcp      # registers mimir-mcp with every MCP client on the machine
 make install-agent    # mimir-daemon under launchd: at login, restarted if it dies
 make desktop-build    # builds Mimir.app
 cp -R desktop/src-tauri/target/release/bundle/macos/Mimir.app /Applications/
 ```
+
+`make install-mcp` covers the Claude Code CLI (user scope, so it follows you
+between directories), `agy` and Antigravity IDE, the `gemini` CLI, and VS Code —
+each through its own `mcp add`. It also installs a session preflight hook that
+checks the binary, restarts the daemon if it is down, and reminds the model to
+call `project_context` before re-reading a repository it already knows. Running
+it again is a no-op; `make uninstall-mcp` reverses it.
 
 `make agent-status` · `make agent-logs` · `make agent-restart` ·
 `make uninstall-agent`. Details, including token handling and rotation:
