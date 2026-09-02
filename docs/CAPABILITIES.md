@@ -75,6 +75,28 @@ one deliberately expensive operation, a distil per file, bounded to a batch per
 call and hash-skipped so a second pass over an unchanged repository is free.
 Run it with `dry_run` first to see the size of the bill.
 
+**A resident scan.** `mimir-daemon` keeps one sweep running for as long as it
+lives: every project under `~/development` and `~/Documents`, read to completion
+through `agy`, then an idle interval and around again — so there is always an
+agy working and a file written this afternoon is in Brain tonight. PDFs are read
+through poppler's `pdftotext` when it is installed and skipped without
+complaint when it is not. A provider that stops answering backs the sweep off
+(one minute, doubling, thirty at most) rather than spawning a thousand failed
+subprocesses an hour, and a file that could not be distilled keeps no content
+hash, so it is retried rather than skipped forever. The desktop's **Brain** tab
+shows it — `GET /brain/scan`, with pause / resume / scan-now — alongside a
+force-directed picture of the nodes and their edges (`GET /brain/graph`,
+`/brain/projects`, `/brain/nodes/{id}`).
+
+**A whole machine at once.** `bin/mimir-scan ~/development` (`make scan`) is the
+same scan without a session in the middle: it finds every project under a root —
+git checkouts, and the directories that never became one but hold files of their
+own — and runs each to completion, logging progress to stderr. One
+`gemini-3.7-flash-high` call per file through `agy`; `-n` reports the bill and
+spends nothing. A node that could not be distilled keeps no content hash, so a
+provider that was down for part of a run is retried by the next one rather than
+skipped forever.
+
 Identity is `(project_path, kind, source_key)`, so re-ingesting one source
 updates a row rather than minting another. A node's `aliases` — synonyms and
 adjacent terms the distil writes into the FTS index — are what let a search

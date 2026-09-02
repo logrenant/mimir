@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/logrenant/mimir/internal/config"
@@ -81,6 +82,13 @@ type Core struct {
 	cfg   config.Config
 	store Store
 	llm   Completer
+
+	// The PDF extractor is resolved once per process, not once per file: a
+	// machine without poppler would otherwise pay a failed PATH lookup for
+	// every PDF in every sweep, and say so every time.
+	pdfOnce sync.Once
+	pdfPath string
+	pdfErr  error
 }
 
 // New builds the core. A nil store is a usable argument on purpose — the caller
@@ -169,6 +177,24 @@ func NodeID(projectPath, kind, sourceKey string) string {
 	return "node-" + hex.EncodeToString(sum[:])[:16]
 }
 
+// ProjectID is a project path's opaque handle.
+//
+// It exists so the graph can be filtered by project without a filesystem path
+// ever being a request parameter: internal/api/AGENTS.md allows exactly two
+// routes to accept a path, both of which mint an opaque id on the spot, and a
+// third would be the beginning of the hole that rule exists to keep shut.
+// Constructed like NodeID, for the same reason — identity that carries no
+// content and does not change.
+func ProjectID(projectPath string) string {
+	sum := sha256.Sum256([]byte("project|" + projectPath))
+	return "proj-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// ErrNodeNotFound is an id nothing answers to. It is a sentinel rather than a
+// formatted string because the API turns it into a 404: without it, a mistyped
+// id is a 500 and reads like a broken daemon.
+var ErrNodeNotFound = errors.New("brain: no such node")
+
 // Ingest stores one node and links it.
 //
 // The order is load-bearing. The node is written before it is linked, so a
@@ -229,6 +255,11 @@ func (c *Core) Ingest(ctx context.Context, in Input) (IngestResult, error) {
 		// node nothing will ever pick out of a result list.
 		row.Title = fallbackTitle(source, body)
 		result.Note = distilFailureNote(err)
+		// The content hash means "this content has been read at this prompt
+		// version", and a node with no assessment has not been. Keeping it
+		// would make a scan skip the file forever on the strength of one
+		// provider hiccup — the failure would be permanent, and silent.
+		row.ContentHash = ""
 	} else {
 		row.Title = distilled.Title
 		row.Assessment = distilled.Assessment
@@ -352,7 +383,7 @@ func (c *Core) Related(ctx context.Context, nodeID string, limit int) (NodeView,
 		return NodeView{}, err
 	}
 	if !ok {
-		return NodeView{}, fmt.Errorf("brain: no node %q", nodeID)
+		return NodeView{}, fmt.Errorf("%w: %s", ErrNodeNotFound, nodeID)
 	}
 	if limit <= 0 || limit > 40 {
 		limit = c.cfg.BrainNeighborCap

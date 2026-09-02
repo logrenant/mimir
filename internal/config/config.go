@@ -29,9 +29,14 @@ type Config struct {
 	// a local CLI riding an existing login — still no SDK and no API key — and
 	// both models are pinned to an exact version (SD-5).
 	//
-	// DistillFallback is availability only, not a retry policy: `agy` missing
-	// or out of quota must not take the distil path down, because every caller
-	// already has a claude login.
+	// DistillFallback is **empty on purpose** (task-51). It was availability
+	// only — a spare provider for when `agy` is missing or out of quota — and
+	// that is exactly what made it wrong: the operator asked for a machine-wide
+	// scan through agy, and a silent hand-off to claude turns "the free tier
+	// ran out" into a bill nobody chose. An empty name means no fallback at
+	// all; `llm.NewRouter` reads it that way and the distil tier then fails
+	// loudly, which is the honest answer. Putting "claude" back here is the one
+	// line that restores the old behaviour.
 	AgyCLIPath      string
 	AgyPrintTimeout time.Duration
 	DistillProvider string
@@ -78,6 +83,59 @@ type Config struct {
 	BrainScanBatch        int
 	BrainScanConcurrency  int
 	BrainScanMaxFileBytes int
+
+	// BrainScanDepth bounds how far under a root cmd/mimir-scan looks for
+	// projects. It is a guard, not a tuning knob: a mis-typed root — `/`, or a
+	// home directory — would otherwise become an hours-long directory walk
+	// before the first file is ever read.
+	BrainScanDepth int
+
+	// The daemon's resident scanner (task-51). The roots are a constant and not
+	// a setting for the same reason the coding runner has no MaxConcurrentRuns:
+	// "which of my folders is the assistant allowed to read" is a decision, and
+	// a decision that can be changed from a text field is one nobody remembers
+	// making. Both are derived from the home directory in Load.
+	//
+	// IdleInterval is how long the supervisor waits after a full cycle before
+	// starting the next one. A cycle over unchanged files makes no model call —
+	// it is a hash comparison per file — so the interval is short enough that a
+	// file saved at lunch is known about by the afternoon.
+	//
+	// The backoff is what stands between "agy is signed out" and a thousand
+	// failed subprocesses an hour. It doubles from Min to Max and resets on the
+	// first pass that distils anything.
+	BrainScanRoots        []string
+	BrainScanIdleInterval time.Duration
+	BrainScanBackoffMin   time.Duration
+	BrainScanBackoffMax   time.Duration
+
+	// PDFs are the reason ~/Documents is worth scanning at all: on this machine
+	// it is six technical manuals and nothing else. pdftotext is optional by
+	// construction — absent, PDFs are skipped and every other file still gets
+	// read — so it is a dependency the way the Maps sidecar is, not the way the
+	// store is.
+	//
+	// The page ceiling is what keeps a 400-page manual from costing a minute of
+	// wall clock for a summary that only ever reads the first 8 000 characters
+	// anyway (BrainBodyMaxChars).
+	// MinChars is how "this PDF is a scan, not a document" is decided, and it is
+	// a measured number rather than a guess: on this machine
+	// rigid-frame-erection-manual.pdf is 8 MB of page images that extracts to 47
+	// bytes, every one of them a form feed — which -nopgbrk turns into nothing
+	// at all.
+	BrainScanPDFPath     string
+	BrainScanPDFPages    int
+	BrainScanPDFMinChars int
+	BrainScanPDFMaxChars int
+	BrainScanPDFTimeout  time.Duration
+	BrainScanMaxPDFBytes int
+
+	// The graph the desktop draws. The default is what fits a screen and a
+	// force layout that has to settle in front of a person; the ceiling is what
+	// the store will hand over at all, so a hand-written query string cannot
+	// ask for the whole machine and get an answer measured in megabytes.
+	BrainGraphDefaultNodes int
+	BrainGraphMaxNodes     int
 
 	// GitHubToken is the second operator-provisioned credential, and it earns
 	// that category the same way PlacesAPIKey does: empty is a valid, normal
@@ -324,8 +382,13 @@ func Load() Config {
 		AgyCLIPath:             "agy",
 		AgyPrintTimeout:        90 * time.Second,
 		DistillProvider:        "agy",
-		DistillModel:           "gemini-3.7-flash-low",
-		DistillFallback:        "claude",
+		// -high, not -low: the operator asked for the better answer on every
+		// distil. A node is written once and read by every later session, so a
+		// summary that is worth more is worth more forever — and the tier is
+		// free either way. The price is wall clock: a pass takes longer, so a
+		// first sweep of a machine is a longer afternoon.
+		DistillModel:           "gemini-3.7-flash-high",
+		DistillFallback:        "",
 		ReasonProvider:         "claude",
 		SearchTimeout:          10 * time.Second,
 		CrawlTimeout:           45 * time.Second,
@@ -383,6 +446,18 @@ func Load() Config {
 		BrainScanBatch:           12,
 		BrainScanConcurrency:     3,
 		BrainScanMaxFileBytes:    96 << 10,
+		BrainScanDepth:           6,
+		BrainScanIdleInterval:    15 * time.Minute,
+		BrainScanBackoffMin:      time.Minute,
+		BrainScanBackoffMax:      30 * time.Minute,
+		BrainScanPDFPath:         "pdftotext",
+		BrainScanPDFPages:        120,
+		BrainScanPDFMinChars:     40,
+		BrainScanPDFMaxChars:     256 << 10,
+		BrainScanPDFTimeout:      30 * time.Second,
+		BrainScanMaxPDFBytes:     32 << 20,
+		BrainGraphDefaultNodes:   1500,
+		BrainGraphMaxNodes:       3000,
 
 		EcommerceLookupMaxTokens:   400,
 		TikTokProfileMaxTokens:     400,
@@ -489,6 +564,11 @@ func Load() Config {
 	if val := os.Getenv("MIMIR_CLAUDE_CLI_PATH"); val != "" {
 		c.ClaudeCLIPath = val
 	}
+	// The same category as the two CLI paths above: a test points it at a fake
+	// so `make check` does not require poppler to be installed.
+	if val := os.Getenv("MIMIR_PDFTOTEXT_PATH"); val != "" {
+		c.BrainScanPDFPath = val
+	}
 	if val := os.Getenv("MIMIR_DDG_HTML_URL"); val != "" {
 		if _, err := url.ParseRequestURI(val); err == nil {
 			c.DuckDuckGoHTMLURL = val
@@ -542,6 +622,17 @@ func Load() Config {
 	// while the daemon was down is still recorded when it comes back.
 	c.BrainSpoolDir = filepath.Join(filepath.Dir(c.StorePath), "spool")
 
+	// The scanner's roots. A home directory that cannot be determined leaves
+	// the list empty, and an empty list is a supervisor that does nothing —
+	// which is the right failure: there is no default project, ever, and
+	// guessing at a path to read files from is not a recovery.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		c.BrainScanRoots = []string{
+			filepath.Join(home, "development"),
+			filepath.Join(home, "Documents"),
+		}
+	}
+
 	return c
 }
 
@@ -578,12 +669,16 @@ func (c Config) Validate() error {
 	// doing what the roadmap says it does.
 	for name, field := range map[string]string{
 		"DistillProvider": c.DistillProvider,
-		"DistillFallback": c.DistillFallback,
 		"ReasonProvider":  c.ReasonProvider,
 	} {
 		if field != "claude" && field != "agy" {
 			return errors.New(name + " must be \"claude\" or \"agy\", got: " + field)
 		}
+	}
+	// The fallback is the one that may be empty, and empty is its default:
+	// "no second provider" is a decision, not an unset field.
+	if c.DistillFallback != "" && c.DistillFallback != "claude" && c.DistillFallback != "agy" {
+		return errors.New("DistillFallback must be \"\", \"claude\" or \"agy\", got: " + c.DistillFallback)
 	}
 
 	if c.BrainRelateCandidates <= 0 || c.BrainNeighborCap <= 0 || c.BrainSearchLimit <= 0 {
@@ -603,6 +698,21 @@ func (c Config) Validate() error {
 	}
 	if c.BrainPromoteBatch <= 0 || c.BrainCommitBatch <= 0 {
 		return errors.New("brain capture batch sizes must be > 0")
+	}
+	if c.BrainScanIdleInterval <= 0 || c.BrainScanBackoffMin <= 0 || c.BrainScanBackoffMax < c.BrainScanBackoffMin {
+		return errors.New("brain scan intervals must be > 0 and the backoff ceiling must not be below its floor")
+	}
+	if c.BrainScanPDFPath == "" || c.BrainScanPDFPages <= 0 || c.BrainScanPDFTimeout <= 0 || c.BrainScanMaxPDFBytes <= 0 {
+		return errors.New("brain scan pdf fields must be set and > 0")
+	}
+	if c.BrainScanPDFMinChars <= 0 || c.BrainScanPDFMaxChars <= c.BrainScanPDFMinChars {
+		return errors.New("BrainScanPDFMinChars must be > 0 and below BrainScanPDFMaxChars")
+	}
+	if c.BrainGraphDefaultNodes <= 0 || c.BrainGraphMaxNodes < c.BrainGraphDefaultNodes {
+		return errors.New("BrainGraphDefaultNodes must be > 0 and not above BrainGraphMaxNodes")
+	}
+	if c.BrainScanDepth <= 0 {
+		return errors.New("BrainScanDepth must be > 0")
 	}
 	if c.BrainScanBatch <= 0 || c.BrainScanConcurrency <= 0 || c.BrainScanMaxFileBytes <= 0 {
 		return errors.New("brain scan fields must be > 0")

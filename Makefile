@@ -1,8 +1,9 @@
-.PHONY: build test race vet lint check e2e install-mcp uninstall-mcp install-agent uninstall-agent agent-status agent-logs agent-restart install-app crawl-up crawl-down crawl-logs maps-up maps-down maps-logs desktop-sidecar desktop-dev desktop-build desktop-check
+.PHONY: build test race vet lint check e2e scan scan-dry install-mcp uninstall-mcp install-agent uninstall-agent agent-status agent-logs agent-restart install-app crawl-up crawl-down crawl-logs maps-up maps-down maps-logs desktop-sidecar desktop-dev desktop-build desktop-check
 
 build:
 	go build -o bin/mimir-mcp ./cmd/mimir-mcp
 	go build -o bin/mimir-daemon ./cmd/mimir-daemon
+	go build -o bin/mimir-scan ./cmd/mimir-scan
 
 test:
 	go test ./...
@@ -43,7 +44,23 @@ release:
 	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-mcp-darwin-amd64 ./cmd/mimir-mcp
 	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-daemon-darwin-arm64 ./cmd/mimir-daemon
 	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-daemon-darwin-amd64 ./cmd/mimir-daemon
+	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-scan-darwin-arm64 ./cmd/mimir-scan
+	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o bin/mimir-scan-darwin-amd64 ./cmd/mimir-scan
 	@echo "Release binaries built in bin/"
+
+# --- machine-wide scan -------------------------------------------------------
+#
+# Reads every project under ROOT into Brain: one gemini-3.7-flash-low call per
+# file through agy, hash-skipped so a re-run is free. `scan-dry` costs nothing
+# and reports how many files are pending.
+
+ROOT ?= $(HOME)/development
+
+scan: build
+	bin/mimir-scan $(ROOT)
+
+scan-dry: build
+	bin/mimir-scan -n $(ROOT)
 
 # --- always-on daemon (launchd) ---------------------------------------------
 #

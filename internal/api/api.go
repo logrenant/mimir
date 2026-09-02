@@ -120,6 +120,15 @@ type Deps struct {
 	// registered unless LeadGen is present (it is nil without a Places key).
 	LeadGen LeadGenRunner
 	Emails  EmailStatusSetter
+
+	// The three halves of the Brain tab, separately gated because they fail
+	// separately: the scan is a daemon-lifetime loop, the graph is three store
+	// reads, and node detail is the node core. A machine whose store would not
+	// open has none of them; a build without the supervisor still has the
+	// graph.
+	BrainScan  BrainScanner
+	Brain      BrainReader
+	BrainGraph BrainGraphStore
 }
 
 // Server owns the routes and the listener.
@@ -172,6 +181,23 @@ func (s *Server) Handler() http.Handler {
 	// rather than a route that is honestly absent.
 	if s.deps.Events != nil && s.deps.Runner != nil && s.deps.Transcripts != nil {
 		mux.HandleFunc("GET /ws/runs/{id}", s.handleRunStream)
+	}
+
+	// The Brain tab. The scan's three controls are routes rather than frames on
+	// a socket for the same reason stopping a run is: the socket, when there is
+	// one, stays one-directional.
+	if s.deps.BrainScan != nil {
+		mux.HandleFunc("GET /brain/scan", s.handleBrainScanStatus)
+		mux.HandleFunc("POST /brain/scan/pause", s.handleBrainScanPause)
+		mux.HandleFunc("POST /brain/scan/resume", s.handleBrainScanResume)
+		mux.HandleFunc("POST /brain/scan/now", s.handleBrainScanNow)
+	}
+	if s.deps.BrainGraph != nil {
+		mux.HandleFunc("GET /brain/graph", s.handleBrainGraph)
+		mux.HandleFunc("GET /brain/projects", s.handleBrainProjects)
+	}
+	if s.deps.Brain != nil {
+		mux.HandleFunc("GET /brain/nodes/{id}", s.handleBrainNode)
 	}
 
 	if s.deps.LeadGen != nil {

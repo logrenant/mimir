@@ -15,6 +15,8 @@ The single source of every operational value. Enforces **SD-1**.
   |---------|-----------|---------|
   | `MIMIR_CRAWL4AI_URL` | `Crawl4AIBaseURL` | `http://127.0.0.1:11235` |
   | `MIMIR_CLAUDE_CLI_PATH` | `ClaudeCLIPath` | `claude` |
+  | `MIMIR_AGY_CLI_PATH` | `AgyCLIPath` | `agy` |
+  | `MIMIR_PDFTOTEXT_PATH` | `BrainScanPDFPath` | `pdftotext` |
   | `MIMIR_DDG_HTML_URL` | `DuckDuckGoHTMLURL` | `https://html.duckduckgo.com/html/` |
   | `MIMIR_DDG_LITE_URL` | `DuckDuckGoLiteURL` | `https://lite.duckduckgo.com/lite/` |
   | `MIMIR_MAPSCRAPE_URL` | `MapScrapeBaseURL` | `http://127.0.0.1:11236` |

@@ -39,6 +39,24 @@ func writeFakeClaude(t *testing.T, versionFail bool, body string) string {
 	return path
 }
 
+// writeFakeAgy writes an executable shell script standing in for the agy CLI.
+// Its envelope is agy's, not claude's: a `status` and a `response`, and the
+// `models` subcommand answering so Health can pass.
+func writeFakeAgy(t *testing.T, body string) string {
+	t.Helper()
+
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"models\" ]; then\n  exit 0\nfi\n" +
+		"cat >/dev/null\n" + // consume stdin (the untrusted content)
+		body + "\n"
+
+	path := filepath.Join(t.TempDir(), "fake-agy.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestBuildPrompt_Golden(t *testing.T) {
 	// The two shapes are separate goldens because they are separate prompts:
 	// fetch_page distils a page with no query at all, and that branch must not

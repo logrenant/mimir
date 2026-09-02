@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -38,13 +39,19 @@ type ScanOptions struct {
 
 // ScanResult is what one pass did, and what is left.
 type ScanResult struct {
-	Scanned   int      `json:"scanned"`
-	Skipped   int      `json:"skipped_unchanged"`
-	Failed    int      `json:"failed"`
-	Remaining int      `json:"remaining"`
-	Eligible  int      `json:"eligible_total"`
-	DryRun    bool     `json:"dry_run,omitempty"`
-	Files     []string `json:"files,omitempty"`
+	Scanned int `json:"scanned"`
+	Skipped int `json:"skipped_unchanged"`
+	Failed  int `json:"failed"`
+
+	// Unreadable is a file the extractor could not turn into text — a PDF that
+	// is page images, or a machine with no poppler. It is deliberately not
+	// Failed: Failed is what tells the supervisor the provider is down, and a
+	// scanned manual must not look like agy being signed out.
+	Unreadable int      `json:"unreadable,omitempty"`
+	Remaining  int      `json:"remaining"`
+	Eligible   int      `json:"eligible_total"`
+	DryRun     bool     `json:"dry_run,omitempty"`
+	Files      []string `json:"files,omitempty"`
 }
 
 // Scan reads a repository into Brain, one bounded batch at a time.
@@ -111,23 +118,27 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 		if err != nil || info.IsDir() || info.Size() == 0 {
 			continue
 		}
-		if info.Size() > int64(c.cfg.BrainScanMaxFileBytes) {
-			continue
-		}
 
-		raw, err := os.ReadFile(full)
-		if err != nil || !isText(raw) {
+		hash, ok := digest(full, info, c.cfg.BrainScanMaxFileBytes, c.cfg.BrainScanMaxPDFBytes)
+		if !ok {
 			continue
 		}
 		res.Eligible++
 
-		sum := sha256.Sum256(raw)
-		hash := hex.EncodeToString(sum[:])
+		// The digest is of the file's bytes, never of the text extracted from
+		// them, and it is taken before the extractor runs. That is what makes a
+		// second sweep over ~/Documents spawn neither pdftotext nor agy.
 		if known[rel] == hash {
 			res.Skipped++
 			continue
 		}
-		pending = append(pending, candidate{rel: rel, content: string(raw), hash: hash})
+
+		content, err := c.contentOf(ctx, full, rel)
+		if err != nil {
+			res.Unreadable++
+			continue
+		}
+		pending = append(pending, candidate{rel: rel, content: content, hash: hash})
 	}
 
 	batch := pending
@@ -155,7 +166,7 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			_, err := c.Ingest(ctx, Input{
+			out, err := c.Ingest(ctx, Input{
 				Source:      cand.rel,
 				Kind:        KindFile,
 				Content:     "File: " + cand.rel + "\n\n" + cand.content,
@@ -168,6 +179,15 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 			if err != nil {
 				// One unreadable file is not a reason to abandon a scan that
 				// has already paid for the others.
+				res.Failed++
+				return nil
+			}
+			// A stored node with no assessment is not a scanned file. Ingest
+			// keeps it — a titled node is still findable — but it drops the
+			// content hash, so the next pass offers the file again, and
+			// counting it here is what stops a run reporting a clean sweep
+			// while the provider was down for half of it.
+			if !out.Distilled {
 				res.Failed++
 				return nil
 			}
@@ -186,14 +206,19 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 
 // listScannable returns the repository-relative paths worth reading.
 //
-// `git ls-files` is the allowlist, not a convenience: it already excludes
-// build output, vendored trees and everything .gitignore names, which is the
-// same judgement a person made about what belongs to the project. A directory
-// that is not a repository falls back to a filtered walk.
+// `git ls-files` is the allowlist, not a convenience: with --exclude-standard
+// it already excludes build output, vendored trees and everything .gitignore
+// names, which is the same judgement a person made about what belongs to the
+// project. `--others` is there because a file being uncommitted says nothing
+// about whether it belongs to the work — a scan that saw only the index would
+// miss a whole afternoon's files, and on this machine it missed 69 of
+// CozyFarm's 87. A directory that is not a repository falls back to a filtered
+// walk.
 func listScannable(ctx context.Context, projectPath string) ([]string, error) {
 	var candidates []string
 
-	out, err := exec.CommandContext(ctx, "git", "-C", projectPath, "ls-files", "-z").Output()
+	out, err := exec.CommandContext(ctx, "git", "-C", projectPath,
+		"ls-files", "-z", "--cached", "--others", "--exclude-standard").Output()
 	if err == nil {
 		for _, p := range strings.Split(string(out), "\x00") {
 			if p != "" {
@@ -207,6 +232,13 @@ func listScannable(ctx context.Context, projectPath string) ([]string, error) {
 			}
 			if d.IsDir() {
 				if skipDir(d.Name()) {
+					return filepath.SkipDir
+				}
+				// A repository nested under a non-repository directory is its
+				// own project, with its own .gitignore and its own scan. Walking
+				// into it here would read those files a second time, under a
+				// project path they do not belong to.
+				if p != projectPath && isRepo(p) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -234,10 +266,18 @@ func listScannable(ctx context.Context, projectPath string) ([]string, error) {
 
 func skipDir(name string) bool {
 	switch name {
-	case ".git", "node_modules", "target", "dist", "build", "vendor", ".venv":
+	case ".git", "node_modules", "target", "dist", "build", ".build", "vendor", ".venv":
 		return true
 	}
 	return false
+}
+
+// isRepo reports whether a directory is the root of a git checkout. `.git` is a
+// directory in a normal clone and a file in a worktree or submodule, so the
+// test is existence, not type.
+func isRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 // scannable decides whether a path is worth a model call.
@@ -263,17 +303,71 @@ func scannable(rel string) bool {
 		return false
 	}
 
+	// .pdf is not on this list, and that is the one deliberate inclusion: a
+	// technical manual is the opposite of a generated file — it is the thing a
+	// later session most needs told about, and on this machine ~/Documents is
+	// six of them and nothing else. It is read through poppler (pdf.go), and
+	// skipped without complaint when poppler is not installed.
 	switch ext {
 	case ".lock", ".golden", ".snap",
 		".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".icns", ".svg",
 		".woff", ".woff2", ".ttf", ".otf", ".eot",
-		".pdf", ".zip", ".gz", ".tar", ".bin", ".wasm", ".db", ".sqlite":
+		".zip", ".gz", ".tar", ".bin", ".wasm", ".db", ".sqlite":
 		return false
 	}
 	if strings.HasSuffix(base, ".min.js") || strings.HasSuffix(base, ".min.css") {
 		return false
 	}
 	return true
+}
+
+// digest hashes a file and decides, by class, whether it is worth reading at
+// all. The two size ceilings are separate numbers on purpose: a 7.6 MB manual
+// extracts to 73 KB of text, so one ceiling would either exclude every real PDF
+// or let a 96 KB rule wave through a file poppler then has to parse.
+//
+// A non-PDF is read into memory because it has to be anyway; a PDF is streamed
+// through the hash and handed to the extractor by path.
+func digest(full string, info os.FileInfo, maxText, maxPDF int) (string, bool) {
+	if isPDF(full) {
+		if info.Size() > int64(maxPDF) {
+			return "", false
+		}
+		f, err := os.Open(full)
+		if err != nil {
+			return "", false
+		}
+		defer func() { _ = f.Close() }()
+
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return "", false
+		}
+		return hex.EncodeToString(h.Sum(nil)), true
+	}
+
+	if info.Size() > int64(maxText) {
+		return "", false
+	}
+	raw, err := os.ReadFile(full)
+	if err != nil || !isText(raw) {
+		return "", false
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), true
+}
+
+// contentOf returns the text a file contributes to Brain. A PDF is text behind
+// an extractor; everything else is already text by the time digest accepted it.
+func (c *Core) contentOf(ctx context.Context, full, rel string) (string, error) {
+	if isPDF(rel) {
+		return c.pdfText(ctx, full)
+	}
+	raw, err := os.ReadFile(full)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 // isText rejects binaries the extension list did not name. A NUL byte or

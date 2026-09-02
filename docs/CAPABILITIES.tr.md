@@ -77,6 +77,26 @@ yapıyor — beş dakikalık bir tikte ve **model çağrısı olmadan**.
 damıtma, çağrı başına bir batch ile sınırlı ve hash ile atlamalı, yani
 değişmemiş bir repoda ikinci geçiş bedava. Önce `dry_run` ile faturayı gör.
 
+**Yerleşik tarama.** `mimir-daemon` yaşadığı sürece bir tarama sürüyor:
+`~/development` ve `~/Documents` altındaki her proje `agy` üzerinden bitene
+kadar okunuyor, sonra bir bekleme ve baştan — yani her zaman çalışan bir agy var
+ve öğleden sonra yazılan bir dosya akşam Brain'de oluyor. PDF'ler poppler'ın
+`pdftotext`'i kuruluysa okunuyor, değilse sessizce atlanıyor. Yanıt vermeyen bir
+sağlayıcı taramayı geri çekiyor (bir dakika, katlanarak, en fazla otuz), saatte
+binlerce başarısız süreç doğurmak yerine; damıtılamayan dosya content hash
+tutmadığı için sonsuza dek atlanmıyor, yeniden deneniyor. Masaüstündeki **Brain**
+sekmesi bunu gösteriyor — `GET /brain/scan`, duraklat / sürdür / şimdi tara —
+ve yanında düğümlerle kenarların kuvvet yönlendirmeli resmi (`GET /brain/graph`,
+`/brain/projects`, `/brain/nodes/{id}`).
+
+**Bir makinenin tamamı.** `bin/mimir-scan ~/development` (`make scan`) aynı
+taramanın arada oturum olmayan hâli: bir kökün altındaki bütün projeleri bulur —
+git checkout'ları ve hiç repo olmamış ama kendi dosyaları olan klasörler — ve her
+birini bitene kadar sürer, ilerlemeyi stderr'e yazar. Dosya başına `agy`
+üzerinden bir `gemini-3.7-flash-high` çağrısı; `-n` faturayı söyler, hiçbir şey
+harcamaz. Damıtılamayan bir düğüm content hash tutmaz, yani sağlayıcının çöktüğü
+bir aralık sonsuza dek atlanmaz, bir sonraki çalışmada yeniden denenir.
+
 Kimlik `(project_path, kind, source_key)`; aynı kaynağı yeniden ingest etmek yeni
 bir düğüm üretmez, mevcut satırı günceller. Damıtmanın FTS indeksine yazdığı
 `aliases` terimleri — eşanlamlılar ve komşu kavramlar — bir aramanın, sorgunun

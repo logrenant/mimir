@@ -198,8 +198,13 @@ echo '{"result":"ok","is_error":false}'`)
 
 // --- router ------------------------------------------------------------------
 
+// The fallback mechanism, exercised against a config that asks for one. The
+// shipped config does not — see TestRouter_DistillHasNoFallbackByDefault — but
+// the machinery stays tested so that turning it back on is one word in config
+// rather than a rewrite.
 func TestRouter_FallsBackWhenThePrimaryIsUnavailable(t *testing.T) {
 	cfg := testConfig(t)
+	cfg.DistillFallback = "claude"
 	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `exit 3`)
 	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude", `echo '{"result":"from claude","is_error":false}'`)
 
@@ -214,6 +219,7 @@ func TestRouter_FallsBackWhenThePrimaryIsUnavailable(t *testing.T) {
 
 func TestRouter_ReportsBothFailuresWhenTheFallbackAlsoFails(t *testing.T) {
 	cfg := testConfig(t)
+	cfg.DistillFallback = "claude"
 	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `exit 3`)
 	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude", `exit 4`)
 
@@ -226,9 +232,36 @@ func TestRouter_ReportsBothFailuresWhenTheFallbackAlsoFails(t *testing.T) {
 	}
 }
 
+// The shipped configuration has no distil fallback (task-51). agy being signed
+// out or out of quota must stop the distil tier, not move the work — and the
+// bill — to claude behind the operator's back.
+func TestRouter_DistillHasNoFallbackByDefault(t *testing.T) {
+	cfg := testConfig(t)
+	if cfg.DistillFallback != "" {
+		t.Fatalf("DistillFallback = %q, want empty in the shipped config", cfg.DistillFallback)
+	}
+	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `exit 3`)
+	claudeCalls := filepath.Join(t.TempDir(), "called")
+	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude",
+		`touch `+claudeCalls+`
+echo '{"result":"x","is_error":false}'`)
+
+	_, err := NewRouter(cfg).Complete(context.Background(), Distill, Request{User: "c"})
+	if !errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("err = %v, want ErrProviderUnavailable", err)
+	}
+	if strings.Contains(err.Error(), "fallback") {
+		t.Errorf("a fallback was attempted: %v", err)
+	}
+	if _, err := os.Stat(claudeCalls); err == nil {
+		t.Error("claude ran for a distil call; the shipped config has no fallback")
+	}
+}
+
 // A cancelled caller is not a reason to start a second subprocess on its behalf.
 func TestRouter_DoesNotFallBackOnACancelledContext(t *testing.T) {
 	cfg := testConfig(t)
+	cfg.DistillFallback = "claude"
 	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `exit 3`)
 	claudeCalls := filepath.Join(t.TempDir(), "called")
 	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude",

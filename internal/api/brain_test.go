@@ -1,0 +1,293 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/logrenant/mimir/internal/brain"
+	"github.com/logrenant/mimir/internal/store"
+)
+
+// --- fakes -------------------------------------------------------------------
+
+type fakeScanner struct {
+	status brain.ScanStatus
+	paused bool
+	woken  int
+}
+
+func (f *fakeScanner) Status() brain.ScanStatus {
+	s := f.status
+	s.Paused = f.paused
+	if f.paused {
+		s.Phase = brain.PhasePaused
+	}
+	return s
+}
+
+func (f *fakeScanner) Pause()  { f.paused = true }
+func (f *fakeScanner) Resume() { f.paused = false }
+
+func (f *fakeScanner) ScanNow() bool {
+	if f.paused {
+		return false
+	}
+	f.woken++
+	return true
+}
+
+type fakeGraphStore struct {
+	ranked   []store.BrainNodeDegree
+	nodes    []store.BrainNodeRow
+	edges    []store.BrainEdgeRow
+	projects []store.BrainProjectCount
+	lastPath string
+	limit    int
+}
+
+func (f *fakeGraphStore) BrainGraphIDs(_ context.Context, projectPath string, limit int) ([]store.BrainNodeDegree, error) {
+	f.lastPath = projectPath
+	f.limit = limit
+	if limit < len(f.ranked) {
+		return f.ranked[:limit], nil
+	}
+	return f.ranked, nil
+}
+
+func (f *fakeGraphStore) BrainNodesByIDs(_ context.Context, ids []string) ([]store.BrainNodeRow, error) {
+	want := map[string]struct{}{}
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	var out []store.BrainNodeRow
+	for _, n := range f.nodes {
+		if _, ok := want[n.ID]; ok {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeGraphStore) BrainEdgesAmong(context.Context, []string, int) ([]store.BrainEdgeRow, error) {
+	return f.edges, nil
+}
+
+func (f *fakeGraphStore) BrainProjects(context.Context) ([]store.BrainProjectCount, error) {
+	return f.projects, nil
+}
+
+type fakeBrainReader struct {
+	node brain.NodeView
+	err  error
+}
+
+func (f *fakeBrainReader) Related(context.Context, string, int) (brain.NodeView, error) {
+	return f.node, f.err
+}
+
+func graphDeps() (Deps, *fakeGraphStore, *fakeScanner) {
+	gs := &fakeGraphStore{
+		ranked: []store.BrainNodeDegree{{ID: "n1", Degree: 3}, {ID: "n2", Degree: 1}},
+		nodes: []store.BrainNodeRow{
+			{ID: "n1", Kind: "file", Title: "scan.go", ProjectPath: "/repo", Tags: []string{"scan"}, UpdatedAt: time.Now()},
+			{ID: "n2", Kind: "note", Title: "a decision", ProjectPath: "/repo", UpdatedAt: time.Now()},
+		},
+		edges: []store.BrainEdgeRow{
+			{Src: "n1", Dst: "n2", Kind: "tag", Weight: 0.7},
+			// A dangling edge: the store promises this cannot happen, and the
+			// handler drops it anyway — the thing that breaks is a canvas.
+			{Src: "n1", Dst: "ghost", Kind: "semantic", Weight: 0.9},
+		},
+		projects: []store.BrainProjectCount{
+			{ProjectPath: "/repo", Nodes: 2, Files: 1, UpdatedAt: time.Now()},
+			{ProjectPath: "", Nodes: 1, UpdatedAt: time.Now()},
+		},
+	}
+	sc := &fakeScanner{status: brain.ScanStatus{Phase: brain.PhaseScanning, Roots: []string{"/roots"}}}
+	return Deps{BrainScan: sc, BrainGraph: gs, Brain: &fakeBrainReader{node: brain.NodeView{ID: "n1", Title: "scan.go"}}}, gs, sc
+}
+
+// --- tests -------------------------------------------------------------------
+
+func TestBrain_RoutesUnregisteredWithoutTheirDeps(t *testing.T) {
+	h := New(testConfig(), Deps{}).Handler()
+
+	for _, c := range []struct{ method, path string }{
+		{http.MethodGet, "/brain/scan"},
+		{http.MethodPost, "/brain/scan/pause"},
+		{http.MethodPost, "/brain/scan/now"},
+		{http.MethodGet, "/brain/graph"},
+		{http.MethodGet, "/brain/projects"},
+		{http.MethodGet, "/brain/nodes/n1"},
+	} {
+		w := do(h, c.method, c.path, testToken, "")
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s %s without its dep = %d, want 404", c.method, c.path, w.Code)
+		}
+	}
+}
+
+func TestBrainScan_PauseResumeRoundTrip(t *testing.T) {
+	deps, _, sc := graphDeps()
+	h := New(testConfig(), deps).Handler()
+
+	if w := do(h, http.MethodPost, "/brain/scan/pause", testToken, ""); w.Code != http.StatusOK {
+		t.Fatalf("pause = %d, body %s", w.Code, w.Body.String())
+	}
+	if !sc.paused {
+		t.Fatal("pause did not reach the supervisor")
+	}
+
+	// A button drawn before the pause must not restart the work quietly.
+	w := do(h, http.MethodPost, "/brain/scan/now", testToken, "")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("scan/now while paused = %d, want 409", w.Code)
+	}
+
+	if w := do(h, http.MethodPost, "/brain/scan/resume", testToken, ""); w.Code != http.StatusOK {
+		t.Fatalf("resume = %d", w.Code)
+	}
+	if w := do(h, http.MethodPost, "/brain/scan/now", testToken, ""); w.Code != http.StatusAccepted {
+		t.Fatalf("scan/now = %d, want 202", w.Code)
+	}
+	if sc.woken != 1 {
+		t.Errorf("the supervisor was woken %d times, want 1", sc.woken)
+	}
+}
+
+func TestBrainScanStatus_IsAnObjectWithItsRoots(t *testing.T) {
+	deps, _, _ := graphDeps()
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodGet, "/brain/scan", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var got scanStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not a status: %v (%s)", err, w.Body.String())
+	}
+	if got.Scan.Phase != brain.PhaseScanning || len(got.Scan.Roots) != 1 {
+		t.Errorf("status = %+v", got.Scan)
+	}
+}
+
+// A force layout handed an endpoint it was never given draws a phantom or
+// throws, and the failure lands in a canvas with no message.
+func TestBrainGraph_NeverReturnsAnEdgeWithoutBothEndpoints(t *testing.T) {
+	deps, _, _ := graphDeps()
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodGet, "/brain/graph", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("graph = %d, body %s", w.Code, w.Body.String())
+	}
+	var got graphResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Nodes) != 2 {
+		t.Fatalf("nodes = %d, want 2", len(got.Nodes))
+	}
+	if len(got.Edges) != 1 {
+		t.Fatalf("edges = %+v, want only the one with both ends present", got.Edges)
+	}
+	if got.Nodes[0].Degree != 3 {
+		t.Errorf("degree did not survive: %+v", got.Nodes[0])
+	}
+}
+
+func TestBrainGraph_LimitIsClampedAndAnInvalidLimitIs400(t *testing.T) {
+	deps, gs, _ := graphDeps()
+	cfg := testConfig()
+	cfg.BrainGraphMaxNodes = 10
+	cfg.BrainGraphDefaultNodes = 5
+	h := New(cfg, deps).Handler()
+
+	if w := do(h, http.MethodGet, "/brain/graph?limit=9999", testToken, ""); w.Code != http.StatusOK {
+		t.Fatalf("clamped limit = %d", w.Code)
+	}
+	if gs.limit != 10 {
+		t.Errorf("limit = %d, want the ceiling 10", gs.limit)
+	}
+
+	if w := do(h, http.MethodGet, "/brain/graph", testToken, ""); w.Code != http.StatusOK || gs.limit != 5 {
+		t.Errorf("default limit = %d (status %d), want 5", gs.limit, w.Code)
+	}
+
+	for _, bad := range []string{"limit=abc", "limit=0", "limit=-4"} {
+		w := do(h, http.MethodGet, "/brain/graph?"+bad, testToken, "")
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("?%s = %d, want 400", bad, w.Code)
+		}
+	}
+}
+
+// The rule this keeps honest: a filesystem path is accepted at exactly two
+// routes on this daemon, and the graph is not one of them.
+func TestBrainGraph_ProjectIsAnIDNotAPath(t *testing.T) {
+	deps, gs, _ := graphDeps()
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodGet, "/brain/graph?project=%2FUsers%2Flogrenant%2Fdevelopment", testToken, "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("a path as ?project = %d, want 400", w.Code)
+	}
+	if env := decodeError(t, w); env.Error.Code != codeBadRequest {
+		t.Errorf("error code = %q", env.Error.Code)
+	}
+
+	w = do(h, http.MethodGet, "/brain/graph?project=proj-doesnotexist", testToken, "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("an unknown id = %d, want 404", w.Code)
+	}
+
+	id := brain.ProjectID("/repo")
+	if w := do(h, http.MethodGet, "/brain/graph?project="+id, testToken, ""); w.Code != http.StatusOK {
+		t.Fatalf("a known id = %d, body %s", w.Code, w.Body.String())
+	}
+	if gs.lastPath != "/repo" {
+		t.Errorf("the id resolved to %q, want /repo", gs.lastPath)
+	}
+}
+
+func TestBrainProjects_LabelsTheGlobalScope(t *testing.T) {
+	deps, _, _ := graphDeps()
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodGet, "/brain/projects", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("projects = %d", w.Code)
+	}
+	var got brainProjectsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Projects) != 2 {
+		t.Fatalf("projects = %+v", got.Projects)
+	}
+	var labels []string
+	for _, p := range got.Projects {
+		labels = append(labels, p.Label)
+		if p.ID == "" {
+			t.Error("a project came back without an id, so the graph cannot be filtered by it")
+		}
+	}
+	if labels[0] != "repo" || labels[1] != "global" {
+		t.Errorf("labels = %v", labels)
+	}
+}
+
+func TestBrainNode_UnknownIDIs404(t *testing.T) {
+	deps, _, _ := graphDeps()
+	deps.Brain = &fakeBrainReader{err: brain.ErrNodeNotFound}
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodGet, "/brain/nodes/nope", testToken, "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown node = %d, want 404: %s", w.Code, w.Body.String())
+	}
+}

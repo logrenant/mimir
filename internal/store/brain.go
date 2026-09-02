@@ -389,3 +389,200 @@ func (s *Store) BrainNodeHashes(ctx context.Context, projectPath, kind, promptVe
 	}
 	return out, nil
 }
+
+// --- the graph ---------------------------------------------------------------
+//
+// Three reads that exist for one screen: the force-directed picture of what
+// Brain knows. None of them touches brain_fts, which is worth saying out loud
+// because the obvious next request — "let me filter the graph by a search term"
+// — is exactly where somebody joins the virtual table and aliases it, and an
+// aliased FTS5 table fails with "no such column" the moment bm25() is involved.
+
+// BrainNodeDegree is one node's id and how many edges touch it. Only the graph
+// query computes it, so it is not a field on BrainNodeRow.
+type BrainNodeDegree struct {
+	ID     string
+	Degree int
+}
+
+// BrainProjectCount is one project's share of the graph.
+type BrainProjectCount struct {
+	ProjectPath string
+	Nodes       int
+	Files       int
+	UpdatedAt   time.Time
+}
+
+// BrainGraphIDs returns the nodes worth drawing, most connected first.
+//
+// Ranked by degree rather than by recency, and that is the whole decision.
+// After a machine-wide sweep the newest few hundred nodes are a few hundred
+// files from whichever project was scanned last — a picture of the scan order,
+// not of the brain. Worse, a recency cut slices through the edge set, so most
+// of what survives arrives as unconnected dots. Degree keeps the hubs and what
+// hangs off them, which is the structure a force layout exists to show, and
+// cutting the tail removes leaves instead.
+//
+// The scope is this project plus the global nodes, the same rule
+// SearchBrainNodes uses: a node about a public repository is not about any one
+// checkout, and hiding it is the same as not having stored it.
+func (s *Store) BrainGraphIDs(ctx context.Context, projectPath string, limit int) ([]BrainNodeDegree, error) {
+	if s == nil || s.db == nil || limit <= 0 {
+		return nil, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT n.id, COALESCE(d.degree, 0) AS degree
+		FROM brain_nodes n
+		LEFT JOIN (
+			SELECT node, count(*) AS degree FROM (
+				SELECT src AS node FROM brain_edges
+				UNION ALL
+				SELECT dst AS node FROM brain_edges
+			)
+			GROUP BY node
+		) d ON d.node = n.id
+		WHERE (? = '' OR n.project_path = ? OR n.project_path = '')
+		ORDER BY degree DESC, n.updated_at DESC, n.id
+		LIMIT ?`, projectPath, projectPath, limit)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []BrainNodeDegree
+	for rows.Next() {
+		var d BrainNodeDegree
+		if err := rows.Scan(&d.ID, &d.Degree); err != nil {
+			return nil, unavailable(err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return out, nil
+}
+
+// brainEdgeChunk is how many ids go into one IN clause. The driver's own
+// ceiling is far higher, but chunking here means the SQL does not depend on a
+// build-time constant of the driver we happen to link.
+const brainEdgeChunk = 400
+
+// BrainEdgesAmong returns only the edges whose *both* endpoints are in ids.
+//
+// The invariant lives here rather than in the caller because this is the layer
+// that can guarantee it. A force layout handed an edge to a node it was never
+// given either invents a phantom node or throws, and neither is something a UI
+// should have to defend against.
+func (s *Store) BrainEdgesAmong(ctx context.Context, ids []string, limit int) ([]BrainEdgeRow, error) {
+	if s == nil || s.db == nil || len(ids) == 0 || limit <= 0 {
+		return nil, nil
+	}
+
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+
+	seen := make(map[string]struct{}, limit)
+	var out []BrainEdgeRow
+
+	for start := 0; start < len(ids); start += brainEdgeChunk {
+		end := start + brainEdgeChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, 0, len(chunk)*2+1)
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		args = append(args, limit)
+
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT src, dst, kind, weight FROM brain_edges
+			WHERE src IN (`+placeholders+`) OR dst IN (`+placeholders+`)
+			ORDER BY weight DESC
+			LIMIT ?`, args...)
+		if err != nil {
+			return nil, unavailable(err)
+		}
+
+		for rows.Next() {
+			var e BrainEdgeRow
+			if err := rows.Scan(&e.Src, &e.Dst, &e.Kind, &e.Weight); err != nil {
+				_ = rows.Close()
+				return nil, unavailable(err)
+			}
+			// One endpoint matched the chunk; the other has to be in the whole
+			// set, not just this chunk.
+			if _, ok := want[e.Src]; !ok {
+				continue
+			}
+			if _, ok := want[e.Dst]; !ok {
+				continue
+			}
+			key := e.Src + "\x00" + e.Dst + "\x00" + e.Kind
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, e)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, unavailable(err)
+		}
+		_ = rows.Close()
+
+		if len(out) >= limit {
+			return out[:limit], nil
+		}
+	}
+	return out, nil
+}
+
+// BrainProjects lists what Brain knows, by project.
+//
+// The empty project_path row is kept rather than filtered: it is the global
+// scope, and dropping it would hide every node that is not about one checkout.
+func (s *Store) BrainProjects(ctx context.Context) ([]BrainProjectCount, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT project_path,
+		       count(*)                                       AS nodes,
+		       sum(CASE WHEN kind = 'file' THEN 1 ELSE 0 END) AS files,
+		       max(updated_at)                                AS updated_at
+		FROM brain_nodes
+		GROUP BY project_path
+		ORDER BY nodes DESC, project_path`)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []BrainProjectCount
+	for rows.Next() {
+		var (
+			p       BrainProjectCount
+			updated int64
+		)
+		if err := rows.Scan(&p.ProjectPath, &p.Nodes, &p.Files, &updated); err != nil {
+			return nil, unavailable(err)
+		}
+		p.UpdatedAt = time.Unix(updated, 0).UTC()
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return out, nil
+}

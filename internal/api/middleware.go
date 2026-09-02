@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/logrenant/mimir/internal/account"
+	"github.com/logrenant/mimir/internal/brain"
 	"github.com/logrenant/mimir/internal/coderunner"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/project"
@@ -70,6 +71,14 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
 	case errors.Is(err, coderunner.ErrClaudeUnavailable):
 		// Actionable and the operator's to fix (SD-6), so it is worth echoing.
+		writeError(w, http.StatusServiceUnavailable, codeInternal, err.Error())
+	case errors.Is(err, brain.ErrNodeNotFound), errors.Is(err, errUnknownProject):
+		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
+	case errors.Is(err, errProjectIsAnID), errors.Is(err, errBadLimit):
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
+	case errors.Is(err, brain.ErrNoStore):
+		// The knowledge base is not open. Actionable in the same way a missing
+		// CLI is, so it is echoed rather than logged as an internal fault.
 		writeError(w, http.StatusServiceUnavailable, codeInternal, err.Error())
 	default:
 		slog.Error("request failed", "path", r.URL.Path, "error", err)
@@ -248,3 +257,12 @@ func recoverPanics(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// The brain routes' own errors. They live here rather than in internal/brain
+// because they are about a request — an id that is the wrong shape, a limit
+// that is not a number — and the runtime package has no opinion about either.
+var (
+	errProjectIsAnID  = errors.New("project must be an id from GET /brain/projects, not a path")
+	errUnknownProject = errors.New("no such project in the knowledge base")
+	errBadLimit       = errors.New("limit must be a positive integer")
+)
