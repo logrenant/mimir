@@ -61,6 +61,15 @@ type Config struct {
 	BrainSearchMaxTokens     int
 	BrainPromptVersion       string
 
+	// Autonomous capture (task-45). Brain records what happens rather than
+	// waiting to be told, and none of these three paths costs a model call:
+	// episodes are already distilled by M8, commits are read from git, and the
+	// agy spool is JSON a hook wrote. The batches exist so a first pass over a
+	// long backlog is many short ticks rather than one long one.
+	BrainSpoolDir     string
+	BrainPromoteBatch int
+	BrainCommitBatch  int
+
 	// GitHubToken is the second operator-provisioned credential, and it earns
 	// that category the same way PlacesAPIKey does: empty is a valid, normal
 	// state (brain_ingest_github then reads public repositories only), and it
@@ -360,6 +369,8 @@ func Load() Config {
 		BrainBodyMaxChars:        8000,
 		BrainSearchMaxTokens:     1400,
 		BrainPromptVersion:       "brain-v2",
+		BrainPromoteBatch:        200,
+		BrainCommitBatch:         100,
 
 		EcommerceLookupMaxTokens:   400,
 		TikTokProfileMaxTokens:     400,
@@ -513,6 +524,11 @@ func Load() Config {
 	// directory gets an isolated transcript directory for free.
 	c.TranscriptDir = filepath.Join(filepath.Dir(c.StorePath), "transcripts")
 	c.AttachmentDir = filepath.Join(filepath.Dir(c.StorePath), "attachments")
+	// Where the agy Stop hook drops a conversation for the daemon to pick up.
+	// A directory rather than an HTTP call: the hook then needs no token,
+	// cannot block a session on the network, and a conversation that ended
+	// while the daemon was down is still recorded when it comes back.
+	c.BrainSpoolDir = filepath.Join(filepath.Dir(c.StorePath), "spool")
 
 	return c
 }
@@ -572,6 +588,9 @@ func (c Config) Validate() error {
 	}
 	if c.BrainPromptVersion == "" {
 		return errors.New("BrainPromptVersion is empty")
+	}
+	if c.BrainPromoteBatch <= 0 || c.BrainCommitBatch <= 0 {
+		return errors.New("brain capture batch sizes must be > 0")
 	}
 
 	if c.SearchTimeout <= 0 || c.CrawlTimeout <= 0 || c.RefineTimeout <= 0 || c.ResearchTimeout <= 0 {

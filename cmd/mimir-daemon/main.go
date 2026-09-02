@@ -170,6 +170,33 @@ func run() error {
 		<-memoryDone
 	}()
 
+	// Brain records what the memory has already distilled, plus what git says
+	// happened. A separate loop rather than a step inside the one above: the
+	// promotion reads recaps that loop is still producing, and folding them
+	// together would make every promotion wait on a batch of model calls it
+	// does not need. This one makes no model call at all.
+	brainCtx, stopBrain := context.WithCancel(ctx)
+	defer stopBrain()
+	brainDone := make(chan struct{})
+	go func() {
+		defer close(brainDone)
+		knowledge.Run(brainCtx, func(c context.Context) ([]string, error) {
+			rows, err := projects.List(c)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]string, 0, len(rows))
+			for _, p := range rows {
+				out = append(out, p.Path)
+			}
+			return out, nil
+		}, brain.CaptureDeps{Episodes: db, Cursors: db}, slog.Default())
+	}()
+	defer func() {
+		stopBrain()
+		<-brainDone
+	}()
+
 	bus := events.NewBus()
 	defer bus.Close()
 

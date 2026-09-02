@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -90,6 +91,11 @@ type source struct {
 	size    int64
 	modTime time.Time
 	run     sessionlog.RunMeta
+
+	// spool is the hook file that pointed at this transcript, if any. It is
+	// removed only after the episodes are committed, so a crash mid-ingest
+	// re-reads the session instead of losing it.
+	spool string
 }
 
 // discover finds every transcript that belongs to this project.
@@ -102,6 +108,66 @@ func (m *Memory) discover(ctx context.Context, p Project) []source {
 	var out []source
 	out = append(out, m.discoverClaudeCode(p)...)
 	out = append(out, m.discoverRuns(ctx, p)...)
+	out = append(out, m.discoverAntigravity(p)...)
+	return out
+}
+
+// spoolEntry is what the agy Stop hook writes: its own payload, verbatim.
+//
+// The two fields read here are documented parts of that payload. Taking the
+// project from the hook rather than inferring it from the transcript is the
+// whole reason the spool exists — an Antigravity transcript does not reliably
+// say which workspace it belongs to, and guessing would file a session under
+// the wrong repository, which is worse than not filing it.
+type spoolEntry struct {
+	ConversationID string   `json:"conversationId"`
+	WorkspacePaths []string `json:"workspacePaths"`
+	TranscriptPath string   `json:"transcriptPath"`
+}
+
+// discoverAntigravity finds the agy sessions the hook has handed over for this
+// project.
+//
+// Like every other discover, nothing here fails the pass: an unreadable spool
+// file, a transcript that has since been deleted, a payload whose shape changed
+// — each costs one session.
+func (m *Memory) discoverAntigravity(p Project) []source {
+	dir := filepath.Join(m.cfg.BrainSpoolDir, "agy")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var out []source
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		full := filepath.Join(dir, e.Name())
+		raw, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		var entry spoolEntry
+		if json.Unmarshal(raw, &entry) != nil || entry.TranscriptPath == "" {
+			continue
+		}
+		if !slices.Contains(entry.WorkspacePaths, p.Path) {
+			continue
+		}
+		st, err := os.Stat(entry.TranscriptPath)
+		if err != nil || st.Size() == 0 {
+			continue
+		}
+		out = append(out, source{
+			Source: sessionlog.Source{
+				Kind: sessionlog.SourceAntigravity, Path: entry.TranscriptPath, ProjectPath: p.Path,
+			},
+			size:    st.Size(),
+			modTime: st.ModTime(),
+			spool:   full,
+		})
+	}
 	return out
 }
 
@@ -269,7 +335,16 @@ func (m *Memory) ingestSession(ctx context.Context, p Project, src source) (int,
 		}
 	}
 
-	episodes, resume, parseErr := sessionlog.ParseClaudeCode(f, src.Source, offset)
+	var (
+		episodes []sessionlog.Episode
+		resume   int64
+		parseErr error
+	)
+	if src.Kind == sessionlog.SourceAntigravity {
+		episodes, resume, parseErr = sessionlog.ParseAntigravity(f, src.Source, offset)
+	} else {
+		episodes, resume, parseErr = sessionlog.ParseClaudeCode(f, src.Source, offset)
+	}
 
 	// A transcript written to in the last few minutes is very likely the
 	// session running right now. Its trailing episode is mid-flight, so it is
@@ -294,6 +369,14 @@ func (m *Memory) ingestSession(ctx context.Context, p Project, src source) (int,
 		SourcePath: src.Path, ProjectPath: p.Path, ByteOffset: resume, SizeSeen: src.size,
 	}); err != nil {
 		return stored, err
+	}
+
+	// The hand-off is complete, so the hook's note can go. Ordered after the
+	// state write on purpose: losing the spool file before the offset is
+	// recorded would drop the session, while losing it after costs nothing —
+	// the transcript is still on disk and the offset says where to resume.
+	if src.spool != "" {
+		_ = os.Remove(src.spool)
 	}
 	return stored, parseErr
 }

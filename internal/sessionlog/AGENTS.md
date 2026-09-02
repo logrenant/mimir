@@ -61,3 +61,26 @@ format change can only ever cost episodes, never correctness anywhere else.
 Grep for `http`, `exec`, `os.Create`/`os.Write`, and any import of
 `internal/store` or `internal/refine`. Any hit means this package stopped being
 inert and the whole test strategy above it is weaker for it.
+
+## Antigravity transcripts (task-45)
+
+`antigravity.go` parses the `agy` CLI and Antigravity IDE transcripts:
+`{step_index, source, type, status, created_at, content}`, one JSON object per
+line, under
+`~/.gemini/antigravity-{cli,ide}/brain/<conversation-id>/.system_generated/logs/`.
+
+- **Do not parse the conversation database sitting next to them.** It is
+  protobuf blobs with no published schema; reading it would be a reverse
+  engineering exercise that breaks on their next release, and it holds nothing
+  the transcript does not.
+- **The transcript does not say which project it belongs to**, so this package
+  never guesses. Attribution arrives from the agy `Stop` hook's payload
+  (`workspacePaths`), through the spool `internal/memory` drains. Filing a
+  session under the wrong repository is worse than not filing it.
+- **Steps carry no tool name.** `read`, `write`, `command` and `search` are
+  inferred from what a step says it did (`File Path:`, `Created file `,
+  `The command exited with code N`). A step whose wording changes becomes
+  `step`, which is the fail-soft this package already requires everywhere else.
+- The prompt is fenced in `<USER_REQUEST>`; everything after it in a
+  `USER_INPUT` record is machinery — local time, open editors, settings changes
+  — that would otherwise become the episode's prompt.

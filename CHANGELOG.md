@@ -80,8 +80,26 @@ kuruyor ve aynı anda model çağrılarını tek bir çıkışın arkasına alı
   modele bir hafıza olduğunu, repoyu yeniden okumadan önce `project_context`
   çağırmasını söylüyor. Oturumu asla bloklamıyor, her yolda exit 0.
 
+- **Brain artık kendini kaydediyor.** Bir şeyin hatırlanması için modelin
+  `brain_ingest_data` çağırmayı hatırlaması gerekiyordu — yani tam olarak
+  güvenilmeyecek şey. Üç kaynak diskte zaten duruyordu ve üçü de **sıfır model
+  çağrısıyla** okunuyor: M8'in çoktan damıttığı Claude Code episode'ları oturum
+  düğümüne ve dokundukları her dosya için bir dosya düğümüne dönüşüyor; agy
+  konuşmaları `Stop` hook'unun bıraktığı spool'dan çekiliyor; commit'ler
+  `git log`'dan okunuyor. Operatörün gerçek store'unda tek tikte 147 oturum,
+  371 dosya, 16 commit ve 1015 kenar.
+- **Terminal işleri commit üzerinden yakalanıyor.** Her komutu kaydeden bir
+  kabuk hook'u bilerek yapılmadı: gürültülü, komut satırına yazılan sırları
+  toplar, ve bir hafta sonra hiçbirinin değeri kalmaz. Commit, birinin saklamaya
+  değer bulduğu kısım ve zaten nedenini anlatan bir mesaj taşıyor.
+- **Dosya düğümleri birikiyor.** Bir dosyaya elli oturum dokunduysa
+  `brain_related` o dosyada "bu dosyaya ne oldu" sorusunu yanıtlıyor — başka
+  hiçbir yüzeyin yanıtlamadığı bir soru.
+
 ### Şema
 
+- `0014_brain_capture.sql` — `brain_nodes.content_hash` (bir yeniden taramanın
+  değişmemiş dosyayı atlayabilmesi için) ve `brain_capture_state` (imleçler).
 - `0013_brain.sql` — `brain_nodes`, `brain_edges`, `brain_fts`. Markdown dosya
   deposu tamamen kaldırıldı; `data/brain/` `.gitignore`'dan çıktı.
 
@@ -94,6 +112,16 @@ kuruyor ve aynı anda model çağrılarını tek bir çıkışın arkasına alı
   olduğu gibi yazıyor.
 - `docs/CAPABILITIES.md` coding runner'ın `--mcp-config` ile Mimir'ı iç içe
   yüklediğini iddia ediyordu; kod hiçbir zaman öyle yapmadı. İddia kaldırıldı.
+- Oturum etiketlerinde iki hata, ikisi de teste yakalandı. Etiketler
+  `facts.commands`'tan türetiliyordu; orası komut satırı değil düzyazı açıklama
+  tutuyor ("Run full make check"), yani ilk kelime bir fiil — neredeyse her
+  oturum `check`, `find`, `read` etiketi alıyordu. Ve mutlak yollardan
+  türetiliyordu, o yüzden ilk iki parça paket adı değil makinenin dizin düzeni
+  oluyordu (`internal-store` yerine `repo-internal`). Artık yalnızca göreli
+  yollardan.
+- `/brain/*` route'ları planlanmıştı, yapılmadı: tüketicisi yok.
+  `desktop/src/lib/modules.ts` bu kuralı zaten yazıyor — gerçek bir route'a
+  bağlı olmayan yüzey, kabuğun daemon hakkında yalan söylemesinin en hızlı yolu.
 
 ## [2.3.0] — 2026-09-02
 

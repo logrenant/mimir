@@ -105,18 +105,25 @@ if [ "$INSTALL" = "1" ]; then
 	chmod 755 "$MCP_BIN.new"
 	mv "$MCP_BIN.new" "$MCP_BIN"
 
-	cp "$REPO_ROOT/scripts/mimir-preflight.sh" "$PREFLIGHT.new"
-	chmod 755 "$PREFLIGHT.new"
-	mv "$PREFLIGHT.new" "$PREFLIGHT"
-
-	# The preflight re-registers when it finds a client config that has lost the
-	# entry, so it needs this script somewhere stable too.
-	cp "$REPO_ROOT/scripts/install-mcp.sh" "$INSTALLER_COPY.new"
-	chmod 755 "$INSTALLER_COPY.new"
-	mv "$INSTALLER_COPY.new" "$INSTALLER_COPY"
-
 	say "Installed $MCP_BIN"
 fi
+
+# The scripts are refreshed on every run, including --hooks-only. A hook that
+# points at a stale copy of the preflight fails in a way that looks exactly like
+# the hook not being installed at all.
+install_script() {
+	src="$1"
+	dst="$2"
+	mkdir -p "$BIN_DIR"
+	cp "$src" "$dst.new"
+	chmod 755 "$dst.new"
+	mv "$dst.new" "$dst"
+}
+
+install_script "$REPO_ROOT/scripts/mimir-preflight.sh" "$PREFLIGHT"
+# The preflight re-registers when it finds a client config that has lost the
+# entry, so it needs this script somewhere stable too.
+install_script "$REPO_ROOT/scripts/install-mcp.sh" "$INSTALLER_COPY"
 
 # --- 2. registration ---------------------------------------------------------
 #
@@ -200,10 +207,13 @@ if [ "$HOOKS" = "1" ]; then
 	if [ -d "$HOME/.gemini/config" ]; then
 		[ -f "$AGY_HOOKS" ] || printf '{}\n' >"$AGY_HOOKS"
 		tmp=$(mktemp)
-		jq --arg cmd "$PREFLIGHT --format agy" '
-			."mimir-preflight" = {PreInvocation: [{type: "command", command: $cmd, timeout: 20}]}
+		jq --arg pre "$PREFLIGHT --format agy" --arg stop "$PREFLIGHT --format agy-stop" '
+			."mimir-preflight" = {
+				PreInvocation: [{type: "command", command: $pre, timeout: 20}],
+				Stop: [{type: "command", command: $stop, timeout: 20}]
+			}
 		' "$AGY_HOOKS" >"$tmp" && mv "$tmp" "$AGY_HOOKS"
-		say "  hook installed for agy (PreInvocation)"
+		say "  hook installed for agy (PreInvocation + Stop)"
 	fi
 fi
 

@@ -12,7 +12,7 @@ import (
 // brainNodeColumns is the one column list every node read uses, so a column
 // added to the table cannot be picked up by one query and missed by another.
 const brainNodeColumns = `id, project_path, kind, source_key, title, assessment, body,
-	tags_json, aliases_json, provider, model, prompt_version, created_at, updated_at`
+	tags_json, aliases_json, provider, model, prompt_version, content_hash, created_at, updated_at`
 
 // BrainNodeRow is one node.
 //
@@ -32,8 +32,15 @@ type BrainNodeRow struct {
 	Provider      string
 	Model         string
 	PromptVersion string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+
+	// ContentHash is the digest of whatever this node was derived from, when
+	// that source has stable content. It is the whole reason a repository scan
+	// can be run twice without paying twice; empty means "no comparable
+	// source", which is the normal case for a session or a commit.
+	ContentHash string
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // BrainEdgeRow is one link. Edges are stored in one direction and read in both.
@@ -78,8 +85,8 @@ func (s *Store) UpsertBrainNode(ctx context.Context, n BrainNodeRow) error {
 		INSERT INTO brain_nodes (
 			id, project_path, kind, source_key, title, assessment, body,
 			tags_json, aliases_json, tags_text, aliases_text,
-			provider, model, prompt_version, created_at, updated_at
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			provider, model, prompt_version, content_hash, created_at, updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			title          = excluded.title,
 			assessment     = excluded.assessment,
@@ -91,11 +98,12 @@ func (s *Store) UpsertBrainNode(ctx context.Context, n BrainNodeRow) error {
 			provider       = excluded.provider,
 			model          = excluded.model,
 			prompt_version = excluded.prompt_version,
+			content_hash   = excluded.content_hash,
 			updated_at     = excluded.updated_at`,
 		n.ID, n.ProjectPath, n.Kind, n.SourceKey, n.Title, n.Assessment, n.Body,
 		string(tagsJSON), string(aliasJSON),
 		strings.Join(n.Tags, " "), strings.Join(n.Aliases, " "),
-		n.Provider, n.Model, n.PromptVersion,
+		n.Provider, n.Model, n.PromptVersion, n.ContentHash,
 		n.CreatedAt.Unix(), n.UpdatedAt.Unix())
 	if err != nil {
 		return unavailable(err)
@@ -281,7 +289,7 @@ func scanBrainNode(row scannable) (BrainNodeRow, error) {
 	)
 	if err := row.Scan(&n.ID, &n.ProjectPath, &n.Kind, &n.SourceKey, &n.Title,
 		&n.Assessment, &n.Body, &tagsJSON, &aliasJSON, &n.Provider, &n.Model,
-		&n.PromptVersion, &createdAt, &updatedAt); err != nil {
+		&n.PromptVersion, &n.ContentHash, &createdAt, &updatedAt); err != nil {
 		return BrainNodeRow{}, err
 	}
 	// A malformed list is treated as an empty one: the node's own text is
@@ -304,6 +312,77 @@ func scanBrainNodes(rows *sql.Rows) ([]BrainNodeRow, error) {
 			return nil, unavailable(err)
 		}
 		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return out, nil
+}
+
+// --- capture cursors ---------------------------------------------------------
+
+// BrainCursor reads how far a capture pass got. A missing cursor is the empty
+// string, which every caller treats as "start from the beginning" — an absent
+// cursor and a fresh one are the same thing and neither is an error.
+func (s *Store) BrainCursor(ctx context.Context, key string) (string, error) {
+	if s == nil || s.db == nil || key == "" {
+		return "", nil
+	}
+	var cursor string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT cursor FROM brain_capture_state WHERE key = ?`, key).Scan(&cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", unavailable(err)
+	}
+	return cursor, nil
+}
+
+// SetBrainCursor records how far a capture pass got.
+func (s *Store) SetBrainCursor(ctx context.Context, key, projectPath, cursor string) error {
+	if s == nil || s.db == nil || key == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO brain_capture_state (key, project_path, cursor, updated_at)
+		VALUES (?,?,?,?)
+		ON CONFLICT(key) DO UPDATE SET
+			cursor     = excluded.cursor,
+			updated_at = excluded.updated_at`,
+		key, projectPath, cursor, time.Now().UTC().Unix())
+	if err != nil {
+		return unavailable(err)
+	}
+	return nil
+}
+
+// BrainNodeHashes returns the content hashes already stored for a project at a
+// given prompt version, keyed by source. It is one query rather than one lookup
+// per file because a scan asks about every path in a repository, and several
+// hundred round trips is the difference between a scan that feels instant on a
+// second run and one that does not.
+func (s *Store) BrainNodeHashes(ctx context.Context, projectPath, kind, promptVersion string) (map[string]string, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT source_key, content_hash FROM brain_nodes
+		WHERE project_path = ? AND kind = ? AND prompt_version = ? AND content_hash <> ''`,
+		projectPath, kind, promptVersion)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]string)
+	for rows.Next() {
+		var key, hash string
+		if err := rows.Scan(&key, &hash); err != nil {
+			return nil, unavailable(err)
+		}
+		out[key] = hash
 	}
 	if err := rows.Err(); err != nil {
 		return nil, unavailable(err)

@@ -12,6 +12,12 @@
 # restart it if it is down, and inject one short line telling the model that a
 # memory exists.
 #
+# It carries one more mode, --format agy-stop, wired to agy's Stop event: it
+# writes the hook payload into a spool directory the daemon drains, which is how
+# an agy conversation gets recorded. A file rather than an HTTP call, so the
+# hook needs no token, cannot block on the network, and a conversation that
+# ended while the daemon was down is still picked up when it comes back.
+#
 # Two rules govern everything below.
 #
 # There is deliberately no `set -e`. A hook that aborts before printing its
@@ -38,6 +44,7 @@ done
 
 SUPPORT_DIR="$HOME/Library/Application Support/mimir"
 BIN_DIR="$SUPPORT_DIR/bin"
+SPOOL_DIR="$SUPPORT_DIR/spool/agy"
 MCP_BIN="$BIN_DIR/mimir-mcp"
 ENDPOINT_FILE="$SUPPORT_DIR/endpoint.json"
 LABEL="studio.mimir.daemon"
@@ -47,6 +54,30 @@ LABEL="studio.mimir.daemon"
 PAYLOAD=$(cat 2>/dev/null || true)
 
 log() { printf '%s\n' "mimir-preflight: $*" >&2; }
+
+# --- agy Stop: hand the conversation over ------------------------------------
+#
+# The payload is written verbatim. Its workspacePaths and transcriptPath are
+# what let the daemon file the session under the right project — an Antigravity
+# transcript does not reliably say which workspace it belongs to, and guessing
+# would file it under the wrong repository, which is worse than not filing it.
+if [ "$FORMAT" = "agy-stop" ]; then
+	conversation=$(printf '%s' "$PAYLOAD" | sed -n 's/.*"conversationId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+	[ -n "$conversation" ] || conversation="unknown-$$"
+
+	if [ -n "$PAYLOAD" ] && mkdir -p "$SPOOL_DIR" 2>/dev/null; then
+		# Written to a temp name and moved, so the daemon never reads a file
+		# that is still being written.
+		tmp="$SPOOL_DIR/.$conversation.tmp"
+		if printf '%s' "$PAYLOAD" >"$tmp" 2>/dev/null; then
+			mv "$tmp" "$SPOOL_DIR/$conversation.json" 2>/dev/null || rm -f "$tmp"
+		else
+			rm -f "$tmp"
+		fi
+	fi
+	printf '{}\n'
+	exit 0
+fi
 
 # emit prints the envelope this client understands and exits.
 #

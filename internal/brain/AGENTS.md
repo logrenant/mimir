@@ -90,6 +90,46 @@ Everything below follows from refusing to repeat it:
   consumer that wanted the body is better served reading the source the node
   names. There is a test for this.
 
+## Capture: what records itself (task-45)
+
+Three sources feed Brain without anybody asking. All three are read-only over
+things already on disk, and **none of them calls a model** — that property is
+what makes running them over an existing backlog a migration rather than a
+bill, and it is worth re-checking every time `promote.go`, `gitlog.go` or
+`capture.go` is touched. `capture_test.go` builds its `Core` with a nil
+Completer for exactly this reason: a model call added there panics rather than
+quietly starting to spend quota.
+
+- **Promotion has no cursor, on purpose.** A recap arrives *after* its episode
+  row is stored, so a bookmark that had moved past an episode would never come
+  back for it. Instead a bounded recent window is re-read every pass and
+  upserted; node identity is derived from the episode key, so this updates rows
+  rather than adding them.
+- **Tags come from relative paths only.** Two things were wrong here and both
+  reached the real store before a test caught them. `facts.commands` holds
+  prose descriptions ("Run full make check"), so its first word is a verb —
+  tagging on it put `check`, `find` and `read` on nearly every session, terms
+  that match everything and link everything to everything. And the paths in an
+  episode are absolute, so deriving from them made the first two segments the
+  machine's directory layout (`repo-internal`) instead of the package
+  (`internal-store`).
+- **Promotion never downgrades a file node.** A scan gives one a real
+  assessment; a later session touching that file must not overwrite it with a
+  bare path. There is a test.
+- **A commit does not mint file nodes.** History is full of paths that no longer
+  exist, and every one would become a node nothing ever looks at. It links only
+  to file nodes that already exist.
+- **The git cursor is a stop condition, not a range.** `since..HEAD` fails when
+  the cursor's commit is gone — a rebase, a reset, a branch that went away — and
+  the fix would be a special case for every way history can be rewritten.
+  Reading a bounded window and stopping at the known SHA degrades to
+  re-capturing the window, which is free because the upsert is idempotent.
+- **The agy spool is a directory, not an endpoint.** The Stop hook writes its
+  payload to `<store dir>/spool/agy/`; the daemon drains it. The hook then needs
+  no token, cannot block a session on the network, and a conversation that ended
+  while the daemon was down is still recorded. The spool file is removed only
+  after the ingest state is written, so a crash re-reads rather than loses.
+
 ## Known asymmetry
 
 A global node (`project_path = ''`, e.g. a repository) searches only global
