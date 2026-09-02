@@ -326,6 +326,7 @@ func TestLive_MCPRouteExposesTheCanonicalToolSet(t *testing.T) {
 	// The keyless set: maps_search appears only where a Places key was
 	// provisioned (see newLive, and TestRegisterAll_MapsSearchFollowsTheCredential).
 	want := []string{
+		"brain_ingest_data", "brain_ingest_github", "brain_query_nodes",
 		"diagnostics", "ecommerce_product_lookup", "fetch_page",
 		"gmaps_business_lookup", "instagram_profile_lookup", "research",
 		"tiktok_profile_lookup", "web_search",

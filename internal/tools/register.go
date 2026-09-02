@@ -51,6 +51,11 @@ func RegisterAll(reg *mcp.Registry, cfg config.Config, d Deps) error {
 		NewResearch(d.Pipeline, cfg),
 		NewDiagnostics(cfg, d.Crawl, d.Refine, d.Search, d.Memory),
 
+		// Brain (Nervous System) tools
+		NewBrainIngestData(cfg),
+		NewBrainIngestGitHub(cfg),
+		NewBrainQueryNodes(cfg),
+
 		// Stage F — free, self-scraped providers. No refine call (see each
 		// package's doc comment), so the pipeline is used only for FetchRaw.
 		NewEcommerceLookup(cfg, d.Pipeline),
