@@ -188,6 +188,7 @@ func (s *Server) Handler() http.Handler {
 	// one, stays one-directional.
 	if s.deps.BrainScan != nil {
 		mux.HandleFunc("GET /brain/scan", s.handleBrainScanStatus)
+		mux.HandleFunc("GET /brain/scan/log", s.handleBrainScanLog)
 		mux.HandleFunc("POST /brain/scan/pause", s.handleBrainScanPause)
 		mux.HandleFunc("POST /brain/scan/resume", s.handleBrainScanResume)
 		mux.HandleFunc("POST /brain/scan/now", s.handleBrainScanNow)

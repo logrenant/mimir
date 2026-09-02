@@ -53,7 +53,7 @@ export type LayoutOptions = {
  * Square-root of the count because area is what a graph needs, not width.
  */
 export function worldSize(count: number): { width: number; height: number } {
-  const side = Math.max(1200, Math.min(Math.sqrt(Math.max(count, 1)) * 130, 7000));
+  const side = Math.max(1100, Math.min(Math.sqrt(Math.max(count, 1)) * 95, 5200));
   return { width: side, height: side };
 }
 
@@ -66,7 +66,7 @@ export function worldSize(count: number): { width: number; height: number } {
  * texture. So the first view is readable and the operator pans; "sığdır" is
  * there for when the overview is what they actually want.
  */
-export const READABLE_SCALE = 0.55;
+export const READABLE_SCALE = 0.5;
 
 /** initialView frames the graph, but never smaller than READABLE_SCALE. */
 export function initialView(
@@ -343,13 +343,17 @@ function repel(nodes: LayoutNode[], k: number, opts: LayoutOptions): void {
     }
   }
 
-  // A gentle pull to the middle, or anything the repulsion has pushed past the
-  // edge never comes back.
+  // A pull to the middle, or anything the repulsion pushed outward never comes
+  // back. It is stronger for a node with no edges than for one with many:
+  // otherwise the loose half of a knowledge base — files nothing has linked yet
+  // — drifts into a wide halo and the structure everybody came to look at ends
+  // up as a speck in the centre.
   const cx = opts.width / 2;
   const cy = opts.height / 2;
   for (const n of nodes) {
-    n.vx += (cx - n.x) * 0.012;
-    n.vy += (cy - n.y) * 0.012;
+    const gravity = n.degree === 0 ? 0.05 : 0.014;
+    n.vx += (cx - n.x) * gravity;
+    n.vy += (cy - n.y) * gravity;
   }
 }
 

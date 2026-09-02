@@ -66,6 +66,24 @@ contributes three files and nothing worth reading.
 - The graph never returns an edge whose endpoints are not both in its node list.
 - Zero migrations.
 
+## Follow-up: the scan has a console
+
+The Terminals tab answers "where is that thing running?", and the one job it
+could not answer for was the one that never stops. The supervisor now keeps a
+bounded ring buffer of its own lines — a file per name, a summary per pass, the
+operator's own pause and resume, and the backoff — read by
+`GET /brain/scan/log?after=<seq>`.
+
+- **Not `internal/events`.** That bus is keyed by run id and stitched to a
+  transcript by `Seq`, because a run emits things that must not be lost. The
+  scan has no run id and no transcript; what a person watching it wants is
+  narrower, and a poll over a ring buffer is the whole of it.
+- **`ScanResult.FailedFiles`** names what `Failed` counted. A console that can
+  only say "three files failed" is a progress bar with extra steps.
+- **600 lines, then the oldest go.** The permanent record is one node per file
+  in the store; keeping a whole sweep in memory for a console nobody may open is
+  the wrong trade.
+
 ## Changelog
 
 - `internal/config/config.go` — `DistillFallback: ""`; `BrainScanRoots` (derived
@@ -78,8 +96,8 @@ contributes three files and nothing worth reading.
 - `internal/brain/` — `supervisor.go`, `pdf.go`, `ScanResult.Unreadable`,
   `.pdf` is scannable, `ProjectID`, `ErrNodeNotFound`, `AGENTS.md`.
 - `internal/store/brain.go` — the three graph reads.
-- `internal/api/` — `brain.go`, three `Deps` fields, the route block, four
-  error mappings, `AGENTS.md`.
+- `internal/api/` — `brain.go` (including `GET /brain/scan/log`), three `Deps`
+  fields, the route block, five error mappings, `AGENTS.md`.
 - `internal/tools/diagnostics.go` — `agy`, `pdftotext`, `distill_model`.
 - `cmd/mimir-daemon/main.go` — the supervisor's goroutine and its drain.
 - `test/e2e/e2e_test.go` — a fake agy, since there is no fallback to a fake

@@ -74,7 +74,7 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusServiceUnavailable, codeInternal, err.Error())
 	case errors.Is(err, brain.ErrNodeNotFound), errors.Is(err, errUnknownProject):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
-	case errors.Is(err, errProjectIsAnID), errors.Is(err, errBadLimit):
+	case errors.Is(err, errProjectIsAnID), errors.Is(err, errBadLimit), errors.Is(err, errBadSeq):
 		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
 	case errors.Is(err, brain.ErrNoStore):
 		// The knowledge base is not open. Actionable in the same way a missing
@@ -265,4 +265,5 @@ var (
 	errProjectIsAnID  = errors.New("project must be an id from GET /brain/projects, not a path")
 	errUnknownProject = errors.New("no such project in the knowledge base")
 	errBadLimit       = errors.New("limit must be a positive integer")
+	errBadSeq         = errors.New("after must be a non-negative integer")
 )

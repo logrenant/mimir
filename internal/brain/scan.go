@@ -47,11 +47,17 @@ type ScanResult struct {
 	// is page images, or a machine with no poppler. It is deliberately not
 	// Failed: Failed is what tells the supervisor the provider is down, and a
 	// scanned manual must not look like agy being signed out.
-	Unreadable int      `json:"unreadable,omitempty"`
-	Remaining  int      `json:"remaining"`
-	Eligible   int      `json:"eligible_total"`
-	DryRun     bool     `json:"dry_run,omitempty"`
-	Files      []string `json:"files,omitempty"`
+	Unreadable int  `json:"unreadable,omitempty"`
+	Remaining  int  `json:"remaining"`
+	Eligible   int  `json:"eligible_total"`
+	DryRun     bool `json:"dry_run,omitempty"`
+
+	Files []string `json:"files,omitempty"`
+
+	// FailedFiles names what Failed counted. A console that can only say "three
+	// files failed" sends its reader to a log file; one that names them is the
+	// difference between a number and a thing to go and look at.
+	FailedFiles []string `json:"failed_files,omitempty"`
 }
 
 // Scan reads a repository into Brain, one bounded batch at a time.
@@ -180,6 +186,7 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 				// One unreadable file is not a reason to abandon a scan that
 				// has already paid for the others.
 				res.Failed++
+				res.FailedFiles = append(res.FailedFiles, cand.rel)
 				return nil
 			}
 			// A stored node with no assessment is not a scanned file. Ingest
@@ -189,6 +196,7 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 			// while the provider was down for half of it.
 			if !out.Distilled {
 				res.Failed++
+				res.FailedFiles = append(res.FailedFiles, cand.rel)
 				return nil
 			}
 			res.Scanned++
@@ -201,6 +209,7 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 	}
 
 	sort.Strings(res.Files)
+	sort.Strings(res.FailedFiles)
 	return res, nil
 }
 

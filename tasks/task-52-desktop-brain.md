@@ -71,6 +71,29 @@ loose nodes — which is what a clamp against a small box produces.
   leave — not the OS fullscreen, which would animate a new space and take the
   title bar with it.
 
+## Follow-up: fluency, and the scan in Terminals
+
+Watching somebody use it found three things.
+
+- **A selection could not be undone.** Clicking the selected node again, or
+  clicking the background, now clears it — a selection with no way out is a mode
+  the operator did not ask to be in. The id is held separately from the fetched
+  detail so the highlight lands on the click rather than on the response.
+- **Scroll zoomed.** On this platform a two-finger scroll means *move the
+  thing*; a canvas that zoomed instead fought the hand on every gesture. Scroll
+  pans, pinch and ⌘/ctrl + wheel zoom, and the gesture hint is printed next to
+  the zoom percentage.
+- **The scan was not in Terminals.** It is now its own row above the run
+  sessions — `BrainConsole`, not a `Session`: there is no run row, no transcript
+  and no socket behind it, and teaching TerminalsProvider a second kind of thing
+  would be worse than one screen owning this one. It tails
+  `GET /brain/scan/log`, follows the bottom only while the reader is already
+  there, and carries the same pause / resume / scan-now controls.
+
+The layout was also tightened — a smaller world (`√count · 95`) and a stronger
+pull to the centre for nodes with no edges, so the unlinked half of a knowledge
+base stops drifting into a halo around the structure.
+
 ## Changelog
 
 - `desktop/src/lib/daemon.ts` — brain types and `api.brain*`; `agy` and
@@ -82,3 +105,5 @@ loose nodes — which is what a clamp against a small box produces.
 - `desktop/src/screens/Brain.tsx` — the tab.
 - `desktop/src/screens/Dashboard.tsx` — the sidebar entry, the screen branch,
   `DEP_NAMES`.
+- `desktop/src/components/BrainConsole.tsx` + its test — the scan as a terminal.
+- `desktop/src/screens/Terminals.tsx` — the BRAIN row above the run sessions.

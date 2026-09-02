@@ -44,6 +44,7 @@ export function Brain() {
   const [project, setProject] = useState<string>("");
   const [graph, setGraph] = useState<BrainGraph | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
+  const [selectedID, setSelectedID] = useState<string | null>(null);
   const [selected, setSelected] = useState<BrainNodeDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [full, setFull] = useState(false);
@@ -100,12 +101,26 @@ export function Brain() {
     [refresh],
   );
 
-  const openNode = useCallback((id: string) => {
-    api
-      .brainNode(id)
-      .then((res) => setSelected(res.node))
-      .catch(() => setSelected(null));
-  }, []);
+  // Selecting is a toggle and the background clears it. A selection nothing can
+  // undo is a mode the operator did not ask to be in — and the id is held
+  // separately from the detail so the highlight lands on the click rather than
+  // on the response.
+  const pickNode = useCallback(
+    (id: string | null) => {
+      if (id === null || id === selectedID) {
+        setSelectedID(null);
+        setSelected(null);
+        return;
+      }
+      setSelectedID(id);
+      setSelected(null);
+      void api
+        .brainNode(id)
+        .then((res) => setSelected(res.node))
+        .catch(() => setSelected(null));
+    },
+    [selectedID],
+  );
 
   return (
     <div className="grid h-full grid-rows-[auto_1fr] gap-4 overflow-hidden p-6">
@@ -126,10 +141,10 @@ export function Brain() {
           project={project}
           onProject={(id) => {
             setProject(id);
-            setSelected(null);
+            pickNode(null);
           }}
-          selected={selected?.id ?? null}
-          onPick={openNode}
+          selected={selectedID}
+          onPick={pickNode}
           full={false}
           onToggleFull={() => setFull(true)}
         />
@@ -149,7 +164,7 @@ export function Brain() {
               ))}
             </CardBody>
           </Card>
-          <NodePanel node={selected} onOpen={openNode} />
+          <NodePanel node={selected} onOpen={pickNode} />
         </div>
       </div>
 
@@ -165,14 +180,14 @@ export function Brain() {
             project={project}
             onProject={(id) => {
               setProject(id);
-              setSelected(null);
+              pickNode(null);
             }}
-            selected={selected?.id ?? null}
-            onPick={openNode}
+            selected={selectedID}
+            onPick={pickNode}
             full
             onToggleFull={() => setFull(false)}
           />
-          <NodePanel node={selected} onOpen={openNode} />
+          <NodePanel node={selected} onOpen={pickNode} />
         </div>
       )}
     </div>
@@ -196,7 +211,7 @@ function GraphCard({
   project: string;
   onProject: (id: string) => void;
   selected: string | null;
-  onPick: (id: string) => void;
+  onPick: (id: string | null) => void;
   full: boolean;
   onToggleFull: () => void;
 }) {
@@ -350,7 +365,7 @@ function GraphCanvas({
 }: {
   graph: BrainGraph | null;
   selected: string | null;
-  onPick: (id: string) => void;
+  onPick: (id: string | null) => void;
 }) {
   const wrap = useRef<HTMLDivElement | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
@@ -362,6 +377,8 @@ function GraphCanvas({
   // so the pointer's travel is remembered and a click past a few pixels is a
   // pan rather than a selection.
   const drag = useRef<{ x: number; y: number; travel: number } | null>(null);
+  // Panning is state as well as a ref, because the cursor is rendered.
+  const [panning, setPanning] = useState(false);
 
   useEffect(() => {
     const el = wrap.current;
@@ -459,32 +476,42 @@ function GraphCanvas({
     return { sx: e.clientX - rect.left, sy: e.clientY - rect.top };
   };
 
+  // A two-finger scroll on a trackpad is a plain wheel event and a pinch is a
+  // wheel event with ctrlKey. Treating both as zoom is what made this feel
+  // wrong: on macOS a two-finger scroll means *move the page*, and a map that
+  // zooms instead fights the hand. So scroll pans, pinch (and ctrl/⌘ + wheel)
+  // zooms — the same split every map on this platform uses.
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    // A trackpad pinch arrives as a wheel event with ctrlKey; both it and a
-    // plain wheel mean the same thing here.
-    const factor = Math.exp(-e.deltaY * 0.0015);
-    setView((v) => zoomAt(v, factor, e.clientX - rect.left, e.clientY - rect.top));
+    if (e.ctrlKey || e.metaKey) {
+      const factor = Math.exp(-e.deltaY * 0.004);
+      setView((v) => zoomAt(v, factor, e.clientX - rect.left, e.clientY - rect.top));
+      return;
+    }
+    setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
   };
 
   return (
     <div ref={wrap} className="relative h-full w-full overflow-hidden">
       <canvas
         ref={canvas}
-        style={{ width: size.w, height: size.h, cursor: drag.current ? "grabbing" : "grab" }}
+        style={{ width: size.w, height: size.h, cursor: panning ? "grabbing" : "grab" }}
         onWheel={onWheel}
         onMouseDown={(e) => {
           const { sx, sy } = pointAt(e);
           drag.current = { x: sx, y: sy, travel: 0 };
+          setPanning(true);
         }}
         onMouseUp={(e) => {
           const d = drag.current;
           drag.current = null;
+          setPanning(false);
           if (!d || d.travel > 4) return;
           const { sx, sy } = pointAt(e);
           const w = screenToWorld(view, sx, sy);
-          const node = hitTest(placed, w.x, w.y);
-          if (node) onPick(node.id);
+          // A click on nothing is a click on nothing: it clears the selection
+          // rather than leaving the operator stuck with one.
+          onPick(hitTest(placed, w.x, w.y)?.id ?? null);
         }}
         onMouseMove={(e) => {
           const { sx, sy } = pointAt(e);
@@ -505,6 +532,7 @@ function GraphCanvas({
         }}
         onMouseLeave={() => {
           drag.current = null;
+          setPanning(false);
           setHover(null);
         }}
       />
@@ -514,6 +542,7 @@ function GraphCanvas({
         <ViewButton label="+" title="yakınlaş" onClick={() => setView((v) => zoomAt(v, 1.25, size.w / 2, size.h / 2))} />
         <ViewButton label="sığdır" onClick={fit} />
         <span className="label px-1 text-[10px] text-muted">%{Math.round(view.scale * 100)}</span>
+        <span className="px-1 text-[10px] text-muted/70">sürükle · kaydır · ⌘+tekerlek yakınlaştırır</span>
       </div>
 
       {hover && (
@@ -557,7 +586,7 @@ function NodePanel({
   onOpen,
 }: {
   node: BrainNodeDetail | null;
-  onOpen: (id: string) => void;
+  onOpen: (id: string | null) => void;
 }) {
   if (!node) {
     return (

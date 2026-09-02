@@ -422,3 +422,61 @@ func TestSupervisor_PauseIsVisibleWithoutWaitingOutTheIdleInterval(t *testing.T)
 	}
 	t.Fatalf("status still reads %+v after a pause", s.Status())
 }
+
+// The console is what the Terminals tab reads. It has to name files, survive a
+// reader that fell behind, and never grow without bound.
+func TestSupervisor_EventsNameTheFilesAndStayBounded(t *testing.T) {
+	s, _, _ := supervisorFixture(t, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+	runSweep(t, s)
+
+	events, seq := s.Events(0, 0)
+	if seq == 0 || len(events) == 0 {
+		t.Fatalf("the sweep wrote no console lines: %d events, seq %d", len(events), seq)
+	}
+
+	var kinds, text string
+	for _, e := range events {
+		kinds += e.Kind + " "
+		text += e.Text + "\n"
+	}
+	for _, want := range []string{EventSweep, EventProject, EventFile, EventPass} {
+		if !strings.Contains(kinds, want) {
+			t.Errorf("no %q line: %s", want, kinds)
+		}
+	}
+	if !strings.Contains(text, "main.go") {
+		t.Errorf("the files were not named:\n%s", text)
+	}
+
+	// A reader that has seen everything gets nothing new, and one that has seen
+	// nothing gets the tail rather than an error.
+	if rest, _ := s.Events(seq, 0); len(rest) != 0 {
+		t.Errorf("a caught-up reader was handed %d lines again", len(rest))
+	}
+
+	for i := 0; i < scanLogSize+50; i++ {
+		s.emit(EventFile, "/x", "filler")
+	}
+	if got, _ := s.Events(0, 0); len(got) > scanLogSize {
+		t.Errorf("the console kept %d lines, over the %d cap", len(got), scanLogSize)
+	}
+}
+
+// Pausing and resuming are the operator's own actions, and a console that does
+// not show them makes the scan look like it stopped on its own.
+func TestSupervisor_ControlsAreOnTheConsole(t *testing.T) {
+	s, _, _ := supervisorFixture(t, nil)
+	s.Pause()
+	s.Resume()
+
+	events, _ := s.Events(0, 0)
+	var text string
+	for _, e := range events {
+		if e.Kind == EventControl {
+			text += e.Text + " "
+		}
+	}
+	if !strings.Contains(text, "duraklat") || !strings.Contains(text, "sürdür") {
+		t.Errorf("controls are not on the console: %q", text)
+	}
+}

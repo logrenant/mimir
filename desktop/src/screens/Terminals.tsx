@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Terminal, StatusDot } from "../components/Terminal";
+import { BrainConsole, statusOf } from "../components/BrainConsole";
 import { useTerminals } from "../components/TerminalsProvider";
-import { api, DaemonError, type Run } from "../lib/daemon";
+import { api, DaemonError, type BrainScanStatus, type Run } from "../lib/daemon";
 import { recentRuns } from "../lib/terminals";
 import { cardTitle, isSetTime } from "../lib/board";
 
@@ -21,7 +22,35 @@ import { cardTitle, isSetTime } from "../lib/board";
  */
 export function Terminals() {
   const { sessions, activeID, setActive, open, close, stop } = useTerminals();
-  const active = sessions.find((s) => s.runID === activeID) ?? sessions[0] ?? null;
+
+  // The resident scan is the one job here that is not a run: no row, no
+  // transcript, no socket. It gets its own row rather than a fake Session,
+  // because pretending it is a coding run would mean either lying to
+  // TerminalsProvider or teaching it a second kind of thing.
+  const [brainOpen, setBrainOpen] = useState(false);
+  const [scan, setScan] = useState<BrainScanStatus | null>(null);
+  const active = brainOpen ? null : (sessions.find((s) => s.runID === activeID) ?? sessions[0] ?? null);
+
+  // One slow poll, only for the sidebar's dot and label. The console does its
+  // own faster one while it is open.
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        const res = await api.brainScan();
+        if (live) setScan(res.scan);
+      } catch {
+        if (live) setScan(null);
+      }
+      if (live) timer = setTimeout(tick, brainOpen ? 15000 : 30000);
+    };
+    void tick();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [brainOpen]);
 
   const [history, setHistory] = useState<Run[] | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -80,6 +109,16 @@ export function Terminals() {
           gap: 3,
         }}
       >
+        <SectionLabel>BRAIN</SectionLabel>
+        <SidebarRow
+          on={brainOpen}
+          status={statusOf(scan)}
+          label="agy · sürekli tarama"
+          detail={scan ? `${scan.nodes_total} düğüm` : undefined}
+          onClick={() => setBrainOpen(true)}
+        />
+
+        <div style={{ height: 12 }} />
         <SectionLabel>OTURUMLAR</SectionLabel>
 
         {sessions.length === 0 && (
@@ -94,7 +133,10 @@ export function Terminals() {
             on={active?.runID === session.runID}
             status={session.status}
             label={session.title}
-            onClick={() => setActive(session.runID)}
+            onClick={() => {
+              setBrainOpen(false);
+              setActive(session.runID);
+            }}
           />
         ))}
 
@@ -158,7 +200,10 @@ export function Terminals() {
                     ? new Date(run.started_at as string).toLocaleString()
                     : undefined
                 }
-                onClick={() => open(run)}
+                onClick={() => {
+                  setBrainOpen(false);
+                  open(run);
+                }}
               />
             ))}
           </>
@@ -166,7 +211,9 @@ export function Terminals() {
       </div>
 
       <div style={{ minWidth: 0, minHeight: 0 }}>
-        {active ? (
+        {brainOpen ? (
+          <BrainConsole />
+        ) : active ? (
           <Terminal session={active} onStop={(id) => void stop(id)} onClose={close} />
         ) : (
           <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 30 }}>
