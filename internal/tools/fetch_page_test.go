@@ -26,7 +26,7 @@ func (m *mockFetcher) Fetch(ctx context.Context, u string) (pipeline.RefinedPage
 func TestFetchPageTool_GuardTest(t *testing.T) {
 	hugeRawText := strings.Repeat("RAW_BLOB ", 10000)
 	refinedText := "nice short refined text"
-	
+
 	m := &mockFetcher{
 		res: pipeline.RefinedPage{
 			URL:       "https://example.com",
@@ -36,13 +36,13 @@ func TestFetchPageTool_GuardTest(t *testing.T) {
 			Truncated: true,
 		},
 	}
-	// Note: We don't even have a place to put the hugeRawText in RefinedPage, 
+	// Note: We don't even have a place to put the hugeRawText in RefinedPage,
 	// which inherently ensures it's dropped, but let's just make sure the output
 	// correctly maps the refined parts.
 
 	tool := NewFetchPage(fetchTestCfg, m)
 	args := json.RawMessage(`{"url": "https://example.com"}`)
-	
+
 	resAny, err := tool.Handle(context.Background(), args)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -62,7 +62,7 @@ func TestFetchPageTool_GuardTest(t *testing.T) {
 
 func TestFetchPageTool_Validation(t *testing.T) {
 	tool := NewFetchPage(fetchTestCfg, &mockFetcher{})
-	
+
 	tests := []struct {
 		name    string
 		args    string

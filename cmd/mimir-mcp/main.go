@@ -106,13 +106,14 @@ func run() error {
 
 	// One canonical tool list, shared with cmd/mimir-daemon (task-22).
 	if err := tools.RegisterAll(srv.Registry(), cfg, tools.Deps{
-		Search:   searchClient,
-		Crawl:    crawlClient,
-		Refine:   refineClient,
-		Pipeline: pipe,
-		Memory:   mem,
-		Projects: projects,
-		Brain:    knowledge,
+		Search:      searchClient,
+		Crawl:       crawlClient,
+		Refine:      refineClient,
+		Pipeline:    pipe,
+		Memory:      mem,
+		Projects:    projects,
+		Brain:       knowledge,
+		BrainHashes: pageStore,
 	}); err != nil {
 		return err
 	}

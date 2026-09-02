@@ -92,6 +92,17 @@ kuruyor ve aynı anda model çağrılarını tek bir çıkışın arkasına alı
   kabuk hook'u bilerek yapılmadı: gürültülü, komut satırına yazılan sırları
   toplar, ve bir hafta sonra hiçbirinin değeri kalmaz. Commit, birinin saklamaya
   değer bulduğu kısım ve zaten nedenini anlatan bir mesaj taşıyor.
+- **`brain_scan_repo`.** Bir repoyu bir kez okuyup düğümlere çeviriyor, böylece
+  bir oturumun tanımadığı bir dosya hakkındaki ilk sorusu dosyayı açmadan
+  yanıtlanıyor. Bu paketteki tek bilerek pahalı iş, o yüzden `dry_run` faturayı
+  harcamadan gösteriyor ve `content_hash` değişmemiş dosyayı bedavaya atlıyor:
+  ikinci tarama hiç model çağrısı yapmıyor, yarıda kesilen tarama kaldığı yerden
+  devam ediyor. Bu repoda ölçüldü: 365 dosya, elemelerden sonra 320; 6 dosyalık
+  batch 60 saniye, yani ilk tam geçiş ~50 dakika.
+- **Elemeler boyutla ilgili değil.** Kilit dosyaları, `testdata`/golden
+  fixture'ları, fontlar, ikonlar ve minified bundle'lar gayet okunabilir ve
+  sonraki bir oturuma hiçbir şey vermiyor — ama her biri, önemli bir dosyayla
+  aynı maliyeti çıkarıyor.
 - **Dosya düğümleri birikiyor.** Bir dosyaya elli oturum dokunduysa
   `brain_related` o dosyada "bu dosyaya ne oldu" sorusunu yanıtlıyor — başka
   hiçbir yüzeyin yanıtlamadığı bir soru.
@@ -119,7 +130,12 @@ kuruyor ve aynı anda model çağrılarını tek bir çıkışın arkasına alı
   türetiliyordu, o yüzden ilk iki parça paket adı değil makinenin dizin düzeni
   oluyordu (`internal-store` yerine `repo-internal`). Artık yalnızca göreli
   yollardan.
-- `/brain/*` route'ları planlanmıştı, yapılmadı: tüketicisi yok.
+- `/brain/*` route'ları ve `make brain-scan` planlanmıştı, yapılmadı: birincinin
+  tüketicisi yok, ikincisi ise batch'li tarama sayesinde gereksiz kaldı — bir
+  iş kuyruğuna, iş kimliğine ve ilerleme akışına ihtiyaç kalmadı.
+- `-race`, okumakla görülmeyecek bir şeyi yakaladı: `Scan`, `Ingest`'i eşzamanlı
+  çağırıyor ama ne `brain.Store` ne `brain.Completer` bunu şart koşuyordu. İkisi
+  de artık koşuyor ve sahteleri korumalı.
   `desktop/src/lib/modules.ts` bu kuralı zaten yazıyor — gerçek bir route'a
   bağlı olmayan yüzey, kabuğun daemon hakkında yalan söylemesinin en hızlı yolu.
 

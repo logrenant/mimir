@@ -53,6 +53,11 @@ var ErrNoStore = errors.New("brain: no store")
 
 // Store is the slice of *store.Store this package uses. It is an interface so
 // the core can be tested against a fake, the same way internal/memory does it.
+//
+// Implementations must be safe for concurrent use: Scan runs Ingest on several
+// files at once, and every one of those calls reads and writes through here.
+// *store.Store is, because database/sql is; a fake that is not will be found by
+// `make race` rather than in production, which is the point of saying so.
 type Store interface {
 	UpsertBrainNode(ctx context.Context, n store.BrainNodeRow) error
 	BrainNode(ctx context.Context, id string) (store.BrainNodeRow, bool, error)
@@ -63,6 +68,10 @@ type Store interface {
 }
 
 // Completer is the model call this package makes. Satisfied by *llm.Router.
+//
+// Like Store, implementations must be safe for concurrent use: Scan distils
+// several files at once. *llm.Router is — its routing tables are read-only
+// after construction and each call spawns its own subprocess.
 type Completer interface {
 	Complete(ctx context.Context, c llm.Class, req llm.Request) (llm.Response, error)
 }
@@ -141,6 +150,12 @@ type Input struct {
 	Kind        string
 	Content     string
 	ProjectPath string
+
+	// ContentHash is the digest of the source, when it has stable content. It
+	// is stored so a later pass can tell "unchanged" from "not seen yet"
+	// without re-reading the body — the whole reason a repository scan can be
+	// run twice without paying twice. Empty is normal.
+	ContentHash string
 }
 
 // NodeID is the node's identity: the project, the kind and the source key.
@@ -191,6 +206,7 @@ func (c *Core) Ingest(ctx context.Context, in Input) (IngestResult, error) {
 		Kind:          kind,
 		SourceKey:     source,
 		Body:          body,
+		ContentHash:   in.ContentHash,
 		PromptVersion: c.cfg.BrainPromptVersion,
 	}
 

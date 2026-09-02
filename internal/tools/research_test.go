@@ -23,7 +23,7 @@ func TestResearchTool_LimitsAndTruncation(t *testing.T) {
 	cfg := config.Config{TopNForResearch: 5, ResearchBriefMaxTokens: 2000}
 
 	verboseSummary := "This is sentence one. This is sentence two. This is sentence three. This is sentence four. This is sentence five. This is sentence six. This is sentence seven."
-	
+
 	m := &mockResearcher{
 		brief: pipeline.Brief{
 			Summary:   verboseSummary,
@@ -57,7 +57,7 @@ func TestResearchTool_LimitsAndTruncation(t *testing.T) {
 	if strings.Contains(res.Summary, "sentence six") {
 		t.Errorf("summary was not truncated to 5 sentences: %q", res.Summary)
 	}
-	
+
 	expectedSummary := "This is sentence one. This is sentence two. This is sentence three. This is sentence four. This is sentence five."
 	if res.Summary != expectedSummary {
 		t.Errorf("expected summary %q, got %q", expectedSummary, res.Summary)

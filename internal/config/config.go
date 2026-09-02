@@ -70,6 +70,15 @@ type Config struct {
 	BrainPromoteBatch int
 	BrainCommitBatch  int
 
+	// The repository scan (task-47). The one deliberately expensive operation
+	// in this package: a distil per file, paid once per repository. The batch
+	// is small because the caller is a tool with a request timeout — a pass
+	// that returns "twelve done, three hundred left" is resumable, where a
+	// four-hour call is not.
+	BrainScanBatch        int
+	BrainScanConcurrency  int
+	BrainScanMaxFileBytes int
+
 	// GitHubToken is the second operator-provisioned credential, and it earns
 	// that category the same way PlacesAPIKey does: empty is a valid, normal
 	// state (brain_ingest_github then reads public repositories only), and it
@@ -371,6 +380,9 @@ func Load() Config {
 		BrainPromptVersion:       "brain-v2",
 		BrainPromoteBatch:        200,
 		BrainCommitBatch:         100,
+		BrainScanBatch:           12,
+		BrainScanConcurrency:     3,
+		BrainScanMaxFileBytes:    96 << 10,
 
 		EcommerceLookupMaxTokens:   400,
 		TikTokProfileMaxTokens:     400,
@@ -591,6 +603,9 @@ func (c Config) Validate() error {
 	}
 	if c.BrainPromoteBatch <= 0 || c.BrainCommitBatch <= 0 {
 		return errors.New("brain capture batch sizes must be > 0")
+	}
+	if c.BrainScanBatch <= 0 || c.BrainScanConcurrency <= 0 || c.BrainScanMaxFileBytes <= 0 {
+		return errors.New("brain scan fields must be > 0")
 	}
 
 	if c.SearchTimeout <= 0 || c.CrawlTimeout <= 0 || c.RefineTimeout <= 0 || c.ResearchTimeout <= 0 {

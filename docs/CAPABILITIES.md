@@ -65,6 +65,15 @@ that writes into it. Availability follows the store, exactly as above.
 | `brain_ingest_github` | `repo: string` (owner/name or URL) | same as above, stored globally | ~1400 tokens | store; `api.github.com`; `MIMIR_GITHUB_TOKEN` for private repos |
 | `brain_query_nodes` | `query: string`, `limit?: int` (≤20), `project_path?: string` | `{ query, nodes[…], refined: true }` | ~1400 tokens | store |
 | `brain_related` | `node_id: string`, `limit?: int` (≤40) | `{ node{…,neighbors[]}, refined: true }` | ~1400 tokens | store |
+| `brain_scan_repo` | `project_path?: string`, `limit?: int` (≤50), `dry_run?: bool` | `{ scanned, skipped_unchanged, failed, remaining, eligible_total, files[], metadata_only: true }` | ~1400 tokens | store; a distil provider |
+
+**What records itself.** The daemon promotes distilled memory episodes into
+`session` nodes plus a `file` node per path they touched, drains agy sessions
+from a hook spool, and turns new commits into `commit` nodes — all on a five
+minute tick and **without a model call**. `brain_scan_repo` is the opposite: the
+one deliberately expensive operation, a distil per file, bounded to a batch per
+call and hash-skipped so a second pass over an unchanged repository is free.
+Run it with `dry_run` first to see the size of the bill.
 
 Identity is `(project_path, kind, source_key)`, so re-ingesting one source
 updates a row rather than minting another. A node's `aliases` — synonyms and

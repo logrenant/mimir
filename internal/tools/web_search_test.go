@@ -25,8 +25,6 @@ func (m *mockSearchClient) Search(ctx context.Context, query string, count int) 
 	return m.results, nil
 }
 
-
-
 func TestWebSearch_Success(t *testing.T) {
 	mockClient := &mockSearchClient{
 		results: []search.Result{
@@ -44,7 +42,7 @@ func TestWebSearch_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected marshal error: %v", err)
 	}
-	
+
 	resStr := string(bytes)
 	if !strings.Contains(resStr, `"golang context"`) {
 		t.Errorf("missing query in response: %s", resStr)

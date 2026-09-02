@@ -31,6 +31,7 @@ func TestEveryToolResponseIsGateable(t *testing.T) {
 		{"brain_ingest_github", brainIngestResponse{}},
 		{"brain_query_nodes", brainQueryResponse{}},
 		{"brain_related", brainRelatedResponse{}},
+		{"brain_scan_repo", brainScanResponse{}},
 	}
 
 	for _, c := range cases {

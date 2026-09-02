@@ -1,6 +1,6 @@
 # task-47 — Scan a whole repository into Brain with agy
 
-- **Status:** todo
+- **Status:** done
 - **Owner agent:** daemon
 - **Prerequisites:** task-45 (needs `brain_nodes.content_hash` from `0014`)
 - **Primary paths:** `internal/brain/scan.go` (new), `internal/tools/brain.go`, `internal/api/brain.go`, `internal/config/config.go`, `Makefile`
@@ -34,10 +34,13 @@ scan that has to start over is a scan nobody runs twice.
      (SD-3); progress is logged, never printed to stdout (SD-4).
 2. **Reuse, do not fork, `Core.Ingest`.** The only new logic is *which files*
    and *whether to skip*. A second ingest path would drift from the first.
-3. **Two ways to start it**, because it has two audiences:
-   - `make brain-scan PROJECT=<path>` for a person;
-   - `POST /brain/scan` on the daemon for the app, returning immediately with a
-     job id and streaming progress over the existing event bus.
+3. **One way to start it: the `brain_scan_repo` MCP tool.** The `make` target
+   and the daemon route in the original plan were both dropped. A scan of this
+   repository is ~52 minutes of wall clock, which no synchronous call survives,
+   so the tool takes a bounded batch per call and reports what is left — which
+   makes the async job, the job id and the progress stream unnecessary rather
+   than merely unbuilt. A person asks a session to keep calling it; the hash
+   skip is what makes that safe.
 4. **A dry run that costs nothing**: `--dry-run` reports how many files would be
    distilled and how many are already current, so the size of the bill is
    knowable before it is spent.
@@ -65,3 +68,19 @@ hundred files; at roughly 25k input tokens per `agy` call that is a real amount
 of somebody's free quota, and the `--dry-run` and the hash skip are what keep it
 from being spent twice. If either regresses, the feature becomes one people run
 once and then avoid.
+
+## Changelog
+
+- 2026-09-02 — Implemented. `brain_scan_repo` with `dry_run`, a bounded batch,
+  bounded concurrency and a content-hash skip. Measured on this repository:
+  365 tracked files reduce to **320 eligible** after the exclusions, and a batch
+  of 6 took 60 seconds at concurrency 3 — so a full first pass is roughly
+  50 minutes and a second pass is free.
+- The exclusions carry their weight: lock files, `testdata`/golden fixtures,
+  fonts, icons and minified bundles are all readable and all worth nothing to a
+  later session, and each would have cost the same as a file that matters.
+- `-race` found what a reading would not have: `Scan` calls `Ingest`
+  concurrently, and neither `brain.Store` nor `brain.Completer` said
+  implementations had to be safe for that. Both interfaces now say so, and the
+  fakes are guarded — the contract is checked by `make race` rather than
+  discovered in production.

@@ -316,3 +316,87 @@ func (t *brainRelatedTool) Handle(ctx context.Context, args json.RawMessage) (an
 	}
 	return brainRelatedResponse{Node: node, Refined: true, budget: t.cfg.BrainSearchMaxTokens}, nil
 }
+
+// --- brain_scan_repo ---------------------------------------------------------
+
+type brainScanRepoTool struct {
+	brainBase
+	hashes brain.HashStore
+}
+
+type brainScanResponse struct {
+	brain.ScanResult
+	Metadata bool `json:"metadata_only"`
+	budget   int
+}
+
+func (r brainScanResponse) MetadataOnly() bool    { return r.Metadata }
+func (r brainScanResponse) SizeBudgetTokens() int { return r.budget }
+
+// NewBrainScanRepo builds the repository scan tool.
+func NewBrainScanRepo(cfg config.Config, core *brain.Core, hashes brain.HashStore) mcp.Tool {
+	return &brainScanRepoTool{brainBase: brainBase{cfg: cfg, core: core}, hashes: hashes}
+}
+
+func (t *brainScanRepoTool) Name() string { return "brain_scan_repo" }
+
+// Description says what it costs, because this is the one tool here that spends
+// something noticeable and a caller who does not know that will run it blind.
+func (t *brainScanRepoTool) Description() string {
+	return "Read a repository's files into the knowledge base, one bounded batch per call, so later " +
+		"sessions can be told what a file is instead of opening it. " +
+		"This one costs real model calls — run it with dry_run first to see how many files are " +
+		"pending. Call it repeatedly until `remaining` reaches 0; files whose content has not " +
+		"changed since the last pass are skipped for free, so re-running is cheap and an " +
+		"interrupted scan resumes where it stopped."
+}
+
+func (t *brainScanRepoTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"project_path": {
+				"type": "string",
+				"description": "Absolute path of the repository to scan. Defaults to the working directory."
+			},
+			"limit": {
+				"type": "integer",
+				"minimum": 1,
+				"maximum": 50,
+				"description": "How many files to distil in this call. Defaults to a small batch that fits a request."
+			},
+			"dry_run": {
+				"type": "boolean",
+				"description": "Report what a scan would do without making any model call."
+			}
+		},
+		"additionalProperties": false
+	}`)
+}
+
+func (t *brainScanRepoTool) Handle(ctx context.Context, args json.RawMessage) (any, error) {
+	var in struct {
+		ProjectPath string `json:"project_path"`
+		Limit       int    `json:"limit"`
+		DryRun      bool   `json:"dry_run"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return nil, err
+	}
+
+	scope, err := t.resolveScope(in.ProjectPath)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := t.core.Scan(ctx, scope, t.hashes, brain.ScanOptions{Limit: in.Limit, DryRun: in.DryRun})
+	if err != nil {
+		return nil, err
+	}
+	// A dry run lists everything it would do, which on a large repository is
+	// hundreds of paths — useful to a person, over budget for a response.
+	if len(res.Files) > 40 {
+		res.Files = res.Files[:40]
+	}
+	return brainScanResponse{ScanResult: res, Metadata: true, budget: t.cfg.BrainSearchMaxTokens}, nil
+}

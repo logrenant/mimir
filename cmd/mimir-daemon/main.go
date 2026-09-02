@@ -133,14 +133,15 @@ func run() error {
 
 	srv := mimirmcp.NewServer(cfg)
 	if err := tools.RegisterAll(srv.Registry(), cfg, tools.Deps{
-		Search:   searchClient,
-		Crawl:    crawlClient,
-		Refine:   refineClient,
-		Pipeline: pipe,
-		Maps:     mapsClient,
-		Memory:   mem,
-		Projects: projects,
-		Brain:    knowledge,
+		Search:      searchClient,
+		Crawl:       crawlClient,
+		Refine:      refineClient,
+		Pipeline:    pipe,
+		Maps:        mapsClient,
+		Memory:      mem,
+		Projects:    projects,
+		Brain:       knowledge,
+		BrainHashes: db,
 	}); err != nil {
 		return err
 	}

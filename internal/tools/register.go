@@ -41,6 +41,11 @@ type Deps struct {
 	// store: a knowledge base with nowhere to keep nodes is not a degraded
 	// knowledge base, it is none.
 	Brain *brain.Core
+
+	// BrainHashes is what lets a repository scan skip a file it has already
+	// read. Satisfied by *store.Store; nil simply means every scan re-distils,
+	// which is correct but expensive.
+	BrainHashes brain.HashStore
 }
 
 // RegisterAll registers the canonical Mimir tool set on reg.
@@ -94,6 +99,7 @@ func RegisterAll(reg *mcp.Registry, cfg config.Config, d Deps) error {
 			NewBrainIngestGitHub(cfg, d.Brain),
 			NewBrainQueryNodes(cfg, d.Brain),
 			NewBrainRelated(cfg, d.Brain),
+			NewBrainScanRepo(cfg, d.Brain, d.BrainHashes),
 		)
 	}
 

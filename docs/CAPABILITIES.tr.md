@@ -67,6 +67,15 @@ Kullanılabilirlik yukarıdakiyle aynı şekilde store'u izler.
 | `brain_ingest_github` | `repo: string` (owner/name veya URL) | yukarıdakiyle aynı, global kapsamda | ~1400 token | store; `api.github.com`; özel repolar için `MIMIR_GITHUB_TOKEN` |
 | `brain_query_nodes` | `query: string`, `limit?: int` (≤20), `project_path?: string` | `{ query, nodes[…], refined: true }` | ~1400 token | store |
 | `brain_related` | `node_id: string`, `limit?: int` (≤40) | `{ node{…,neighbors[]}, refined: true }` | ~1400 token | store |
+| `brain_scan_repo` | `project_path?: string`, `limit?: int` (≤50), `dry_run?: bool` | `{ scanned, skipped_unchanged, failed, remaining, eligible_total, files[], metadata_only: true }` | ~1400 token | store; bir damıtma sağlayıcısı |
+
+**Kendini kaydeden kısım.** Daemon, damıtılmış hafıza episode'larını `session`
+düğümüne ve dokundukları her yol için bir `file` düğümüne çeviriyor, agy
+oturumlarını hook spool'undan çekiyor ve yeni commit'leri `commit` düğümü
+yapıyor — beş dakikalık bir tikte ve **model çağrısı olmadan**.
+`brain_scan_repo` bunun tersi: bilerek pahalı olan tek iş, dosya başına bir
+damıtma, çağrı başına bir batch ile sınırlı ve hash ile atlamalı, yani
+değişmemiş bir repoda ikinci geçiş bedava. Önce `dry_run` ile faturayı gör.
 
 Kimlik `(project_path, kind, source_key)`; aynı kaynağı yeniden ingest etmek yeni
 bir düğüm üretmez, mevcut satırı günceller. Damıtmanın FTS indeksine yazdığı

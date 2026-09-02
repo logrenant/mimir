@@ -116,7 +116,7 @@ func newLive(t *testing.T, claudePath string) *live {
 		// The node core follows the store the daemon's does, so the canonical
 		// list below actually covers the brain tools instead of silently
 		// dropping them the moment they became conditional.
-		Brain: brain.New(cfg, db, llm.NewRouter(cfg)),
+		Brain: brain.New(cfg, db, llm.NewRouter(cfg)), BrainHashes: db,
 	}); err != nil {
 		cancel()
 		t.Fatalf("RegisterAll: %v", err)
@@ -333,7 +333,7 @@ func TestLive_MCPRouteExposesTheCanonicalToolSet(t *testing.T) {
 	// provisioned (see newLive, and TestRegisterAll_MapsSearchFollowsTheCredential).
 	want := []string{
 		"brain_ingest_data", "brain_ingest_github", "brain_query_nodes",
-		"brain_related", "diagnostics", "ecommerce_product_lookup",
+		"brain_related", "brain_scan_repo", "diagnostics", "ecommerce_product_lookup",
 		"fetch_page", "gmaps_business_lookup", "instagram_profile_lookup",
 		"research", "tiktok_profile_lookup", "web_search",
 	}

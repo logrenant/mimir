@@ -130,6 +130,32 @@ quietly starting to spend quota.
   while the daemon was down is still recorded. The spool file is removed only
   after the ingest state is written, so a crash re-reads rather than loses.
 
+## The repository scan (task-47)
+
+`scan.go` is the one deliberately expensive thing in this package: a distil per
+file, paid once per repository and amortised over every later session that would
+otherwise have opened the file to find out what it is.
+
+- **It reuses `Core.Ingest`.** The only new logic is which files and whether to
+  skip. A second ingest path would drift from the first, and the choke-point,
+  the validator and the linker have to be the same ones everything else uses.
+- **`content_hash` is what makes it affordable.** A file whose hash and prompt
+  version match is skipped, so a second scan of an unchanged repository makes no
+  model call and an interrupted scan resumes. If that regresses, the feature
+  becomes one people run once and then avoid.
+- **Batches, not a job.** A full pass here is about fifty minutes, which no
+  synchronous call survives. The tool distils a bounded batch and reports
+  `remaining`; the caller keeps going. This is why there is no async job, no job
+  id and no progress stream.
+- **`git ls-files` is the allowlist**, not a convenience: it already encodes the
+  judgement somebody made about what belongs to the project.
+- **The exclusions are not about size.** A lock file, a golden fixture and a
+  minified bundle are all perfectly readable and all worth nothing to a later
+  session, and every one costs the same as a file that matters.
+- **`Store` and `Completer` implementations must be concurrency-safe**, because
+  this runs several ingests at once. Both interfaces say so; `make race` is what
+  enforces it.
+
 ## Known asymmetry
 
 A global node (`project_path = ''`, e.g. a repository) searches only global

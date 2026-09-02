@@ -22,7 +22,7 @@
 | [task-41](task-41-brain-core.md) | done | Brain v2: the node core rebuilt on the store (`0013_brain.sql`), and `internal/llm` — one exit point for model calls, routed by class of work. |
 | [task-43](task-43-mcp-enforcement.md) | done | `make install-mcp`: registration on every MCP client on the machine, plus a session preflight hook that checks the binary and brings the daemon back. |
 | [task-45](task-45-autonomous-capture.md) | done | Brain records itself: Claude Code episodes and their files promoted to nodes, agy sessions drained from a hook spool, commits captured — all without a model call. |
-| [task-47](task-47-repo-scan.md) | todo | One pass over a whole repository through agy, hash-skipped so a re-scan is free and an interrupted scan resumes. |
+| [task-47](task-47-repo-scan.md) | done | One pass over a whole repository through agy, hash-skipped so a re-scan is free and an interrupted scan resumes. |
 
 They are split by file, not by package: the odd-numbered tasks own
 `internal/**` and `cmd/**`, the even-numbered ones own `desktop/**`, so a

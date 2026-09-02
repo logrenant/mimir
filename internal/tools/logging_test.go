@@ -53,7 +53,7 @@ func TestLogging_StdoutEmpty_StderrContainsFields(t *testing.T) {
 			_, _ = w.Write([]byte(`{"markdown": "test markdown", "title": "test"}`))
 			return
 		}
-		
+
 		// Fallback for DuckDuckGo
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body><div class="result__body"><h2 class="result__title"><a class="result__url" href="https://example.com">Example</a></h2><a class="result__snippet">snippet</a></div></body></html>`))
@@ -70,22 +70,22 @@ func TestLogging_StdoutEmpty_StderrContainsFields(t *testing.T) {
 	}
 
 	cfg := config.Config{
-		DuckDuckGoLiteURL: ts.URL,
-		Crawl4AIBaseURL:   ts.URL,
-		ClaudeCLIPath:     fakeClaudePath,
-		ClaudeModel:       "claude-haiku-4-5-20251001",
-		CrawlTimeout:      5 * time.Second,
-		RefineTimeout:     5 * time.Second,
-		SearchTimeout:     5 * time.Second,
-		ResearchTimeout:   5 * time.Second,
-		SearchDefaultCount: 1,
-		GlobalCrawlSlots:  6,
-		GlobalRefineSlots: 3,
-		MaxConcurrentCrawls: 2,
-		MaxConcurrentRefines: 2,
-		TopNForResearch: 3,
+		DuckDuckGoLiteURL:      ts.URL,
+		Crawl4AIBaseURL:        ts.URL,
+		ClaudeCLIPath:          fakeClaudePath,
+		ClaudeModel:            "claude-haiku-4-5-20251001",
+		CrawlTimeout:           5 * time.Second,
+		RefineTimeout:          5 * time.Second,
+		SearchTimeout:          5 * time.Second,
+		ResearchTimeout:        5 * time.Second,
+		SearchDefaultCount:     1,
+		GlobalCrawlSlots:       6,
+		GlobalRefineSlots:      3,
+		MaxConcurrentCrawls:    2,
+		MaxConcurrentRefines:   2,
+		TopNForResearch:        3,
 		ResearchBriefMaxTokens: 1000,
-		DuckDuckGoHTMLURL: ts.URL,
+		DuckDuckGoHTMLURL:      ts.URL,
 	}
 
 	searchClient := search.New(cfg)

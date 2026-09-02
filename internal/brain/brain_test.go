@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +17,11 @@ import (
 
 // --- fakes -------------------------------------------------------------------
 
+// fakeStore is guarded because brain.Store requires implementations to be safe
+// for concurrent use — Scan ingests several files at once — and an unguarded
+// fake turns that contract into a flaky test instead of a compile-time one.
 type fakeStore struct {
+	mu      sync.Mutex
 	nodes   map[string]store.BrainNodeRow
 	edges   []store.BrainEdgeRow
 	results []store.BrainNodeRow // what SearchBrainNodes returns
@@ -29,6 +34,9 @@ func newFakeStore() *fakeStore {
 }
 
 func (f *fakeStore) UpsertBrainNode(_ context.Context, n store.BrainNodeRow) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	if f.failAll != nil {
 		return f.failAll
 	}
@@ -40,11 +48,17 @@ func (f *fakeStore) UpsertBrainNode(_ context.Context, n store.BrainNodeRow) err
 }
 
 func (f *fakeStore) BrainNode(_ context.Context, id string) (store.BrainNodeRow, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	n, ok := f.nodes[id]
 	return n, ok, nil
 }
 
 func (f *fakeStore) BrainNodesByIDs(_ context.Context, ids []string) ([]store.BrainNodeRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	var out []store.BrainNodeRow
 	for _, id := range ids {
 		if n, ok := f.nodes[id]; ok {
@@ -55,16 +69,25 @@ func (f *fakeStore) BrainNodesByIDs(_ context.Context, ids []string) ([]store.Br
 }
 
 func (f *fakeStore) SearchBrainNodes(_ context.Context, _, _ string, _ int) ([]store.BrainNodeRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.searchN++
 	return f.results, nil
 }
 
 func (f *fakeStore) UpsertBrainEdges(_ context.Context, e []store.BrainEdgeRow) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	f.edges = append(f.edges, e...)
 	return nil
 }
 
 func (f *fakeStore) BrainNeighbors(_ context.Context, id string, limit int) ([]store.BrainEdgeRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	var out []store.BrainEdgeRow
 	for _, e := range f.edges {
 		switch id {
@@ -83,6 +106,7 @@ func (f *fakeStore) BrainNeighbors(_ context.Context, id string, limit int) ([]s
 // fakeLLM answers the two prompts this package sends. It tells them apart the
 // way a reader would: only the relation pass mentions a knowledge graph.
 type fakeLLM struct {
+	mu        sync.Mutex
 	distil    string
 	relate    string
 	distilErr error
@@ -91,6 +115,8 @@ type fakeLLM struct {
 }
 
 func (f *fakeLLM) Complete(_ context.Context, _ llm.Class, req llm.Request) (llm.Response, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	if strings.Contains(req.System, "knowledge graph") {
 		if f.relateErr != nil {

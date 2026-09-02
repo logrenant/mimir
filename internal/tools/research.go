@@ -88,7 +88,7 @@ func (t *ResearchTool) Handle(ctx context.Context, args json.RawMessage) (any, e
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	
+
 	if strings.TrimSpace(input.Query) == "" {
 		return nil, errors.New("invalid arguments: query is required")
 	}
