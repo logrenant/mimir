@@ -23,6 +23,9 @@
 | [task-43](task-43-mcp-enforcement.md) | done | `make install-mcp`: registration on every MCP client on the machine, plus a session preflight hook that checks the binary and brings the daemon back. |
 | [task-45](task-45-autonomous-capture.md) | done | Brain records itself: Claude Code episodes and their files promoted to nodes, agy sessions drained from a hook spool, commits captured — all without a model call. |
 | [task-47](task-47-repo-scan.md) | done | One pass over a whole repository through agy, hash-skipped so a re-scan is free and an interrupted scan resumes. |
+| [task-49](task-49-machine-scan.md) | done | `bin/mimir-scan`: every project under a root read into Brain — discovery, untracked files included, undistilled files retried. |
+| [task-51](task-51-resident-scan.md) | done | The distil tier is agy-only; the daemon keeps one scan running over ~/development and ~/Documents, reads PDFs, and serves the graph. |
+| [task-52](task-52-desktop-brain.md) | done | Desktop: the Brain tab — scan control and a force-directed picture of the knowledge base. |
 
 They are split by file, not by package: the odd-numbered tasks own
 `internal/**` and `cmd/**`, the even-numbered ones own `desktop/**`, so a

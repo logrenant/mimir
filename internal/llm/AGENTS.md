@@ -21,13 +21,28 @@ no tags at all. One exit point is the fix, for the same reason
 
 | Class | What it is | Provider | Model |
 |---|---|---|---|
-| `Distill` | one-shot compression: a page summary, an episode recap, a node's assessment and tags, a closed-vocabulary classification | `agy` | `gemini-3.7-flash-low` |
+| `Distill` | one-shot compression: a page summary, an episode recap, a node's assessment and tags, a closed-vocabulary classification | `agy` | `gemini-3.7-flash-high` |
 | `Reason` | synthesis across sources, where the extra capability is worth paying for | `claude` | `claude-haiku-4-5-20251001` |
 
-`DistillFallback` is **availability, not a retry policy.** A provider that
-answered *badly* is never retried elsewhere. `agy` missing, or its free quota
-spent, must not take the distil path down, because every caller already has a
-claude login.
+**There is no distil fallback (task-51).** There was one, and the reasoning was
+sound as far as it went: a provider that answered *badly* is never retried
+elsewhere, but one that cannot run at all is an availability problem, and every
+caller has a claude login. What that missed is what "availability" costs. The
+operator asked for a machine-wide scan — some three thousand files, two calls
+each — through the free tier; a silent hand-off the moment agy's quota ran out
+turns that into a bill nobody chose, at a moment nobody is watching.
+
+So `cfg.DistillFallback` is empty, `NewRouter` reads an unnamed fallback as *no*
+fallback, and the distil tier fails loudly instead. The mechanism is left
+standing and still tested: putting `"claude"` back in one config line restores
+the old behaviour, which is the right shape for a decision that could be
+revisited.
+
+The consequence is worth stating plainly, because it changes shipped tools:
+when agy is down, `fetch_page` and `research` **error** rather than quietly
+working, lead-gen's email drafting produces nothing, and every Brain ingest
+stores a titled node with no assessment and no content hash — which is the
+designed degradation, and is retried on the next pass.
 
 ## Rules
 
@@ -71,7 +86,11 @@ claude login.
   starting a second subprocess on its behalf is work nobody is waiting for.
 
 - **Every model tag is pinned (SD-5).** No `latest`, no floating alias. Bumping
-  one is its own task.
+  one is its own task. The effort suffix is part of the tag and part of the
+  decision: `-high` because a node is distilled once and read by every later
+  session, so the better answer is worth having permanently, and the tier costs
+  the same either way. What it costs is wall clock — a sweep of a whole machine
+  takes noticeably longer at `-high` than at `-low`.
 
 - **`Request.Schema` is always safe to set.** A provider that cannot enforce it
   leaves `Response.Structured` nil and the caller parses `Text` instead. That is
@@ -83,6 +102,10 @@ SD-1 (every flag and model is a `config` constant), SD-5 (pinned tags), SD-6
 (`ErrProviderUnavailable` everywhere a CLI can fail).
 
 Grep for `exec.Command` outside this package and `internal/coderunner` — a third
-one is the drift this package was created to stop. Grep for a test that sets
+one is the drift this package was created to stop. Grep also for a test that
+sets `ClaudeCLIPath` and then expects distil work to happen: that test is
+asserting a fallback which no longer exists, and it will pass for the wrong
+reason only until somebody hand-builds a `Config` with an empty
+`DistillProvider`. Grep for a test that sets
 `ClaudeCLIPath` without also neutralising `AgyCLIPath`; that test is talking to
 the network.

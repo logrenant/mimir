@@ -53,14 +53,20 @@ func TestBuildRecapPrompt_Golden(t *testing.T) {
 	}
 }
 
+// recapClient builds a client whose distil tier is a fake agy.
+//
+// It is agy and not claude because agy is where a recap actually goes: the
+// shipped config routes the distil class there and, since task-51, has no
+// fallback, so a test that stood up a fake claude would be testing a path
+// production does not take. config.Load() names the real binaries, so both are
+// replaced — the agy with the fake, the claude with a path that cannot run, so
+// that a regression which reintroduces the fallback fails here rather than
+// quietly passing.
 func recapClient(t *testing.T, body string) *Client {
 	t.Helper()
 	cfg := config.Load()
-	cfg.ClaudeCLIPath = writeFakeClaude(t, false, body)
-	// config.Load() names the real agy binary. Left in place, these tests
-	// would send their prompts to whatever is installed on the machine instead
-	// of the fake CLI they just wrote, and pass or fail on its mood.
-	cfg.AgyCLIPath = ""
+	cfg.AgyCLIPath = writeFakeAgy(t, body)
+	cfg.ClaudeCLIPath = filepath.Join(t.TempDir(), "no-such-binary")
 	return New(cfg)
 }
 
@@ -68,7 +74,7 @@ func recapClient(t *testing.T, body string) *Client {
 // because sh's echo interprets backslash escapes and would corrupt the JSON.
 func resultPayload(t *testing.T, result string) string {
 	t.Helper()
-	b, err := json.Marshal(map[string]string{"result": result})
+	b, err := json.Marshal(map[string]string{"status": "SUCCESS", "response": result})
 	if err != nil {
 		t.Fatal(err)
 	}

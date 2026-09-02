@@ -152,3 +152,31 @@ through the registry. SD-3: `Serve` does not leak the listener or its goroutine
 and drains within `DaemonShutdownTimeout`. Security: `grep` the middleware
 chain and confirm both the loopback guard and the token check sit ahead of
 every route.
+
+
+## The brain routes (task-51)
+
+Seven routes behind three separately-gated `Deps` fields, because they fail
+separately: `BrainScan` is a daemon-lifetime loop, `BrainGraph` is three store
+reads, `Brain` is the node core.
+
+- **`?project=` is an opaque id, never a path.** The rule above — a filesystem
+  path is accepted at exactly two routes, both of which mint an id on the spot —
+  is the whole reason `brain.ProjectID` exists. A value that looks like a path
+  is a 400 with a message saying where ids come from, and there is a test whose
+  only job is to keep that true. Returning a path in a response is fine;
+  `GET /projects` already does.
+- **Progress is polled, not streamed.** `/ws/runs/{id}` exists to stitch a lossy
+  bus to a complete transcript by `Seq`, because a run emits events that must
+  not be lost. A scan emits none: it has one current state, fully described by
+  the latest snapshot, and nothing to replay. A socket here would spend its life
+  idle and would need either a synthetic run id or a second bus.
+- **The three scan controls take no body.** `decodeJSON` sets
+  `DisallowUnknownFields`, which turns an empty body into an EOF and would 400
+  every click. There is nothing to configure about a scan (SD-1).
+- **`scan/now` while paused is a 409**, not a silent start: the operator stopped
+  it on purpose and the button was drawn before that.
+- **The graph never returns an edge whose endpoints are not both in its node
+  list.** The store guarantees it and the handler checks it anyway — the thing
+  that breaks otherwise is a canvas in the desktop app, where the failure is a
+  blank screen with no message.

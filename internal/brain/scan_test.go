@@ -2,6 +2,7 @@ package brain
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,5 +241,43 @@ func TestIsText(t *testing.T) {
 	}
 	if isText([]byte{0xff, 0xfe, 0xfd}) {
 		t.Error("invalid UTF-8 should mark it binary")
+	}
+}
+
+// A provider that was down is not a file that was read. The node is kept —
+// a titled node is still findable — but without a content hash, so the next
+// pass offers the file again instead of skipping it forever on the strength of
+// one hiccup. This is what keeps a machine-wide run honest: it cannot report a
+// clean sweep over a stretch where nothing was distilled.
+func TestScan_UndistilledFilesAreRetriedNotSkipped(t *testing.T) {
+	dir := scanRepo(t)
+	st := newFakeStore()
+	model := &fakeLLM{distilErr: errors.New("agy is out of quota"), relate: `{"related":[]}`}
+	c := scanCore(t, st, model)
+
+	got, err := c.Scan(context.Background(), dir, &fakeHashes{}, ScanOptions{Limit: 50})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if got.Scanned != 0 || got.Failed != 3 {
+		t.Fatalf("stats = %+v, want nothing scanned and 3 failed", got)
+	}
+	for _, n := range st.nodes {
+		if n.ContentHash != "" {
+			t.Errorf("%s kept a content hash without an assessment; the next scan would skip it", n.SourceKey)
+		}
+	}
+
+	// The store now holds three nodes, and every one of them is still pending.
+	known := map[string]string{}
+	for _, n := range st.nodes {
+		known[n.SourceKey] = n.ContentHash
+	}
+	again, err := c.Scan(context.Background(), dir, &fakeHashes{m: known}, ScanOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	if again.Remaining != 3 {
+		t.Errorf("remaining = %d, want all 3 offered again", again.Remaining)
 	}
 }

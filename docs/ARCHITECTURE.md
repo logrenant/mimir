@@ -132,7 +132,7 @@ Both live in `internal/llm`, which is the only place outside
 `Reason` (cross-source synthesis, gap analysis) to `claude`. See
 `docs/ROADMAP.md` §B.1.
 
-- **agy** — `exec.CommandContext(ctx, cliPath, "--model", "gemini-3.7-flash-low", "--output-format", "json", "--input-format", "text", "--sandbox", "--disable-slash-commands", "--print-timeout", d, "--json-schema", schema)`, content piped over stdin, response read from `structured_output` when a schema was given and `response` otherwise; `status != "SUCCESS"` is an error. `cmd.Dir` is an empty scratch directory and the environment carries `MIMIR_NESTED=1`. Health: `agy models` succeeds.
+- **agy** — `exec.CommandContext(ctx, cliPath, "--model", "gemini-3.7-flash-high", "--output-format", "json", "--input-format", "text", "--sandbox", "--disable-slash-commands", "--print-timeout", d, "--json-schema", schema)`, content piped over stdin, response read from `structured_output` when a schema was given and `response` otherwise; `status != "SUCCESS"` is an error. `cmd.Dir` is an empty scratch directory and the environment carries `MIMIR_NESTED=1`. Health: `agy models` succeeds.
 - **claude** — `exec.CommandContext(ctx, cliPath, "-p", "--model", "claude-haiku-4-5-20251001", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--restricted", "--effort", "low", "--system-prompt", system, "--disallowedTools", "...")`, content piped over stdin, response parsed from the `result` field. Health: `claude --version` succeeds.
 - Neither needs an API key — each rides its own CLI's existing sign-in. `agy` being absent or out of quota falls back to `claude`; that is availability, not preference.
 

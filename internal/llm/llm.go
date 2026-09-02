@@ -82,12 +82,15 @@ type Provider interface {
 }
 
 // Router resolves a Class to a Provider, and falls back when the first choice
-// cannot run.
+// cannot run — if a fallback was configured at all.
 //
 // The fallback is not a retry policy — a provider that answered badly is not
-// retried anywhere else — it is availability only. `agy` not being installed,
-// or its free quota being spent, must not take the whole distil path down with
-// it, because every caller of Distill has a claude login already.
+// retried anywhere else — it is availability only. It is also, since task-51,
+// switched off: `cfg.DistillFallback` is empty, so `agy` being signed out or
+// out of quota stops the distil tier instead of quietly moving the work (and
+// the bill) to claude. That is the operator's decision, taken after a
+// machine-wide scan made the size of the bill concrete, and the mechanism is
+// left standing so putting one word back in config restores it.
 type Router struct {
 	byClass  map[Class]Provider
 	fallback map[Class]Provider
@@ -113,14 +116,21 @@ func NewRouter(cfg config.Config) *Router {
 		return claude
 	}
 
+	// An unnamed fallback is no fallback. This is deliberately not `pick`,
+	// which answers claude for anything it does not recognise: routed through
+	// pick, an empty DistillFallback would resolve to the very provider the
+	// empty string exists to keep out.
+	fallback := map[Class]Provider{}
+	if p, ok := byName[cfg.DistillFallback]; ok {
+		fallback[Distill] = p
+	}
+
 	return &Router{
 		byClass: map[Class]Provider{
 			Distill: pick(cfg.DistillProvider),
 			Reason:  pick(cfg.ReasonProvider),
 		},
-		fallback: map[Class]Provider{
-			Distill: pick(cfg.DistillFallback),
-		},
+		fallback: fallback,
 	}
 }
 
@@ -131,6 +141,17 @@ func (r *Router) Provider(c Class) Provider {
 		return nil
 	}
 	return r.byClass[c]
+}
+
+// Fallback returns the configured fallback for a class, or nil when there is
+// none. A caller that wants to know whether a class can still be served with
+// its primary down needs this rather than Provider, which answers about the
+// primary of some other class.
+func (r *Router) Fallback(c Class) Provider {
+	if r == nil {
+		return nil
+	}
+	return r.fallback[c]
 }
 
 // Providers returns each distinct provider once, for health reporting.
@@ -156,9 +177,10 @@ func (r *Router) Providers() []Provider {
 }
 
 // Complete runs req on the provider for c, falling back once if the primary is
-// unavailable. A cancelled or expired context is returned as-is and never
-// triggers the fallback: the caller went away, and starting a second
-// subprocess on its behalf would be work nobody is waiting for.
+// unavailable and a fallback was configured. A cancelled or expired context is
+// returned as-is and never triggers the fallback: the caller went away, and
+// starting a second subprocess on its behalf would be work nobody is waiting
+// for.
 func (r *Router) Complete(ctx context.Context, c Class, req Request) (Response, error) {
 	if r == nil {
 		return Response{}, fmt.Errorf("%w: no router configured", ErrProviderUnavailable)

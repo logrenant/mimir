@@ -69,6 +69,23 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 		t.Fatal(err)
 	}
 
+	// Fake `agy` CLI, in agy's own envelope: a `status` and a `response`, plus
+	// the `models` subcommand its health check calls. Since task-51 the distil
+	// tier has no fallback, so this is not a nicety — without it the refined
+	// half of this test has no provider at all.
+	fakeAgyPath := filepath.Join(t.TempDir(), "fake-agy.sh")
+	fakeAgyScript := `#!/bin/sh
+if [ "$1" = "models" ]; then
+  echo "gemini-3.7-flash-high"
+  exit 0
+fi
+cat >/dev/null
+printf '{"status": "SUCCESS", "response": "%s"}' "` + strings.Repeat("Refined content. ", 200) + `"
+`
+	if err := os.WriteFile(fakeAgyPath, []byte(fakeAgyScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	cmd := exec.Command(binPath)
 	// Only the test-URL/path overrides are honoured by config.Load() (SD-1).
 	//
@@ -81,13 +98,13 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 		"MIMIR_DDG_LITE_URL="+ddgSrv.URL,
 		"MIMIR_CRAWL4AI_URL="+crawlSrv.URL,
 		"MIMIR_CLAUDE_CLI_PATH="+fakeClaudePath,
-		// The distil tier's primary provider is agy, and this spawns the real
-		// binary. Without pointing it somewhere that does not exist, the test
-		// would send its prompts to whatever agy is installed on the machine
-		// and assert against that answer. Pointing it at a missing path makes
-		// the provider unavailable, which is exactly the case the router falls
-		// back to the fake claude for.
-		"MIMIR_AGY_CLI_PATH="+filepath.Join(t.TempDir(), "no-agy-here"),
+		// The distil tier's provider, pointed at the fake. config.Load() names
+		// the real binary, and without this the test would send its prompts to
+		// whatever agy is installed on the machine and assert against that
+		// answer. There is no fallback to the fake claude any more — that is
+		// the point of task-51 — so this override is what makes the refined
+		// half of this test run at all.
+		"MIMIR_AGY_CLI_PATH="+fakeAgyPath,
 		"MIMIR_STORE_PATH="+filepath.Join(t.TempDir(), "mimir.db"),
 	)
 

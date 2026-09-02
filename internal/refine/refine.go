@@ -53,16 +53,20 @@ func (c *Client) unavailable(cause error) error {
 // Health checks that the refiner's providers are usable. It reports healthy if
 // the distil tier answers, because that is the tier every profile but the gap
 // analysis rides.
+//
+// It used to accept the reason tier answering as good enough, on the grounds
+// that the distil tier could fall back to it. Since task-51 it cannot: the
+// distil class has no fallback, so claude being reachable says nothing about
+// whether a page can be summarised. Reporting healthy on that basis would send
+// an operator looking for the fault everywhere except where it is.
 func (c *Client) Health(ctx context.Context) (bool, error) {
 	p := c.router.Provider(llm.Distill)
 	if p == nil {
 		return false, c.unavailable(errors.New("no distil provider configured"))
 	}
 	if err := p.Health(ctx); err != nil {
-		// A fallback that answers is a healthy refiner: the primary being down
-		// costs speed, not capability.
-		alt := c.router.Provider(llm.Reason)
-		if alt == nil || alt.Name() == p.Name() {
+		alt := c.router.Fallback(llm.Distill)
+		if alt == nil {
 			return false, c.unavailable(err)
 		}
 		if altErr := alt.Health(ctx); altErr != nil {

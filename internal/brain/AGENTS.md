@@ -174,3 +174,65 @@ no GitHub), SD-1 (every bound is a `config` constant; the GitHub token is read i
 
 Grep for anything that writes a node file, or that passes more than one node to
 the distil. Either one is the shape this rewrite removed.
+
+
+## The resident scan (task-51)
+
+`supervisor.go` is the scan with the session taken out of it: the daemon starts
+one `Supervisor`, it sweeps `cfg.BrainScanRoots` for as long as the process
+lives, and there is always an agy working.
+
+- **It is a type, not a method on `Core`.** It owns mutable runtime state —
+  paused, in flight, how far — and `Core` is shared with `cmd/mimir-mcp`, a
+  binary that has no lifetime to own.
+- **The loop condition is a pass's own `remaining`**, never a count taken
+  before the first pass, for the reason `cmd/mimir-scan/AGENTS.md` gives.
+- **A pass that distilled nothing while files failed is checked *before*
+  `remaining`.** A batch where every file failed reports nothing left to do,
+  because the failures were counted rather than left pending; reading that as
+  "this project is finished" is exactly how a signed-out agy would look like a
+  completed sweep.
+- **Backoff is not politeness.** One distil is about eleven seconds and a pass
+  is twelve of them, so retrying a dead provider immediately is on the order of
+  a thousand failed subprocesses an hour. It doubles from `BackoffMin` to
+  `BackoffMax`, and the probe — `agy models`, one subprocess — ends it early
+  when the provider comes back.
+- **Pause reaches the pass in flight.** A pass is a minute of subprocesses; a
+  pause that waited for it would look broken to the person who pressed it.
+  Files already distilled keep their hashes, so resuming costs nothing.
+- **`Unreadable` is not `Failed`.** A PDF with no text layer, or a machine with
+  no poppler, must never look like the provider being down — `Failed` is what
+  drives the backoff. There is a test.
+- **The durable state is a display hint.** The summary in `brain_capture_state`
+  under `scan:supervisor` exists so the tab does not report a fresh machine
+  after every restart. The real progress is `content_hash` on `brain_nodes`, and
+  a second table that can disagree with the nodes is worse than a hint that can
+  be thrown away — which is why this shipped with no migration.
+
+**Known asymmetry, recorded rather than fixed:** `brain_scan_repo` and the
+supervisor can scan the same project at the same time, which is up to six
+concurrent agy processes and a duplicated distil. It is idempotent — `Ingest`
+upserts by `NodeID` — so it wastes quota and never corrupts. A global semaphore
+would be the fix if it ever costs anything measurable.
+
+## PDFs (task-51)
+
+`pdf.go` reads a PDF through poppler's `pdftotext`, which is why `~/Documents`
+is worth scanning at all: on the machine this was built for it is six technical
+manuals and nothing else.
+
+- **Optional by construction.** No poppler means PDFs are skipped and every
+  other file is still read. `diagnostics` reports it the way it reports the Maps
+  sidecar — `optional: true` — so a deliberately-poppler-less machine does not
+  read as broken.
+- **The two absences are different errors.** `ErrNoPDFExtractor` is fixed by
+  installing poppler; `ErrNoTextLayer` is a scan of paper and cannot be fixed at
+  all. Reporting them as one thing sends an operator to install what they have.
+  `-nopgbrk` is what makes the second detectable: without it a scanned manual
+  extracts to a page of form feeds instead of nothing.
+- **The hash is of the file, never of the extracted text**, and it is taken
+  before the extractor runs. That is what makes a second sweep over
+  `~/Documents` spawn neither pdftotext nor agy.
+- **The subprocess is the untrusted-input boundary.** A timeout, an output
+  ceiling, `cmd.Env = []string{}`, and a scratch working directory rather than a
+  repository — the same posture `internal/llm` gives agy, for the same reason.

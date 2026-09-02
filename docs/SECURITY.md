@@ -23,16 +23,19 @@ scrape fallback container when it is running.
    - That subprocess makes its own request to the Anthropic API (model `claude-haiku-4-5-20251001`), authenticated with the operator's own `claude login` session — **scraped page content is sent to Anthropic** to be distilled. There is no separate API key configured by Mimir; it rides the existing Claude Code login.
    - Every call runs with `--restricted`, `--strict-mcp-config`, and every built-in tool force-denied via `--disallowedTools` — the subprocess can only emit text, never take an action, read local files, or reach the network itself.
 4. **`agy` CLI (local subprocess, task-41)** — the *distil* tier, and the one most page content now goes through:
-   - The operator's own Antigravity CLI, invoked headless via `exec`, riding its existing sign-in. Model `gemini-3.7-flash-low`, pinned. **Scraped page content is sent to Google** to be distilled; before task-41 that content went to Anthropic instead. No API key is configured by Mimir either way.
+   - The operator's own Antigravity CLI, invoked headless via `exec`, riding its existing sign-in. Model `gemini-3.7-flash-high`, pinned. **Scraped page content is sent to Google** to be distilled; before task-41 that content went to Anthropic instead. No API key is configured by Mimir either way.
    - **This subprocess is less tightly bounded than the claude one, and that is a real difference, not a wording change.** `agy` has no `--disallowedTools` and no `--strict-mcp-config`. Three things stand in for them: `--sandbox`; a working directory that is an empty scratch dir under the store's parent rather than any repository (`agy` reads `AGENTS.md` and `.agents/rules` from wherever it starts, and this subprocess's entire input is untrusted text); and `MIMIR_NESTED=1`, which `cmd/mimir-mcp` answers by serving **no tools**, so the globally-registered Mimir cannot be recursed into. All three are asserted by tests in `internal/llm`.
    - What has not changed: the fail-closed choke-point in `internal/mcp/finalize.go` still decides what reaches the consumer, whichever provider produced it.
-   - If `agy` is absent or out of quota, the router falls back to the `claude` tier above. Availability, not preference — see `internal/llm/AGENTS.md`.
+   - **There is no fallback.** If `agy` is absent or out of quota the distil path is down: page content reaches no model at all and the affected tools return an error. That is a deliberate narrowing (task-51) and it is a security property as much as a billing one — the set of destinations scraped text can reach shrinks from {Google, Anthropic} to {Google}.
 5. **GitHub REST API (HTTPS, optional)**:
    - `api.github.com/repos/<owner>/<name>/readme`, reached only by `brain_ingest_github` and only for a repository the caller named. Read-only, one endpoint, capped at 256 KiB. `MIMIR_GITHUB_TOKEN` is sent as a bearer token when set and is never logged; without it only public repositories are readable.
 6. **Google Places API (HTTPS, Track B, optional)**:
    - Reached only by `mimir-daemon`, and only when `MIMIR_GOOGLE_PLACES_API_KEY` is set. Structured business facts in, no free-text field requested (`maps.FieldMask`), so nothing here needs refining. The key travels only in the `X-Goog-Api-Key` header and never appears in a log line or an error.
 7. **Maps scrape sidecar (HTTP localhost, Track B, optional fallback)**:
    - `deploy/playwright-maps/` on `127.0.0.1:11236`, pinned image. Used only when Places coverage/cost is not worth it. It renders `google.com/maps` pages and is host-allowlisted so it cannot be pointed at the machine's own network or a metadata endpoint.
+
+8. **`pdftotext` (poppler, local subprocess, optional)**:
+   - Reached only by the repository scan, and only for a file the operator's own directory walk found. It makes **no network call**: a PDF goes in by path, text comes out on stdout. The posture is the one a C++ parser fed arbitrary files needs — a timeout, an output ceiling, an empty environment (`cmd.Env = []string{}`) and a working directory that is a scratch dir rather than a repository — and a crash is a skipped file, never a failed scan. Absent, PDFs are simply not indexed.
 
 ### The coding-task runner (Track B)
 
@@ -119,7 +122,7 @@ the file on its next launch. `scripts/uninstall-agent.sh --purge` removes both.
 Note the refiner history: it was originally a fully local Ollama model, and no
 scraped content ever left the machine. It then became the Anthropic API, reached
 via the local `claude` CLI. Since task-41 most page content goes to Google
-instead, via the local `agy` CLI, with claude as the fallback — see the Egress
+instead, via the local `agy` CLI, and only there — see the Egress
 Policy above. Each move traded a little confidentiality for capability or cost,
 and none of them was reversed by accident: the current routing is stated in
 `docs/ROADMAP.md` §B.1.

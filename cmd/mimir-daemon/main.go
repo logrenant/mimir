@@ -129,7 +129,8 @@ func run() error {
 	// The node core shares the store the memory does. Unlike the memory it is
 	// not project-scoped by construction: a node about a public repository
 	// belongs to no checkout, and the store keeps those under the empty scope.
-	knowledge := brain.New(cfg, db, llm.NewRouter(cfg))
+	router := llm.NewRouter(cfg)
+	knowledge := brain.New(cfg, db, router)
 
 	srv := mimirmcp.NewServer(cfg)
 	if err := tools.RegisterAll(srv.Registry(), cfg, tools.Deps{
@@ -198,6 +199,35 @@ func run() error {
 		<-brainDone
 	}()
 
+	// The resident scan: the half of Brain that costs something. Where the loop
+	// above records what already happened for free, this one reads the
+	// operator's folders through agy, one file at a time, for as long as the
+	// daemon lives — so there is always an agy working and a session's first
+	// question about an unfamiliar file is answered from the store.
+	//
+	// Its own goroutine and its own drain, like the two loops above: the
+	// deferred db.Close() runs last, so a pass in flight always finishes
+	// against an open store.
+	scanner := brain.NewSupervisor(cfg, brain.SupervisorDeps{
+		Core:    knowledge,
+		Hashes:  db,
+		Cursors: db,
+		Counter: db,
+		Probe:   router.Provider(llm.Distill),
+		Log:     slog.Default(),
+	})
+	scanCtx, stopScan := context.WithCancel(ctx)
+	defer stopScan()
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(scanDone)
+		scanner.Run(scanCtx)
+	}()
+	defer func() {
+		stopScan()
+		<-scanDone
+	}()
+
 	bus := events.NewBus()
 	defer bus.Close()
 
@@ -229,6 +259,12 @@ func run() error {
 		// needs both: the bus is lossy by design, the transcript is the record.
 		Events:      bus,
 		Transcripts: runner,
+
+		// The Brain tab: the resident scan, the node core behind node detail,
+		// and the store behind the graph.
+		BrainScan:  scanner,
+		Brain:      knowledge,
+		BrainGraph: db,
 	}
 	// Set the interface field only when there is a real pipeline behind it: a
 	// nil *leadgen.Pipeline in an interface is still a non-nil interface, and

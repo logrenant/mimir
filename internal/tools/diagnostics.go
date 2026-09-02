@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/crawl"
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/mapscrape"
 	"github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/memory"
@@ -44,6 +46,7 @@ type diagVersions struct {
 	Crawl4AIImage  string `json:"crawl4ai_image"`
 	MapScrapeImage string `json:"mapscrape_image"`
 	ClaudeModel    string `json:"claude_model"`
+	DistillModel   string `json:"distill_model"`
 }
 
 // diagMemory reports whether the project memory has anything in it for the
@@ -60,8 +63,16 @@ type diagMemory struct {
 }
 
 type diagnosticsResponse struct {
-	Crawl4AI    diagDependency `json:"crawl4ai"`
+	Crawl4AI diagDependency `json:"crawl4ai"`
+
+	// The distil tier and the reason tier, separately, because since task-51
+	// they fail separately: agy has no fallback, so a healthy claude says
+	// nothing about whether a page can be summarised or a file distilled. The
+	// `claude` key keeps its literal meaning — the refiner's own health — and
+	// `agy` is the one an operator now has to look at first.
+	Agy         diagDependency `json:"agy"`
 	Claude      diagDependency `json:"claude"`
+	PDFText     diagDependency `json:"pdftotext"`
 	DuckDuckGo  diagDependency `json:"duckduckgo"`
 	MapsScraper diagDependency `json:"maps_scraper"`
 	Versions    diagVersions   `json:"versions"`
@@ -119,6 +130,7 @@ func (t *diagnosticsTool) Handle(ctx context.Context, _ json.RawMessage) (any, e
 			Crawl4AIImage:  crawl.ImageTag,
 			MapScrapeImage: mapscrape.ImageTag,
 			ClaudeModel:    t.cfg.ClaudeModel,
+			DistillModel:   t.cfg.DistillModel,
 		},
 	}
 
@@ -138,6 +150,44 @@ func (t *diagnosticsTool) Handle(ctx context.Context, _ json.RawMessage) (any, e
 		if err != nil {
 			res.Claude.Detail = err.Error()
 		}
+		return nil
+	})
+
+	g.Go(func() error {
+		// The distil tier itself, asked directly rather than through the
+		// refiner: `agy models` is the cheapest call that proves both that the
+		// binary runs and that it is signed in, and it is now the single point
+		// of failure for every summary, every recap and every scanned file.
+		p := llm.NewRouter(t.cfg).Provider(llm.Distill)
+		if p == nil {
+			res.Agy = diagDependency{Ok: false, Detail: "no distil provider configured"}
+			return nil
+		}
+		if err := p.Health(ctxGroup); err != nil {
+			res.Agy = diagDependency{Ok: false, Detail: err.Error()}
+		} else {
+			res.Agy = diagDependency{Ok: true}
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		// Optional in the same sense the Maps sidecar is: without poppler,
+		// PDFs are skipped and everything else still gets read. Reporting it
+		// as a break would paint a deliberately-poppler-less machine as broken.
+		res.PDFText = diagDependency{Optional: true}
+		bin, err := exec.LookPath(t.cfg.BrainScanPDFPath)
+		if err != nil {
+			res.PDFText.Detail = "pdftotext not found — PDFs are skipped (`brew install poppler` to index them)"
+			return nil
+		}
+		probeCtx, cancel := context.WithTimeout(ctxGroup, 2*time.Second)
+		defer cancel()
+		if err := exec.CommandContext(probeCtx, bin, "-v").Run(); err != nil {
+			res.PDFText.Detail = err.Error()
+			return nil
+		}
+		res.PDFText.Ok = true
 		return nil
 	})
 
