@@ -329,13 +329,14 @@ func TestLive_MCPRouteExposesTheCanonicalToolSet(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	// The keyless set: maps_search appears only where a Places key was
-	// provisioned (see newLive, and TestRegisterAll_MapsSearchFollowsTheCredential).
+	// The keyless set. maps_search is in it: region search no longer follows
+	// the Places credential, because its primary source is a local scrape that
+	// needs none (see TestRegisterAll_MapsSearchIsOfferedWithoutACredential).
 	want := []string{
 		"brain_ingest_data", "brain_ingest_github", "brain_query_nodes",
 		"brain_related", "brain_scan_repo", "diagnostics", "ecommerce_product_lookup",
 		"fetch_page", "gmaps_business_lookup", "instagram_profile_lookup",
-		"research", "tiktok_profile_lookup", "web_search",
+		"maps_search", "research", "tiktok_profile_lookup", "web_search",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("tool set over HTTP:\n got %v\nwant %v", got, want)

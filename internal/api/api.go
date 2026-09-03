@@ -30,6 +30,7 @@ import (
 	"github.com/logrenant/mimir/internal/leadgen"
 	mimirmcp "github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // ProjectRegistry is the folder registry this API exposes. Note the contract
@@ -49,6 +50,11 @@ type AccountRegistry interface {
 	List(ctx context.Context) ([]account.Account, error)
 	Get(ctx context.Context, id string) (account.Account, error)
 	Delete(ctx context.Context, id string) error
+	// Sync registers the slots a scan of the accounts directory found. The
+	// scan itself is the handler's, so this interface stays about the
+	// registry rather than about the filesystem.
+	Sync(ctx context.Context, slots []account.Slot) ([]account.Account, error)
+	SetBackground(ctx context.Context, id string) error
 }
 
 // CodeRunner owns the whole life of a coding task, not just its execution.
@@ -89,16 +95,36 @@ type TranscriptOpener interface {
 }
 
 // LeadGenRunner runs the Maps lead-gen pipeline end to end. *leadgen.Pipeline
-// satisfies it. Nil when no Places key is configured — the /maps/* routes are
-// then not registered, exactly as the maps_search tool is not.
+// satisfies it. It is no longer conditional on a Places key: the free scrape
+// provider needs no credential, so the /maps/* routes exist on every machine.
 type LeadGenRunner interface {
 	Run(ctx context.Context, req leadgen.RunRequest) (leadgen.Report, error)
+	Export(ctx context.Context, req leadgen.ExportRequest) (leadgen.ExportResult, error)
+}
+
+// RegionSourceReporter is what the diagnostics surface asks about region
+// search: which providers exist, and whether the first one is free.
+// *regionsearch.Router satisfies it.
+type RegionSourceReporter interface {
+	Sources() []string
+	Free() bool
 }
 
 // EmailStatusSetter records a human's decision on a drafted outreach email.
 // *store.Store satisfies it.
 type EmailStatusSetter interface {
 	SetOutreachEmailStatus(ctx context.Context, placeID, promptVersion, status string) error
+}
+
+// LeadLedger is the durable lead record behind the /maps/leads routes.
+// *store.Store satisfies it. Separate from LeadGenRunner because it fails
+// separately: a daemon whose store would not open can still run a search, and
+// one with no region source can still read what earlier runs found.
+type LeadLedger interface {
+	ListLeads(ctx context.Context, f store.LeadFilter) ([]store.LeadRow, error)
+	LeadCategoryCounts(ctx context.Context, f store.LeadFilter) ([]store.CategoryCount, error)
+	ListLeadRuns(ctx context.Context, limit int) ([]store.LeadRun, error)
+	OutreachEmailsFor(ctx context.Context, placeIDs []string, promptVersion string) (map[string]store.OutreachEmail, error)
 }
 
 // Deps are the collaborators the API serves. Every one is an interface so the
@@ -117,9 +143,15 @@ type Deps struct {
 	Transcripts TranscriptOpener
 
 	// LeadGen and Emails are both needed for the /maps/* routes; they are not
-	// registered unless LeadGen is present (it is nil without a Places key).
+	// registered unless LeadGen is present. Regions is what /diagnostics
+	// reports about the sources behind it.
 	LeadGen LeadGenRunner
 	Emails  EmailStatusSetter
+	Regions RegionSourceReporter
+
+	// Leads is the ledger — the reads that cost nothing. Gated on its own so a
+	// store that opened serves saved businesses even where a search cannot run.
+	Leads LeadLedger
 
 	// The three halves of the Brain tab, separately gated because they fail
 	// separately: the scan is a daemon-lifetime loop, the graph is three store
@@ -129,6 +161,11 @@ type Deps struct {
 	BrainScan  BrainScanner
 	Brain      BrainReader
 	BrainGraph BrainGraphStore
+
+	// Chat is the verbatim conversation archive. Gated on its own: it is a
+	// read over rows the ingest loop wrote, and it works on a daemon with no
+	// scan, no region source, and no runner.
+	Chat ChatArchiveReader
 }
 
 // Server owns the routes and the listener.
@@ -157,11 +194,18 @@ func (s *Server) Handler() http.Handler {
 	// Registered together with the runner they call: a nil Runner used to mean
 	// a nil-interface call inside the handler, which recoverPanics turned into
 	// a 500 for what is really a route that does not exist here.
+	// The interactive terminal needs no injected dependency — it runs the
+	// operator's own shell — so it is registered unconditionally.
+	mux.HandleFunc("GET /terminals/profiles", s.handleTerminalProfiles)
+	mux.HandleFunc("GET /ws/terminals/pty", s.handleTerminalPTY)
+
 	if s.deps.Accounts != nil {
 		mux.HandleFunc("GET /accounts", s.handleListAccounts)
 		mux.HandleFunc("POST /accounts", s.handleRegisterAccount)
 		mux.HandleFunc("DELETE /accounts/{id}", s.handleDeleteAccount)
 		mux.HandleFunc("GET /accounts/{id}/status", s.handleAccountStatus)
+		mux.HandleFunc("POST /accounts/scan", s.handleScanAccounts)
+		mux.HandleFunc("POST /accounts/background", s.handleSetBackgroundAccount)
 	}
 
 	if s.deps.Runner != nil {
@@ -200,10 +244,36 @@ func (s *Server) Handler() http.Handler {
 	if s.deps.Brain != nil {
 		mux.HandleFunc("GET /brain/nodes/{id}", s.handleBrainNode)
 	}
+	if s.deps.BrainGraph != nil {
+		mux.HandleFunc("GET /brain/nodes/{id}/versions", s.handleBrainNodeVersions)
+	}
+
+	// The model picker's allow-list. Registered unconditionally: it is a view
+	// of a constant, it costs nothing, and a client that can read it before
+	// the lead-gen deps are wired gets a picker that is right rather than
+	// empty.
+	mux.HandleFunc("GET /llm/providers", s.handleListLLMProviders)
 
 	if s.deps.LeadGen != nil {
 		mux.HandleFunc("POST /maps/leadgen", s.handleLeadgen)
+		mux.HandleFunc("POST /maps/leadgen/export", s.handleLeadgenExport)
 		mux.HandleFunc("POST /maps/emails/status", s.handleSetEmailStatus)
+	}
+
+	// The ledger reads. Registered apart from the run routes above: they need
+	// only the store, and they are the screen's opening state.
+	if s.deps.Leads != nil {
+		mux.HandleFunc("GET /maps/leads", s.handleListLeads)
+		mux.HandleFunc("GET /maps/leads/categories", s.handleLeadCategories)
+		mux.HandleFunc("GET /maps/leads/runs", s.handleListLeadRuns)
+	}
+
+	// The chat archive. Read-only: what a conversation said is not a decision
+	// a client gets to change, and the ingest loop is its only writer.
+	if s.deps.Chat != nil {
+		mux.HandleFunc("GET /chat/sessions", s.handleListChatSessions)
+		mux.HandleFunc("GET /chat/sessions/{id}", s.handleChatSession)
+		mux.HandleFunc("GET /chat/search", s.handleSearchChat)
 	}
 
 	if s.deps.MCP != nil {

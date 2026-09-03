@@ -419,3 +419,142 @@ func TestBrainProjects_CountsFilesAndKeepsTheGlobalScope(t *testing.T) {
 		t.Error("the global scope was filtered out; every node in it belongs to every project")
 	}
 }
+
+// --- version history -------------------------------------------------------
+
+func fileNode(hash string) BrainNodeRow {
+	n := node("node-f", "/p", "file", "internal/store/brain.go")
+	n.ContentHash = hash
+	n.SizeBytes = 1234
+	n.ModifiedAt = time.Unix(1_700_000_000, 0).UTC()
+	n.Assessment = "assessment at " + hash
+	return n
+}
+
+// The whole feature in one test: a file scanned, edited, and scanned again has
+// two readings; scanned again unchanged, it still has two.
+func TestUpsertBrainNode_RecordsAVersionWhenTheContentMoves(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if err := s.UpsertBrainNode(ctx, fileNode("hash-1")); err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	if err := s.UpsertBrainNode(ctx, fileNode("hash-2")); err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+
+	versions, err := s.BrainNodeVersions(ctx, "node-f", 10)
+	if err != nil {
+		t.Fatalf("BrainNodeVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("want 2 versions, got %d", len(versions))
+	}
+	if versions[0].ContentHash != "hash-2" {
+		t.Errorf("newest first: got %q", versions[0].ContentHash)
+	}
+	if versions[1].Assessment != "assessment at hash-1" {
+		t.Errorf("the superseded reading was lost: %q", versions[1].Assessment)
+	}
+	if versions[0].SizeBytes != 1234 || versions[0].ModifiedAt.IsZero() {
+		t.Errorf("the version lost the file's shape: %+v", versions[0])
+	}
+
+	// An unchanged re-scan writes nothing. Without this the history would grow
+	// by one row every fifteen minutes, forever.
+	if err := s.UpsertBrainNode(ctx, fileNode("hash-2")); err != nil {
+		t.Fatalf("third scan: %v", err)
+	}
+	if again, _ := s.BrainNodeVersions(ctx, "node-f", 10); len(again) != 2 {
+		t.Fatalf("an unchanged scan added a version: %d", len(again))
+	}
+}
+
+// A failed distil arrives with an empty content hash on purpose, so the file is
+// offered again next pass. Recording that would write a version saying the file
+// became unreadable.
+func TestUpsertBrainNode_NoVersionWithoutAContentHash(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	n := fileNode("")
+	if err := s.UpsertBrainNode(ctx, n); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if versions, _ := s.BrainNodeVersions(ctx, "node-f", 10); len(versions) != 0 {
+		t.Fatalf("want no versions, got %d", len(versions))
+	}
+}
+
+// A session or a commit has no comparable source, so it has no history either.
+func TestUpsertBrainNode_NonFileNodesKeepNoHistory(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if err := s.UpsertBrainNode(ctx, node("node-s", "/p", "session", "sess-1")); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if versions, _ := s.BrainNodeVersions(ctx, "node-s", 10); len(versions) != 0 {
+		t.Fatalf("want no versions, got %d", len(versions))
+	}
+}
+
+// A file edited every minute for a year must not become the largest table here.
+func TestUpsertBrainNode_PrunesToTheConfiguredBound(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	cfg.BrainVersionsPerNode = 3
+
+	s, err := Open(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	for i := range 8 {
+		n := fileNode("hash-" + string(rune('a'+i)))
+		n.UpdatedAt = time.Unix(1_700_000_000+int64(i), 0).UTC()
+		if err := s.UpsertBrainNode(ctx, n); err != nil {
+			t.Fatalf("scan %d: %v", i, err)
+		}
+	}
+
+	versions, err := s.BrainNodeVersions(ctx, "node-f", 50)
+	if err != nil {
+		t.Fatalf("BrainNodeVersions: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("want the history pruned to 3, got %d", len(versions))
+	}
+	if versions[0].ContentHash != "hash-h" {
+		t.Errorf("pruning kept the wrong end: newest is %q", versions[0].ContentHash)
+	}
+}
+
+// Reverting a file to a previous version is a real event and deserves its own
+// row — which is why the table is keyed by rowid, not by (node, hash).
+func TestUpsertBrainNode_ARevertIsItsOwnVersion(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	for i, h := range []string{"hash-1", "hash-2", "hash-1"} {
+		n := fileNode(h)
+		n.UpdatedAt = time.Unix(1_700_000_000+int64(i), 0).UTC()
+		if err := s.UpsertBrainNode(ctx, n); err != nil {
+			t.Fatalf("scan %d: %v", i, err)
+		}
+	}
+
+	versions, _ := s.BrainNodeVersions(ctx, "node-f", 10)
+	if len(versions) != 3 {
+		t.Fatalf("want 3 versions, got %d", len(versions))
+	}
+}
+
+func TestBrainNodeVersions_NilStoreTolerated(t *testing.T) {
+	var s *Store
+	if rows, err := s.BrainNodeVersions(context.Background(), "node-f", 10); err != nil || rows != nil {
+		t.Errorf("BrainNodeVersions on a nil store: %v %v", rows, err)
+	}
+}

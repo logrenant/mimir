@@ -21,8 +21,47 @@ no tags at all. One exit point is the fix, for the same reason
 
 | Class | What it is | Provider | Model |
 |---|---|---|---|
-| `Distill` | one-shot compression: a page summary, an episode recap, a node's assessment and tags, a closed-vocabulary classification | `agy` | `gemini-3.7-flash-high` |
+| `Distill` | one-shot compression: a page summary, an episode recap, a node's assessment and tags, a closed-vocabulary classification | `agy` | `gemini-3.8-flash-low` |
 | `Reason` | synthesis across sources, where the extra capability is worth paying for | `claude` | `claude-haiku-4-5-20251001` |
+
+### Two fallbacks, and why they are different fields
+
+`DistillFallback` moves work to another **provider**. It is empty on purpose
+(task-51): `agy` running dry must not hand the work — and the bill — to the
+operator's `claude` login behind their back.
+
+`DistillModelChain` moves work to another **model on the same provider**, and
+that is why it may be non-empty where the other may not. `agy` meters its
+models in two independent free pools: the Gemini tiers draw on one, the Claude
+and GPT-OSS tiers on a second. Exhausting the first says nothing about the
+second, so trying it reaches no paid login — it is the same free `agy`, spending
+a bucket that was already full. Shipped as
+`["gpt-oss-120b-medium", "claude-sonnet-4-6"]`: cheapest first, GPT-OSS leading
+because it is the only one of the three that does not think before answering.
+Opus is deliberately absent — it is the most expensive model `agy` offers, and
+the chain exists to protect the reserve rather than to spend it.
+
+The chain runs before the provider fallback, and both are suppressed by an
+explicit `Selection` for the same reason.
+
+The table is the *default*, not a law. `Router.CompleteWith` takes an
+`llm.Selection` — a provider name and a model name — and an operator can send
+one per lead-gen run. The class routing still answers everything the daemon
+starts on its own; the override exists for the one case the routing cannot
+serve, which is a run somebody is watching and paying for.
+
+Three properties of a selection are load-bearing, and all three are tested:
+
+- **It never mutates the router.** `Provider.WithModel` returns a copy. One
+  router serves every concurrent call in the daemon, so a per-request model
+  written through it would decide what somebody else's run spends.
+- **It suppresses the fallback.** A fallback is availability, and availability
+  is the daemon's policy; once an operator has named a provider, running
+  somewhere else spends a budget they did not choose.
+- **It is allow-listed, not free text.** Both names become argv to a
+  subprocess. `config.LLMProviders` is the whole vocabulary, `Config.HasLLMModel`
+  is the gate, and `GET /llm/providers` publishes it so the desktop picker is a
+  view of that table rather than a second copy of it.
 
 **There is no distil fallback (task-51).** There was one, and the reasoning was
 sound as far as it went: a provider that answered *badly* is never retried
@@ -91,6 +130,16 @@ designed degradation, and is retried on the next pass.
   session, so the better answer is worth having permanently, and the tier costs
   the same either way. What it costs is wall clock — a sweep of a whole machine
   takes noticeably longer at `-high` than at `-low`.
+
+- **Which account a claude call spends is injected, never imported.**
+  `Claude.UseEnviron` / `Router.UseEnviron` take a `func() []string`, and
+  `cmd/mimir-daemon` passes one that reads the marked account and calls
+  `account.Environ`. Two reasons for the shape: `internal/account` cannot be
+  imported here (account → store → refine → llm is a cycle), and the account can
+  change while the daemon runs, so the answer is read per call rather than
+  captured at construction. Unset means "inherit this process", which is what
+  `cmd/mimir-mcp` — with no account registry — can honestly say. Only the claude
+  provider takes it: `agy` is a different CLI with its own login.
 
 - **`Request.Schema` is always safe to set.** A provider that cannot enforce it
   leaves `Response.Structured` nil and the caller parses `Text` instead. That is

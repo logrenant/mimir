@@ -4,6 +4,280 @@ Bu dosya [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) biçimini,
 sürüm numaraları [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 kuralını izler.
 
+## [2.10.0] — 2026-09-03
+
+**Uygulamanın içindeki terminal artık gerçek bir terminal, ve bir modelin kotası
+dolduğunda bölge sınıflandırması boş dönmüyor.**
+
+### Eklendi
+
+- **İnteraktif kabuk** (`internal/ptyterm`). Terminals ekranındaki `KABUK`
+  bölümü, operatörün kendi giriş kabuğunu bir pty üzerinde çalıştırıyor —
+  `$SHELL -l -i`, Terminal.app'in başlattığı sürecin aynısı. oh-my-zsh,
+  eklentileri, prompt ve `.zshrc`'de tanımlı `claude-acct` fonksiyonu birebir
+  çalışıyor, çünkü aynı rc dosyalarını okuyan aynı kabuk. İki profil:
+  `salihdevran` prompt'a `claude`, `eziode` ise `claude-acct eziode` yazıyor.
+  Komut exec edilmiyor, *yazılıyor* — `claude-acct` bir kabuk fonksiyonu, exec
+  edilecek bir ikilisi yok, ve scrollback'te operatörün kendi yazacağı satır
+  görünüyor. `GET /terminals/profiles`, `GET /ws/terminals/pty`.
+- **İsim tabanlı kategori kuralı** (`CategoryForName`). Kazınan satırlarda
+  Google'ın `types[]` etiketi yok, bu yüzden ücretsiz kural katmanı her zaman
+  ıskalıyor ve her şirket modele düşüyordu; modelin kotası dolunca bütün bölge
+  `unknown` dönüyordu. Artık isim ticareti açıkça söylüyorsa ("yazılım",
+  "eczane") kural cevaplıyor. Ölçülen: 20 şirketin 18'i ücretsiz çözüldü.
+
+### Düzeltildi
+
+- **`claude` CLI'ın gerçek hatası artık görünüyor.** CLI kotası dolduğunda 1 ile
+  çıkıyor, stderr'i *boş* bırakıp sebebi stdout'a JSON olarak yazıyor. Kod
+  stdout'u atıp boş stderr'i raporladığı için "session limit" hatası "run
+  `claude login`" tavsiyesine dönüşüyordu — düzeltmesi imkânsız bir tavsiye.
+  Çıkış kodu sıfır olmasa da stdout okunuyor, ve 429 `ErrRateLimited` olarak
+  auth hatasından ayrılıyor.
+
+## [2.9.0] — 2026-09-03
+
+**Hiçbir şey oturumla birlikte kaybolmuyor: bulunan işletmeler bir defterde,
+konuşmalar olduğu gibi veritabanında, taranan dosyaların geçmişi kayıtlı.**
+
+### Eklendi
+
+- **Lead defteri** (task-63). Bir arama artık cevap verip unutmuyor. `leads`
+  tablosu işletme başına tek satır tutuyor — kategorisiyle, TTL'siz, kimsenin
+  okurken sildiği bir satır değil — ve `lead_runs` / `lead_run_members` hangi
+  aramanın ne zaman neyi bulduğunu saklıyor. `companies` ve `region_searches`
+  olduğu gibi kaldı: onlar önbellek, bu bir kayıt, ve ikisini aynı tabloya
+  koymak süresi dolan bir satırın kaydı sessizce silmesi demekti. Aynı arama
+  ikinci kez çalışınca `lead_runs` bir satır artıyor, `leads` artmıyor. Ücretsiz
+  kazıma telefonu boş döndürdüğünde daha önce Places'ten gelmiş numara
+  silinmiyor — `ON CONFLICT` dolu bir alanın üzerine boş yazmıyor.
+  `GET /maps/leads`, `/maps/leads/categories`, `/maps/leads/runs`.
+- **Kayıtlı işletmeler ekranı** (task-64). Lead-gen sekmesi artık boş bir panelle
+  değil, defterle açılıyor — "elimde hangi işletmeler var" sorusunun dürüst
+  cevabı bu. Süzme ve kategori sayımı daemon'da yapılıyor; ekranda duran sayfayı
+  süzmek "baktığınız iki yüz satırda ara" demek olurdu. Koşu geçmişi bir süzgeç,
+  taslak kararı satırın yanında.
+- **Sohbet arşivi** (task-65). Claude Code oturumları, Terminals'taki kodlama
+  koşuları ve agy konuşmaları artık **kelimesi kelimesine** veritabanında:
+  `chat_turns` her turu, `chat_fts` de aranabilir hâlini tutuyor. Bugüne kadar
+  yalnızca damıtılmış özet saklanıyordu ve ham metin `~/.claude/projects`
+  altındaki JSONL dosyasında duruyordu — o dosya silinince konuşma da gidiyordu.
+  Arşiv aynı ayrıştırmadan besleniyor (ikinci bir okuma yok, ikinci bir imleç
+  yok) ve **hiç model çağırmıyor**, ki aylardır biriken bir geçmişi almak fatura
+  değil taşıma olsun. `GET /chat/sessions`, `/chat/sessions/{id}`,
+  `/chat/search`.
+- **Dosya sürüm geçmişi** (task-67). Değişiklik tespiti zaten çalışıyordu — Brain
+  her taramada dosyanın ham baytlarının SHA-256'sını karşılaştırıyor ve
+  `~/development` ile `~/Documents` üzerinde on beş dakikada bir geçiyor — ama
+  yeni değerlendirme eskisinin üzerine yazılıyordu. Artık her farklı içerik
+  hash'i için bir satır: ne zaman, ne kadar büyüktü, ve o hâliyle ne anlama
+  geliyordu. Dosya içeriği saklanmıyor; git zaten baytları tutuyor, tutmadığı
+  şey okuma. Sürüm satırını `UpsertBrainNode` yazıyor, çağıran değil — eski hash
+  yalnızca orada görünür, ve böylece her ingest yolu geçmişi bedavaya kazanıyor.
+- **"Değişti, yeniden okundu"** (task-67, task-68). Tarama artık yeni bir dosyayı
+  değişmiş bir dosyadan ayırıyor; konsolda ayrı bir satır olarak görünüyor, ve
+  düğüm panelinde bir sürüm zaman çizelgesi var — bir satıra tıklayınca o
+  sürümün değerlendirmesi açılıyor.
+
+- **Lead-gen çalıştırmasında model seçimi.** Arama formuna iki açılır liste
+  geldi: sağlayıcı (`agy` — ücretsiz, ya da `claude` — kotanızdan) ve o
+  sağlayıcının modeli. Seçim, bir çalıştırmanın üç model aşamasının üçünü de
+  birden bağlıyor (`RunRequest.Selection` → `Run`'ın başında `.With(sel)`), ki
+  bir arama yarısı bir modelde yarısı başkasında bitmesin. Seçim yapılmadığında
+  hiçbir şey değişmiyor: sınıfa göre yönlendirme hâlâ varsayılan.
+  `GET /llm/providers` izin listesini yayımlıyor; `POST /maps/leadgen` bir
+  `provider`/`model` çifti alıyor ve listede olmayanı 400 ile reddediyor —
+  ikisi de bir alt sürecin argv'sine dönüştüğü için sessizce varsayılana
+  düşmek yanlış cevap. Bir seçim erişilebilirlik yedeğini de kapatıyor:
+  "bunu agy'de çalıştır" dedikten sonra sessizce claude'a geçmek, seçilmeyen
+  bir bütçeyi harcamak olurdu. Aşamaların önbellekleri seçimle ad alanına
+  ayrılıyor, yoksa farklı bir modele geçen çalıştırma öncekinin cevaplarını
+  okur ve seçici hiçbir şey yapmamış gibi görünürdü.
+
+### Düzeltildi
+
+- **`could not reach the daemon: timeout: global`.** Tauri kabuğu her daemon
+  çağrısına sabit 30 saniye veriyordu. Bir lead-gen çalıştırması ise bir bölgeyi
+  kazıyıp her şirketi sınıflandırıp kategori başına bir sentez üretiyor —
+  tasarımı gereği dakikalar sürüyor — ve bağlantı tüm bu süre boyunca açık
+  duruyor. Sonuç hataların en kötüsüydü: iş bitiyordu, cevap çöpe gidiyordu,
+  ekranda "daemon'a ulaşılamadı" yazıyordu. Artık bütçe rotaya göre veriliyor:
+  pipeline rotaları 45 dakika, geri kalanı 2 dakika, bağlanma ise ayrı ve kısa
+  (5 sn) — daemon loopback'te, bağlanamıyorsa ölüdür. Zaman aşımı mesajı da
+  hangi çağrının ne kadar beklediğini söylüyor.
+- **Ağ bütçeleri paket kaybeden bir hat için yeniden ölçüldü.** Yeniden iletim
+  saniyeler yiyor ve eski değerler çalışan bir isteği başarısız bir aşamaya
+  çevirecek kadar dardı: `SearchTimeout` 10→30 sn, `CrawlTimeout` 45→150 sn,
+  `RefineTimeout` 60→180 sn, `ResearchTimeout` 120→360 sn, `GMapsPageTimeout`
+  30→90 sn, `AgyPrintTimeout` 90→240 sn, `MapScrapeTimeout` 120→300 sn. Sabit,
+  ayar düğmesi değil (SD-1). Yoklama bunun dışında tutuldu — yeni
+  `LLMHealthTimeout` (20 sn): "bu CLI kurulu ve giriş yapılmış mı" sorusunun
+  cevabı ya hemen gelir ya hiç, ve kullanılamayan tek bir sağlayıcının
+  `/diagnostics`'i dakikalarca açık tutması gerekmiyor.
+
+### Değişti
+
+- **İki metin tavanı ayrıştırıcıdan tüketiciye taşındı.** `MaxPromptChars` (600)
+  ve `MaxAssistantChars` (1200) artık `internal/memory.toRow` içinde
+  uygulanıyor. Aynı ayrıştırmanın iki tüketicisi var ve talepleri zıt: özet satırı
+  küçük kalmalı, arşiv ise tam olarak o kırpılan metni saklamalı. Ayrıştırıcı
+  kırpsaydı arşiv her transkripti ikinci kez okumak zorunda kalırdı.
+
+## [2.8.0] — 2026-09-03
+
+**Lead-gen bir ekran değil, bir çalışma alanı oldu — ve kategoriler artık
+gerçekten dolu.**
+
+### Düzeltildi
+
+- **Her şirket `unknown` kategorisine düşüyordu.** Kazınan satırlarda Google
+  `types[]` yok, dolayısıyla kural katmanı boş dönüyor ve karar modele kalıyor;
+  o model de task-51'den beri agy-only ve agy bu makinede girişsiz. Artık
+  **yalnızca sınıflandırma** profili, sağlayıcı kullanılamıyorsa claude haiku'ya
+  düşüyor. task-51'in kapattığı makine çapındaki distil yedeği kapalı kalıyor:
+  bu yedek bir batch (yirmi şirket, birkaç yüz token) ve yalnızca operatörün
+  başlattığı bir çalışmada devreye giriyor. Kötü bir cevap tekrar denenmiyor —
+  o ikinci görüş olurdu, kullanılabilirlik değil.
+
+### Değişti
+
+- **Distil katmanı `gemini-3.8-flash-high`'a taşındı** (task-61). Sabitlenmiş bir
+  model etiketini bumplamak kendi başına bir iştir (SD-5); `-high` soneki modelle
+  birlikte taşındı, çünkü gerekçesi değişmedi. Bu aynı zamanda bir arızayı da
+  kapatıyor: bu makinede distil çağrıları boş stderr ile `exit status 1` veriyordu,
+  daemon'un birebir aynı çağrısı (şema ve scratch dizini dahil) 3.8'de `SUCCESS`
+  dönüyor. Önbellekler geçersizleştirilmedi — 3.7 ile üretilmiş özetler hâlâ
+  doğru özetler, ve `brain_nodes` her satırın hangi model tarafından yazıldığını
+  zaten kaydediyor.
+- **Şirket listesi.** Sol tarafta kategori rayı: her kategori, kaç şirket,
+  kaçının web sitesi yok ve kütlenin nerede olduğunu gösteren iki piksellik bir
+  metre. Sağda sıralanabilir, süzülebilir bir tablo — "web" sütunundaki *yok*
+  ekrandaki tek sıcak renk, çünkü operatörün aradığı şey o. Seçilen satırın
+  detayı yanda, seçili kategorinin boşluk analizi altta.
+- **Taslak ekranı.** Karar listesi olarak bir kuyruk (önce kararsızlar), sağda
+  tek seferde bir mektup — okunabilir ölçüde, ortalanmış, monospace değil.
+  `↑↓` gez, `g` gönderildi, `a` atla; işaretlemek bir sonrakine geçirir.
+- **Dürüst hata durumu.** Hiçbir şey sınıflandırılamadıysa başlık bunu söylüyor
+  ve çalışmanın kendi gerekçesini yazıyor — tek bir `unknown` kovasını sonuç
+  gibi göstermiyor.
+- Ekranın metinleri Türkçeleşti; Brain ve Dashboard ile aynı dil.
+- Sayma işleri `lib/leadgen.ts`'e taşındı ve test edildi: JSX içinde alınan
+  karar, kimsenin denetleyemediği karardır.
+
+## [2.7.0] — 2026-09-02
+
+**Kazınan şirketler artık bir Excel dosyası, ve scraper'ın kırıldığı yerde bir
+model duruyor.**
+
+### Eklendi
+
+- **Feed için model yedeği (claude haiku).** `internal/mapscrape`'in seçicileri
+  hiçbir şey okuyamadığında — o markup Google'ın ve haber vermeden değişir —
+  render edilmiş sayfa `internal/refine`'ın yeni `ExtractFeed` profiliyle
+  yeniden okunuyor. Bir şey ayrıştırabilen akış modele hiç gitmiyor: seçici yolu
+  id'yi ve koordinatı URL gramerinden okuyor, model bunu yapamaz. Kurtarılan her
+  satır yine `mapscrape:` önekini taşıyor.
+- **Üçüncü bir sağlayıcı.** `internal/mapsllm`: sidecar hiç ayağa kalkamayan
+  makinede aynı Maps sayfası Crawl4AI ile çekilip aynı profille okunuyor. Sıra
+  artık sidecar → model → Places, ve `regionsearch.Standard` bu sırayı tek yerde
+  kuruyor.
+- **İletişim zenginleştirme.** `internal/contacts` her şirketin kendi sitesini
+  bir kez açıp telefon/e-posta çıkarıyor: önce `tel:`/`mailto:`/alt bilgi
+  kalıpları, yalnızca onların bulamadığı sayfalarda claude haiku — ve modelin
+  cevabı da aynı kalıplardan geçiriliyor, yani "beş altı yedi" diye bir telefon
+  dosyaya girmiyor. Hiçbir alan tahmin edilmiyor; her satır hangi katmanın
+  baktığını kaydediyor, böylece boş hücre "arandı, bulunamadı" demek oluyor.
+- **Excel çıktısı.** `POST /maps/leadgen/export` bir `.xlsx` yazıyor: özet
+  sayfası + **her kategori için bir sayfa**, her satırda ulaşım bilgileri ve
+  "web sitesi var mı" sütunu. Masaüstünde "Excel'e aktar" düğmesi, iletişim
+  tamamlama anahtarı ve "Finder'da göster" — Finder komutu yalnızca exports
+  dizinini açabiliyor, WebView'a genel bir dosya açıcı verilmedi.
+
+### Değişti
+
+- `internal/regionsearch` sıralı bir sağlayıcı listesi tutuyor (ikili değil).
+- `internal/refine` altı profile çıktı; iki yeni çıkarım profili distil yerine
+  Reason (claude) sınıfında: ikisi de ancak daha ucuz bir şey başarısız olduktan
+  sonra çalışıyor, ve en çok düşen katmana bağlı bir yedek yedek değildir.
+- Yeni bağımlılık: `github.com/xuri/excelize/v2 v2.9.1` (sabit sürüm).
+
+## [2.6.0] — 2026-09-02
+
+**Bölgesel şirket araması artık hiçbir Google API anahtarı istemiyor.** Ücretsiz
+scraper (`internal/mapscrape` + `deploy/playwright-maps`) task-28'den beri
+duruyordu ama ulaşılamıyordu: `cmd/mimir-daemon` lead-gen pipeline'ını yalnızca
+`PlacesAPIKey` varsa kuruyordu, yani anahtarsız makinede ne `/maps/*` rotaları
+ne `maps_search` ne de lead-gen vardı.
+
+### Düzeltildi
+
+- **Anahtarsız makinede bölge araması diye bir şey yoktu.** Artık kaynak sırası
+  tek bir yerde (`internal/regionsearch`) ve **önce bedava olan** deneniyor:
+  yerel scrape birincil, faturalı Places yedek. Bunun iki sonucu var — anahtarsız
+  makinenin tam bölge araması oluyor, ve anahtarsız yol artık her makinenin
+  geçtiği yol, yalnızca anahtarsızların düştüğü test edilmemiş bir dal değil.
+- **Sıra iki yerde yazılıydı ve ikisi aynı şeyi söylemiyordu.** Pipeline "Places,
+  sonra scrape" diyordu, `maps_search`'ün kaydı ise "Places ya da hiç". İkisi de
+  artık aynı router'ı kullanıyor.
+
+### Eklendi
+
+- `internal/regionsearch` — sağlayıcı sırası, sağlanabilirlik ve hangi kaynağın
+  cevapladığı. Faturalı bir cevap bunu not olarak söylüyor.
+- **Sidecar'ı daemon kendi başlatıyor.** Bağlantı reddedilirse
+  `mapscrape.EnsureRunning` `docker compose up -d` çalıştırıp `/health`'i bekliyor
+  ve istek bir kez tekrarlanıyor. Kimlik bilgisi istemeyen bir yetenek terminal de
+  istememeli. Compose dosyası `scripts/install-agent.sh` ile binary'nin yanına
+  kuruluyor — launchd ile başlayan daemon'un bulabileceği bir repo yok.
+- `maps_search` her makinede kayıtlı; açıklaması hangi kaynağın cevaplayacağını
+  söylüyor ("hiçbir şey harcamaz" / "faturalanır"), yanıt `source` ve notları
+  taşıyor. `/diagnostics` `region_sources` + `region_search_free` bildiriyor.
+- Masaüstü: sonuç başlığında `scrape · ücretsiz` / `places · faturalı` rozeti —
+  boş telefon sütunu artık eksik veri değil, kaynak farkı olarak okunuyor.
+
+## [2.5.0] — 2026-09-02
+
+**Hesap ayrımı artık Mimir'de de çalışıyor.** Mekanizma task-37'den beri
+doğruydu; eksik olan kayıttı, ve kayıt hiç yapılmamıştı: `accounts` tablosu boş
+olduğu için hesap seçicide yalnızca "Otomatik" vardı, dispatcher tek bir
+sentetik varsayılan yuva görüyordu ve ikinci kimlik hiç harcanmıyordu.
+
+### Düzeltildi
+
+- **İkinci hesap hiç kullanılmıyordu.** Bir yuva, ancak biri uygulamada dizinini
+  seçtiğinde vardı. Artık `~/.claude-accounts` otorite: daemon açılışta tarıyor,
+  `POST /accounts/scan` istek üzerine tarıyor, ve kayıt dizine göre idempotent.
+  Kural kabuktakiyle birebir aynı (`claude-acct` / `claude-who`): varsayılan yuva
+  = değişkenin *hiç* set edilmemesi, `default`/`a`/`salihdevran` adlı bir dizin de
+  o varsayılana çöker. İki kimlik = aynı anda iki task.
+- **Daemon'un kendi model çağrıları rastgele bir hesabı harcıyordu.**
+  `internal/llm/claude.go` hiç `cmd.Env` kurmuyordu, yani refine/distill/recap
+  daemon'u kim başlattıysa onun kimliğini — bir dev kabuğunda operatörün kendi
+  oturumunu — harcıyordu. Artık `account.Environ` uygulanıyor ve harcanacak yuva
+  işaretlenebiliyor (`POST /accounts/background`, boş id = CLI'ın varsayılanı).
+  Aynı düzeltme oturum değişkenlerinin (`CLAUDECODE`, oturum id'si, mesajlaşma
+  soketi) alt süreçlere sızmasını da bitiriyor.
+
+### Eklendi
+
+- `0015_account_slots.sql` — `accounts` üzerinde `discovered` ve `is_background`,
+  ve en fazla bir arka plan yuvası olsun diye kısmi tekil indeks.
+- `internal/account/discover.go` — `Discover` + `Registry.Sync`. Yalnızca ekler:
+  dizini silinmiş bir yuvanın satırı kalır, çünkü ona iğnelenmiş bir run olabilir
+  ve doğru rapor kırmızı bir probe'dur, kuyruğun altından kaybolan bir satır değil.
+- `internal/config` — `ClaudeAccountsDir` (test override'ı
+  `MIMIR_CLAUDE_ACCOUNTS_DIR`). Kabuğun kendi `CLAUDE_ACCOUNTS_DIR`'ı bilerek
+  okunmuyor: daemon launchd altında onu görmüyor, okumak da hangi hesapların var
+  olduğunu "daemon'u kim başlattı"ya bağlardı.
+- Masaüstü: taramadan gelen satırda "unut" yerine "taramadan", her satırda "arka
+  plan" işareti, ve yenile artık listelemeden önce tarıyor.
+
+### Değişti
+
+- **Taramadan gelen bir yuva uygulamadan unutulamıyor** (`ErrAccountDiscovered`,
+  409). Dosya sistemi otorite: unutmak, bir sonraki taramanın geri aldığı bir söz
+  olurdu. Kaldırmak dizini silmekle olur.
+
 ## [2.4.0] — 2026-09-02
 
 **Brain yeniden kuruldu, ve ucuz iş ucuz modele taşındı.** Bir önceki sürümde

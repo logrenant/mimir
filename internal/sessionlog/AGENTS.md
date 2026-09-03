@@ -84,3 +84,17 @@ line, under
 - The prompt is fenced in `<USER_REQUEST>`; everything after it in a
   `USER_INPUT` record is machinery — local time, open editors, settings changes
   — that would otherwise become the episode's prompt.
+
+## The two text ceilings live with the consumer (task-65)
+
+`MaxPromptChars` and `MaxAssistantChars` are declared here and applied by
+`internal/memory.toRow`, not by the parsers. That looks backwards until you
+count the consumers: since task-65 the same parse feeds two tables with
+opposite requirements — an episode row that must stay small enough to put in a
+recap prompt, and a chat archive whose only job is to keep the text. A parser
+that clipped would have forced the archive to read every transcript a second
+time.
+
+The other four bounds are accumulation caps and stay in the parsers: they limit
+what a builder gathers while reading, and no consumer can recover what was
+never gathered.

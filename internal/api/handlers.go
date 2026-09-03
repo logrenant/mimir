@@ -43,12 +43,19 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 type daemonHealth struct {
-	OK               bool                  `json:"ok"`
-	Version          string                `json:"version"`
-	UptimeMs         int64                 `json:"uptime_ms"`
-	Store            string                `json:"store"`
-	Projects         int                   `json:"projects"`
-	PlacesConfigured bool                  `json:"places_configured"`
+	OK               bool   `json:"ok"`
+	Version          string `json:"version"`
+	UptimeMs         int64  `json:"uptime_ms"`
+	Store            string `json:"store"`
+	Projects         int    `json:"projects"`
+	PlacesConfigured bool   `json:"places_configured"`
+	// RegionSources names the region-search providers in the order they will
+	// be tried, and RegionSearchFree says whether the first one spends
+	// nothing. PlacesConfigured alone stopped describing this the moment the
+	// free scrape became the primary: a machine with no key is not a machine
+	// without region search.
+	RegionSources    []string              `json:"region_sources"`
+	RegionSearchFree bool                  `json:"region_search_free"`
 	CodingRuns       *store.CodingRunStats `json:"coding_runs,omitempty"`
 }
 
@@ -67,6 +74,11 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		UptimeMs:         time.Since(s.started).Milliseconds(),
 		Store:            "ok",
 		PlacesConfigured: s.cfg.PlacesAPIKey != "",
+		RegionSources:    []string{},
+	}
+	if s.deps.Regions != nil {
+		health.RegionSources = s.deps.Regions.Sources()
+		health.RegionSearchFree = s.deps.Regions.Free()
 	}
 
 	if s.deps.Store != nil {
@@ -151,6 +163,54 @@ type accountListResponse struct {
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts, err := s.deps.Accounts.List(r.Context())
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	if accounts == nil {
+		accounts = []account.Account{}
+	}
+	writeJSON(w, http.StatusOK, accountListResponse{Accounts: accounts})
+}
+
+// handleScanAccounts re-reads the accounts directory and registers what it
+// finds.
+//
+// The daemon already scans at startup, so this is for the moment after the
+// operator creates a slot and signs into it: they click refresh in the app
+// rather than restarting a background service. Adding only — a row whose
+// directory has since gone stays, because a run may be pinned to it and a
+// failing probe is the honest report for it.
+func (s *Server) handleScanAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts, err := s.deps.Accounts.Sync(r.Context(), account.Discover(s.cfg.ClaudeAccountsDir))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	if accounts == nil {
+		accounts = []account.Account{}
+	}
+	writeJSON(w, http.StatusOK, accountListResponse{Accounts: accounts})
+}
+
+type backgroundAccountRequest struct {
+	// AccountID is the slot the daemon's own model calls spend — refine,
+	// distil, recap. Empty clears the choice, which means the CLI's own slot:
+	// that is a real answer, not a missing one, so this route sets a value
+	// rather than deleting a resource.
+	AccountID string `json:"account_id"`
+}
+
+func (s *Server) handleSetBackgroundAccount(w http.ResponseWriter, r *http.Request) {
+	var req backgroundAccountRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.deps.Accounts.SetBackground(r.Context(), req.AccountID); err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
 	accounts, err := s.deps.Accounts.List(r.Context())
 	if err != nil {
 		writeDomainError(w, r, err)

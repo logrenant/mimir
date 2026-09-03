@@ -13,6 +13,7 @@ import (
 
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/sessionlog"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -387,5 +388,106 @@ func TestIngest_RequiresAResolvedPath(t *testing.T) {
 	h := newHarness(t)
 	if _, err := h.mem.Ingest(context.Background(), Project{}, 1); err == nil {
 		t.Fatal("want an error for an empty project path")
+	}
+}
+
+// --- the chat archive ------------------------------------------------------
+
+// countingArchive records what the ingest hands the archive. It has no store
+// behind it on purpose: what is under test here is the seam, not SQLite.
+type countingArchive struct {
+	calls atomic.Int32
+	rows  []store.ChatTurnRow
+	err   error
+}
+
+func (a *countingArchive) PutChatTurn(_ context.Context, t store.ChatTurnRow) error {
+	a.calls.Add(1)
+	if a.err != nil {
+		return a.err
+	}
+	a.rows = append(a.rows, t)
+	return nil
+}
+
+func TestIngest_ArchivesEveryTurn(t *testing.T) {
+	h := newHarness(t)
+	archive := &countingArchive{}
+	h.mem.UseArchive(archive)
+	h.writeSession(t, "a.jsonl", "add a retry", "remove the retry")
+
+	if _, err := h.mem.Ingest(context.Background(), h.project, 0); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if got := archive.calls.Load(); got != 2 {
+		t.Fatalf("want a turn archived per episode, got %d", got)
+	}
+	if archive.rows[0].UserPrompt != "add a retry" {
+		t.Errorf("the prompt did not reach the archive: %q", archive.rows[0].UserPrompt)
+	}
+	if archive.rows[0].ProjectPath != h.project.Path {
+		t.Errorf("the turn lost its project: %q", archive.rows[0].ProjectPath)
+	}
+	if archive.rows[0].SourceKind == "" || archive.rows[0].EpisodeKey == "" {
+		t.Errorf("a turn must carry its source and key: %+v", archive.rows[0])
+	}
+}
+
+// Archiving is deterministic. A model call here would turn a backfill over
+// months of transcripts into a bill.
+func TestIngest_ArchiveSpendsNoModelCall(t *testing.T) {
+	h := newHarness(t)
+	h.mem.UseArchive(&countingArchive{})
+	h.writeSession(t, "a.jsonl", "add a retry")
+
+	if _, err := h.mem.Ingest(context.Background(), h.project, 0); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if got := h.refiner.calls.Load(); got != 0 {
+		t.Fatalf("the archive path made %d model calls", got)
+	}
+}
+
+// The row is an index entry and the archive is the record: the episode's text
+// is clipped, the archived turn's is not.
+func TestIngest_ArchiveKeepsWhatTheRowClips(t *testing.T) {
+	h := newHarness(t)
+	archive := &countingArchive{}
+	h.mem.UseArchive(archive)
+
+	long := strings.Repeat("uzun bir istek ", 200) // well past MaxPromptChars
+	h.writeSession(t, "a.jsonl", long)
+
+	if _, err := h.mem.Ingest(context.Background(), h.project, 0); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if len(archive.rows) != 1 {
+		t.Fatalf("want 1 archived turn, got %d", len(archive.rows))
+	}
+	if len([]rune(archive.rows[0].UserPrompt)) <= sessionlog.MaxPromptChars {
+		t.Fatalf("the archive stored a clipped prompt: %d runes", len([]rune(archive.rows[0].UserPrompt)))
+	}
+
+	rows, err := h.store.RecentEpisodes(context.Background(), h.project.Path, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("RecentEpisodes: %d rows, err=%v", len(rows), err)
+	}
+	stored := decodeFacts(rows[0].FactsJSON).Prompt
+	if len([]rune(stored)) > sessionlog.MaxPromptChars+2 {
+		t.Errorf("the episode row kept an unclipped prompt: %d runes", len([]rune(stored)))
+	}
+}
+
+// A memory with no archive is the memory as it was before task-65.
+func TestIngest_WithoutAnArchiveStillStoresEpisodes(t *testing.T) {
+	h := newHarness(t)
+	h.writeSession(t, "a.jsonl", "add a retry")
+
+	stats, err := h.mem.Ingest(context.Background(), h.project, 0)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if stats.Episodes != 1 {
+		t.Fatalf("want 1 episode, got %d", stats.Episodes)
 	}
 }

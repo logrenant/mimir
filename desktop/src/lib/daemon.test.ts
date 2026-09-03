@@ -121,6 +121,62 @@ describe("request", () => {
   });
 });
 
+describe("accounts", () => {
+  test("a rescan is a POST with no body", async () => {
+    withDaemon({ status: 200, body: JSON.stringify({ accounts: [] }) });
+
+    await api.scanAccounts();
+
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "POST",
+      path: "/accounts/scan",
+      body: null,
+    });
+  });
+
+  // The empty id is the answer "the CLI's own slot", not a missing field: a
+  // client that dropped it would leave the daemon on whatever it had.
+  test("clearing the background slot sends the empty id", async () => {
+    withDaemon({ status: 200, body: JSON.stringify({ accounts: [] }) });
+
+    await api.setBackgroundAccount("");
+
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "POST",
+      path: "/accounts/background",
+      body: JSON.stringify({ account_id: "" }),
+    });
+  });
+});
+
+describe("lead-gen export", () => {
+  // The export takes the same search the run takes plus the file's own
+  // options: the region cache is what keeps that from being a second search.
+  test("posts the search and the enrich flag", async () => {
+    withDaemon({
+      status: 200,
+      body: JSON.stringify({
+        path: "/Users/x/exports/Kadikoy-20260902-210405.xlsx",
+        sheets: ["Özet", "health"],
+        companies: 5,
+        with_phone: 3,
+        with_email: 2,
+        with_website: 4,
+        enriched: true,
+      }),
+    });
+
+    const res = await api.exportLeadgen({ query: "Kadıköy diş kliniği", region: "Kadıköy", enrich: true });
+
+    expect(res.sheets).toEqual(["Özet", "health"]);
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "POST",
+      path: "/maps/leadgen/export",
+      body: JSON.stringify({ query: "Kadıköy diş kliniği", region: "Kadıköy", enrich: true }),
+    });
+  });
+});
+
 describe("lead-gen", () => {
   test("runLeadgen POSTs the request body and returns the Report", async () => {
     const report = {
@@ -230,5 +286,43 @@ describe("brain routes", () => {
 
     await api.brainGraph();
     expect(path).toBe("/brain/graph");
+  });
+});
+
+describe("the lead ledger", () => {
+  test("an empty filter asks for the daemon's own defaults", async () => {
+    withDaemon({ status: 200, body: JSON.stringify({ companies: [], limit: 200, offset: 0 }) });
+
+    await api.listLeads();
+
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "GET",
+      path: "/maps/leads",
+      body: null,
+    });
+  });
+
+  test("only the fields that are set reach the query string", async () => {
+    withDaemon({ status: 200, body: JSON.stringify({ companies: [], limit: 200, offset: 0 }) });
+
+    await api.listLeads({ category: "health", q: "", without_website: true });
+
+    const call = invoke.mock.calls.find((c) => c[0] === "daemon_request");
+    const path = (call?.[1] as { path: string }).path;
+    expect(path).toContain("category=health");
+    expect(path).toContain("without_website=1");
+    expect(path).not.toContain("q=");
+    expect(path).not.toContain("limit=");
+  });
+
+  test("a Turkish filter is encoded, not sent raw", async () => {
+    withDaemon({ status: 200, body: JSON.stringify({ categories: [] }) });
+
+    await api.leadCategories({ q: "Kadıköy diş" });
+
+    const call = invoke.mock.calls.find((c) => c[0] === "daemon_request");
+    const path = (call?.[1] as { path: string }).path;
+    expect(path.startsWith("/maps/leads/categories?q=")).toBe(true);
+    expect(path).not.toContain(" ");
   });
 });

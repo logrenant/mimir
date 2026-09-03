@@ -8,6 +8,7 @@ import {
   DaemonError,
   type BrainGraph,
   type BrainNodeDetail,
+  type BrainNodeVersion,
   type BrainProject,
   type BrainScanStatus,
 } from "../lib/daemon";
@@ -20,6 +21,7 @@ import {
   layout,
   pollInterval,
   screenToWorld,
+  versionLines,
   visibleLabels,
   worldSize,
   zoomAt,
@@ -46,6 +48,7 @@ export function Brain() {
   const [graphError, setGraphError] = useState<string | null>(null);
   const [selectedID, setSelectedID] = useState<string | null>(null);
   const [selected, setSelected] = useState<BrainNodeDetail | null>(null);
+  const [versions, setVersions] = useState<BrainNodeVersion[]>([]);
   const [busy, setBusy] = useState(false);
   const [full, setFull] = useState(false);
 
@@ -114,10 +117,19 @@ export function Brain() {
       }
       setSelectedID(id);
       setSelected(null);
+      setVersions([]);
       void api
         .brainNode(id)
-        .then((res) => setSelected(res.node))
-        .catch(() => setSelected(null));
+        .then((res) => {
+          setSelected(res.node);
+          // History rides node detail, so there is no second request for the
+          // common case of a file with one reading.
+          setVersions(res.versions ?? []);
+        })
+        .catch(() => {
+          setSelected(null);
+          setVersions([]);
+        });
     },
     [selectedID],
   );
@@ -164,7 +176,7 @@ export function Brain() {
               ))}
             </CardBody>
           </Card>
-          <NodePanel node={selected} onOpen={pickNode} />
+          <NodePanel node={selected} versions={versions} onOpen={pickNode} />
         </div>
       </div>
 
@@ -187,7 +199,7 @@ export function Brain() {
             full
             onToggleFull={() => setFull(false)}
           />
-          <NodePanel node={selected} onOpen={pickNode} />
+          <NodePanel node={selected} versions={versions} onOpen={pickNode} />
         </div>
       )}
     </div>
@@ -583,9 +595,11 @@ function ViewButton({ label, title, onClick }: { label: string; title?: string; 
 
 function NodePanel({
   node,
+  versions,
   onOpen,
 }: {
   node: BrainNodeDetail | null;
+  versions: BrainNodeVersion[];
   onOpen: (id: string | null) => void;
 }) {
   if (!node) {
@@ -612,6 +626,7 @@ function NodePanel({
             ))}
           </div>
         )}
+        <VersionTimeline versions={versions} />
         {node.neighbors && node.neighbors.length > 0 && (
           <div className="flex flex-col gap-1 border-t border-edge pt-2">
             <span className="label text-muted">komşular</span>
@@ -629,6 +644,55 @@ function NodePanel({
         )}
       </CardBody>
     </Card>
+  );
+}
+
+/**
+ * What this file used to mean.
+ *
+ * Brain re-reads a file whose bytes changed and writes a new assessment over
+ * the old one; the store keeps the old readings, and this is where they are
+ * legible. Only shown when there is more than one — a file read once has a
+ * history of exactly what is already on screen above.
+ *
+ * There is no diff and no file content, because none is stored: the file is on
+ * disk, and what git does not keep is the reading.
+ */
+function VersionTimeline({ versions }: { versions: BrainNodeVersion[] }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const lines = useMemo(() => versionLines(versions), [versions]);
+
+  if (lines.length < 2) return null;
+
+  return (
+    <div className="flex flex-col gap-1 border-t border-edge pt-2">
+      <span className="label text-muted">geçmiş · {lines.length} sürüm</span>
+      {lines.map((v) => {
+        const expanded = open === v.hash;
+        return (
+          <div key={v.hash}>
+            <button
+              onClick={() => setOpen(expanded ? null : v.hash)}
+              className="flex w-full items-baseline justify-between gap-2 text-left text-[11px] hover:text-electric"
+            >
+              <span className={v.current ? "text-text" : "text-muted"}>
+                {v.when}
+                {v.current && <span className="ml-1.5 text-[10px] text-muted">şimdiki</span>}
+              </span>
+              <span className="shrink-0 font-mono text-[10px] text-muted">
+                {v.size && <span className="mr-1.5">{v.size}</span>}
+                {v.shortHash}
+              </span>
+            </button>
+            {expanded && v.assessment && (
+              <p className="mt-1 border-l-2 border-edge pl-2 text-[11px] leading-relaxed text-muted">
+                {v.assessment}
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

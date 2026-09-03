@@ -92,7 +92,7 @@ force-directed picture of the nodes and their edges (`GET /brain/graph`,
 same scan without a session in the middle: it finds every project under a root —
 git checkouts, and the directories that never became one but hold files of their
 own — and runs each to completion, logging progress to stderr. One
-`gemini-3.7-flash-high` call per file through `agy`; `-n` reports the bill and
+`gemini-3.8-flash-high` call per file through `agy`; `-n` reports the bill and
 spends nothing. A node that could not be distilled keeps no content hash, so a
 provider that was down for part of a run is retried by the next one rather than
 skipped forever.
@@ -154,11 +154,23 @@ subprotocol.
 | `GET /diagnostics` | daemon health + store status + project count + `places_configured` + coding-run stats (total / running / failed / summed `cost_usd`) + the MCP `diagnostics` payload |
 | `GET /projects` | list registered project folders |
 | `POST /projects` | `{ path }` → canonicalize (`Abs`+`EvalSymlinks`), reject `/`, `$HOME`, denylisted roots, must be an existing dir → returns an opaque `project_id`. **No default project ever.** |
-| `POST /coding-tasks` | `{ project_id, prompt }` → starts a folder-scoped streaming `claude` session, returns a `run_id` |
+| `GET /accounts` · `POST /accounts` · `DELETE /accounts/{id}` | the Claude Code credential slots — one directory per identity. A discovered slot cannot be deleted: the accounts directory decides it exists |
+| `POST /accounts/scan` | re-read `~/.claude-accounts` and register what it holds (the daemon also does this at startup) |
+| `GET /accounts/{id}/status` | live `claude auth status` for one slot — who is signed in, and on what plan. Costs nothing |
+| `POST /accounts/background` | `{ account_id }` → which slot the daemon's **own** model calls spend; empty means the CLI's default |
+| `POST /coding-tasks` | `{ project_id, prompt, account_id? }` → starts a folder-scoped streaming `claude` session, returns a `run_id` |
 | `GET /coding-tasks/{id}` | run metadata / status / cost |
 | `GET /ws/runs/{id}` | WebSocket: replays the run's JSONL transcript, then follows the live event bus — `RunStarted`, `TextDelta`, `ReasoningDelta`, `ToolCall`, `ToolResult`, `RunCompleted`, `RunFailed`, `rate_limit`; stitched on `Event.Seq` so a lossy bus never shows a hole |
-| `POST /maps/leadgen` | `{ query, region, count, language_code, region_code, near, gap_analysis, emails }` → runs the lead-gen pipeline (§5); registered only with a Places key |
-| `POST /maps/emails/status` | `{ place_id, status }` where status ∈ draft / sent / skipped — SQL blocks regeneration of a `sent`/`skipped` draft on a region re-run; registered only with a Places key |
+| `POST /maps/leadgen` | `{ query, region, count, language_code, region_code, near, gap_analysis, emails, provider?, model? }` → runs the lead-gen pipeline (§5). **No Google credential needed** — the free scrape is the primary source. `provider`/`model` override which tier the model stages spend; omit both to route by class |
+| `POST /maps/leadgen/export` | the same body plus `{ enrich, dir }` → writes an `.xlsx` (summary sheet + one per category) and returns its path and counts |
+| `GET /llm/providers` | the provider/model allow-list the `provider`/`model` fields are checked against, plus what a run gets when it sends neither. Answers on any daemon — the desktop picker is a view of this, not a copy of it |
+| `POST /maps/emails/status` | `{ place_id, status }` where status ∈ draft / sent / skipped — SQL blocks regeneration of a `sent`/`skipped` draft on a region re-run |
+| `GET /maps/leads` | the lead ledger: every business a run has ever returned, with its category and the status of its outreach draft. Filters: `category`, `run_id`, `q`, `without_website`, `limit`, `offset`. Costs nothing and searches nothing |
+| `GET /maps/leads/categories` | the category rail, counted over the whole ledger under the same filter |
+| `GET /maps/leads/runs` | the run history: which search found what, and when |
+| `GET /chat/sessions` · `GET /chat/sessions/{id}` | the verbatim conversation archive — Claude Code sessions, this daemon's own coding runs, and agy conversations, turn by turn |
+| `GET /chat/search` | full-text over what was actually said, scoped by project id |
+| `GET /brain/nodes/{id}/versions` | a node's history: one entry per distinct content hash the source has carried, with the assessment that version produced |
 | `/mcp`, `/mcp/` | the full MCP tool set over StreamableHTTP — same registry, same choke-point as stdio |
 
 ---
@@ -184,7 +196,60 @@ second-by-second.
 - **Graceful shutdown.** On SIGTERM the daemon drains in-flight runs before
   exiting.
 
+**Capacity is one run per identity, and the identities come from disk.** A
+credential slot is a directory the CLI hashes into a keychain entry name
+(`CLAUDE_SECURESTORAGE_CONFIG_DIR`), so `~/.claude-accounts/<name>` is an
+account and no directory at all is the CLI's own. The daemon scans that tree at
+startup — the same convention the operator's shell (`claude-acct`, `claude-who`)
+already uses — so a slot signed in from the terminal is a lane here without
+being registered twice. Two identities means two tasks at once; a task may pin
+one or leave it automatic. Mimir never reads, moves or invalidates a
+credential: it only points a subprocess at a slot.
+
+The daemon's own model calls — refine, distil, recap — are not dispatched runs,
+so they spend the slot marked as the background account, or the CLI's default
+when none is marked.
+
 Needs: the `claude` CLI on `$PATH` and logged in.
+
+---
+
+### Region search needs no Google credential
+
+`internal/regionsearch` asks the providers in one fixed order, **free first**:
+
+| Order | Provider | Costs | Gives |
+|---|---|---|---|
+| 1 | `internal/mapscrape` — the public Maps results feed, rendered by a local Playwright container | nothing; no credential | name, coordinates, rating, review count, sometimes a website and an address |
+| 2 | `internal/mapsllm` — the same page through Crawl4AI, read by claude haiku | model tokens; no Google money | the same fields, when the page renders at all |
+| 3 | `internal/maps` — Google Places API | a billed request each | the above plus phone, a formatted address and Google's `types[]` |
+
+The model is also the scraper's own recovery path: when the selectors read
+nothing — Google owns that markup and changes it without notice — the rendered
+page is re-read by the same profile rather than the region being reported empty.
+A feed that parsed anything never reaches the model, and no prompt here is
+allowed to produce a business that was not on the page.
+
+The container is not the operator's problem: a search that finds it down runs
+`docker compose up -d` against the compose file installed beside the daemon,
+waits for its health check, and retries once. `make maps-up` still starts it by
+hand. Provenance travels with every row — a scraped `place_id` carries the
+`mapscrape:` prefix so it can never overwrite a billed one — and the report, the
+`maps_search` response and the desktop badge each name the source that answered.
+
+### The workbook
+
+`POST /maps/leadgen/export` runs the search and writes an `.xlsx` into
+`~/Library/Application Support/mimir/exports/`: a summary sheet, then **one
+sheet per category**. Each row carries the company, whether it has a website at
+all, the website, phone, email, address, rating, coordinates, which source found
+it, and which tier found the contact details.
+
+With `enrich: true` the daemon opens each company's own site once and reads the
+contact details off it — a `tel:`/`mailto:` link or a footer number first, and
+claude haiku only on the pages where that found nothing, with its answer held to
+the same patterns. Nothing is inferred: an empty phone cell means the lookup
+found none, and the method column says which tier looked.
 
 ---
 
@@ -205,6 +270,20 @@ or a cancelled context. Everything else is a `Report.Notes` string.
 `Pipeline.Run` always does stages 1–2. Stage 3 runs when `gap_analysis: true`;
 stage 4 when `emails: true` (which implies gap analysis). The two model phases
 are bounded `errgroup` fan-outs limited to `MaxConcurrentRefines`.
+
+### Choosing the model
+
+Stages 2–4 route by *class* — one-shot compression to the free `agy` tier,
+synthesis to `claude` — and that is what a run gets when it asks for nothing.
+A run may instead name a provider and a model (`provider` / `model`, or the
+picker on the desktop's lead-gen screen), and then all three model stages spend
+that one. The pair is checked against `config.LLMProviders` before it goes
+anywhere, because both strings become argv to a subprocess; an unknown pair is
+a 400, never a silent fall back to the default. A selection also suppresses the
+availability fallback, and namespaces the caches it reads — a run on a different
+model calls that model rather than replaying the previous one's answers. The
+region search's own model fallback (`internal/mapsllm`) is not covered: it is
+wired at construction and shared by every caller of `maps_search`.
 
 Because every stage writes a cache keyed by a `prompt_version` constant, a cache
 hit means **no API call, no `claude` subprocess, zero tokens**. Re-running a
@@ -250,6 +329,7 @@ both binaries share one DB file. Migrations are embedded and append-only. It is 
 | `crawl_pages` | raw crawl cache (markdown + HTML), keyed by `sha256(url)` | `config.PageCacheTTL` |
 | `refined_pages` | refine cache (refined text + token estimate) | same TTL; `RefinePromptVersion` bump |
 | `projects` | canonicalized folder path for the coding-task runner | re-pick to change |
+| `accounts` | credential slots: the directory, whether a scan found it, and which one the daemon's own calls spend | rescanned at startup; adds only |
 | `coding_runs` | run metadata, cost, session id, transcript pointer | none (history) |
 | `companies` | normalized Places/scrape result, keyed by `place_id` | caller-supplied long TTL (~30d) |
 | `region_searches` | the ordered `place_id` list a region search returned | same TTL; all-or-nothing on read |
@@ -260,6 +340,11 @@ both binaries share one DB file. Migrations are embedded and append-only. It is 
 | `memory_notes` | facts pinned through `context_remember` | none — never rewritten by an ingest |
 | `memory_ingest_state` | how far each transcript has been parsed | reset when a transcript shrinks (replaced, not appended) |
 | `memory_fts` | FTS5 index over episode titles, summaries, files and commands | kept in sync by triggers |
+| `leads` | the lead ledger: one row per business ever found, with its category. **A record, not a cache** — no TTL, and no reader deletes from it | none; a re-run refreshes fields but never blanks a populated one |
+| `lead_runs` · `lead_run_members` | which search found which business, and when | none (history) |
+| `chat_sessions` · `chat_turns` | conversations stored verbatim — the text `memory_episodes` clips. Written from the same parse, keyed by the same episode key | none; a re-read updates a turn rather than duplicating it |
+| `chat_fts` | FTS5 index over prompts and assistant replies | kept in sync by triggers |
+| `brain_node_versions` | one entry per distinct content hash a node's source has carried: when, how big, and what it meant then. No file content | pruned to `BrainVersionsPerNode` on insert |
 
 Everything that spends Claude Code tokens goes through the one `claude -p`
 headless subprocess in `internal/refine` — `Distil` for pages, and since M8

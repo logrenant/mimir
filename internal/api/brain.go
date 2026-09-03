@@ -33,6 +33,7 @@ type BrainGraphStore interface {
 	BrainNodesByIDs(ctx context.Context, ids []string) ([]store.BrainNodeRow, error)
 	BrainEdgesAmong(ctx context.Context, ids []string, limit int) ([]store.BrainEdgeRow, error)
 	BrainProjects(ctx context.Context) ([]store.BrainProjectCount, error)
+	BrainNodeVersions(ctx context.Context, nodeID string, limit int) ([]store.BrainNodeVersion, error)
 }
 
 // --- scan control ------------------------------------------------------------
@@ -152,6 +153,64 @@ type brainProjectsResponse struct {
 
 type brainNodeResponse struct {
 	Node brain.NodeView `json:"node"`
+	// Versions is the node's history, newest first — bounded here so node
+	// detail stays one response. The full list is its own route.
+	Versions []brainVersionView `json:"versions,omitempty"`
+}
+
+// brainVersionView is one entry in a node's history. It carries no file
+// content: the source is still on disk, and what this row keeps is the reading
+// of it, which is the part nothing else has.
+type brainVersionView struct {
+	Hash       string   `json:"content_hash"`
+	SeenAt     int64    `json:"seen_at"`
+	SizeBytes  int64    `json:"size_bytes,omitempty"`
+	ModifiedAt int64    `json:"modified_at,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	Assessment string   `json:"assessment,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	Model      string   `json:"model,omitempty"`
+}
+
+func brainVersionViews(rows []store.BrainNodeVersion) []brainVersionView {
+	out := make([]brainVersionView, 0, len(rows))
+	for _, v := range rows {
+		view := brainVersionView{
+			Hash:       v.ContentHash,
+			SeenAt:     v.SeenAt.Unix(),
+			SizeBytes:  v.SizeBytes,
+			Title:      v.Title,
+			Assessment: v.Assessment,
+			Tags:       v.Tags,
+			Model:      v.Model,
+		}
+		if !v.ModifiedAt.IsZero() {
+			view.ModifiedAt = v.ModifiedAt.Unix()
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+// handleBrainNodeVersions serves a node's whole history.
+func (s *Server) handleBrainNodeVersions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "node id is required")
+		return
+	}
+	limit, err := graphLimit(r.URL.Query().Get("limit"), s.cfg.BrainVersionsPerNode, s.cfg.BrainVersionsPerNode)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "limit must be a positive integer")
+		return
+	}
+
+	rows, err := s.deps.BrainGraph.BrainNodeVersions(r.Context(), id, limit)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"versions": brainVersionViews(rows)})
 }
 
 // handleBrainProjects lists what Brain knows, by project.
@@ -267,7 +326,17 @@ func (s *Server) handleBrainNode(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, brainNodeResponse{Node: node})
+	resp := brainNodeResponse{Node: node}
+	// History rides node detail rather than needing a second call, because a
+	// node with one version is the common case and the panel would otherwise
+	// fetch an empty list for every file on the machine. The graph store is
+	// optional here on purpose: node detail works without it.
+	if s.deps.BrainGraph != nil {
+		if rows, err := s.deps.BrainGraph.BrainNodeVersions(r.Context(), id, s.cfg.BrainNodeVersionsInline); err == nil && len(rows) > 1 {
+			resp.Versions = brainVersionViews(rows)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // resolveBrainProject turns the opaque id the client was given back into a

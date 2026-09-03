@@ -90,3 +90,24 @@ SD-1 (every bound is a `config` constant, no knobs).
 
 Grep for anything that writes a summary file, or that passes more than one
 episode's facts to `refine.Recap`. Either one is the v1 failure coming back.
+
+## The chat archive (task-65)
+
+`UseArchive` installs a second, optional writer. The distinction it draws is the
+whole point of the feature:
+
+- **A row is an index entry; a turn is the record.** `toRow` clips the prompt
+  and the assistant text, and `archiveTurn` stores them whole. The clipping
+  moved here from `internal/sessionlog` when the archive arrived — see that
+  package's `AGENTS.md` — because a parser that clipped would have made the
+  archive impossible to write without reading every transcript twice.
+- **One parse feeds both.** That is the only reason the archive is affordable.
+  There is no second discovery walk, no second cursor: `memory_ingest_state`
+  already says how far each transcript was read.
+- **No model call.** Archiving is deterministic, like `internal/brain`'s
+  capture loop, which is what makes running it over months of backlog a
+  migration rather than a bill. `TestIngest_ArchiveSpendsNoModelCall` is what
+  keeps that true.
+- **A nil archive is the package as it was.** `mimir-mcp` gets one: a
+  short-lived stdio process has no backlog to keep.
+

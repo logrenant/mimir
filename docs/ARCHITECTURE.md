@@ -75,7 +75,7 @@ OpenGraph helpers). Those tools return small structured facts and skip
 1. **search** — `search.Client.Search(ctx, query, n)` → `[]Result`.
 2. **select** — pipeline takes the top `TopNForResearch` (config, default 5) URLs.
 3. **crawl** — `errgroup` with `SetLimit(MaxConcurrentCrawls)` (default 4); each
-   worker calls `crawl.Client.Markdown(ctx, url)` with `CrawlTimeout` (45s).
+   worker calls `crawl.Client.Markdown(ctx, url)` with `CrawlTimeout` (150s).
    Failures are recorded, not fatal.
 4. **refine** — `errgroup` with `SetLimit(MaxConcurrentRefines)` (default 2); each
    worker calls `refine.Client.Distil(ctx, RefineInput{Query, PageMarkdown, MaxTokens})`.
@@ -96,7 +96,7 @@ OpenGraph helpers). Those tools return small structured facts and skip
 ## 4. Concurrency model (SD-3)
 
 - One `context.Context` per MCP request, carrying a request ID and an overall
-  deadline (`ResearchTimeout`, 120s).
+  deadline (`ResearchTimeout`, 360s).
 - Two bounded stages (crawl, refine) via `errgroup.WithContext` + `SetLimit`.
 - A process-wide semaphore (`tasks/task-14`) caps total in-flight crawls/refines
   across concurrent MCP calls, so ten parallel `research` calls cannot open forty
@@ -132,7 +132,7 @@ Both live in `internal/llm`, which is the only place outside
 `Reason` (cross-source synthesis, gap analysis) to `claude`. See
 `docs/ROADMAP.md` §B.1.
 
-- **agy** — `exec.CommandContext(ctx, cliPath, "--model", "gemini-3.7-flash-high", "--output-format", "json", "--input-format", "text", "--sandbox", "--disable-slash-commands", "--print-timeout", d, "--json-schema", schema)`, content piped over stdin, response read from `structured_output` when a schema was given and `response` otherwise; `status != "SUCCESS"` is an error. `cmd.Dir` is an empty scratch directory and the environment carries `MIMIR_NESTED=1`. Health: `agy models` succeeds.
+- **agy** — `exec.CommandContext(ctx, cliPath, "--model", "gemini-3.8-flash-high", "--output-format", "json", "--input-format", "text", "--sandbox", "--disable-slash-commands", "--print-timeout", d, "--json-schema", schema)`, content piped over stdin, response read from `structured_output` when a schema was given and `response` otherwise; `status != "SUCCESS"` is an error. `cmd.Dir` is an empty scratch directory and the environment carries `MIMIR_NESTED=1`. Health: `agy models` succeeds.
 - **claude** — `exec.CommandContext(ctx, cliPath, "-p", "--model", "claude-haiku-4-5-20251001", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--restricted", "--effort", "low", "--system-prompt", system, "--disallowedTools", "...")`, content piped over stdin, response parsed from the `result` field. Health: `claude --version` succeeds.
 - Neither needs an API key — each rides its own CLI's existing sign-in. `agy` being absent or out of quota falls back to `claude`; that is availability, not preference.
 

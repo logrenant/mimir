@@ -34,13 +34,41 @@ weak, the whole guarantee is weak.
 - Every call: `ctx` + `cfg.RefineTimeout`, one bounded retry on transient
   failure, typed `ErrClaudeUnavailable` with the `claude login` fix text
   (SD-6).
-- **Four prompt profiles, one subprocess.** `Distil` (page → prose), `Classify`
+- **Six prompt profiles, one subprocess.** `Distil` (page → prose), `Classify`
   (companies → one category each), `AnalyzeGaps` (company facts → a
-  category-level synthesis, M6) and `DraftEmail` (company facts + gap analysis →
-  one cold-outreach email, M6) all go through the unexported `run`, so the flags
-  that make the subprocess harmless are chosen in exactly one place. A fifth
-  profile means another `buildXPrompt` + golden file, never another `exec` call
-  site.
+  category-level synthesis, M6), `DraftEmail` (company facts + gap analysis →
+  one cold-outreach email, M6), `ExtractFeed` (a rendered Maps feed → the
+  businesses in it, task-57) and `ExtractContacts` (a company's own site → its
+  phone and email, task-57) all go through the unexported `run`/`runClass`, so
+  the flags that make the subprocess harmless are chosen in exactly one place.
+  Another profile means another `buildXPrompt` + golden file, never another
+  `exec` call site.
+- **A profile's model override rides its `Input`, not the `Client`.** `Classify`,
+  `AnalyzeGaps` and `DraftEmail` each carry an `llm.Selection` field that
+  `run`/`runClass` hands to `Router.CompleteWith`. On the input rather than on
+  the `Client` because it is a property of one request: the daemon's background
+  passes and an operator's lead-gen run share this client, and only the second
+  of the two has an opinion. The zero value routes by class, so every profile
+  and every caller that does not offer the choice behaves exactly as before —
+  and because it is a struct field, no interface in `internal/leadgen` changed
+  to carry it.
+- **Classification is the one profile with a fallback of its own (task-59).**
+  Everything else follows the router: the distil class has no fallback, on
+  purpose, because a machine-wide scan quietly moving to a billed provider is a
+  bill nobody chose. `runClassify` is narrower than that switch in every
+  dimension — a batch of twenty companies, a few hundred tokens, inside a
+  lead-gen run an operator started — and without it a machine whose agy is
+  signed out categorises every scraped company as `unknown`, which makes the
+  categorized view and the per-category export worthless. It falls back only on
+  unavailability, never on a bad answer, and never for a cancelled caller.
+- **The two extraction profiles run on the Reason class, not the distil tier.**
+  They exist as *recovery*: `ExtractFeed` is what reads a feed after the
+  selectors could not, and both are reached when something cheaper already
+  failed. A fallback that depends on the tier most likely to be signed out or
+  out of quota is not a fallback. They are also the two profiles whose whole
+  contract is "report only what the page said" — the prompt forbids invention,
+  and the callers (`internal/mapsllm`, `internal/contacts`) re-validate every
+  field rather than trusting that.
 - **`AnalyzeGaps` and `DraftEmail` are Distil-shaped, not Classify-shaped.** The
   answer is prose, so `clampOutput` enforces the `MaxTokens` ceiling exactly as
   it does for a page. The only deviation: the "output must not exceed input"

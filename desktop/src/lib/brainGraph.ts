@@ -500,3 +500,67 @@ export function pollInterval(status: BrainScanStatusLike | null): number {
 }
 
 type BrainScanStatusLike = { phase: string };
+
+/* -------------------------------------------------------------------------- */
+/* version history                                                             */
+/* -------------------------------------------------------------------------- */
+
+/** One row of the node panel's version timeline, ready to render. */
+export type VersionLine = {
+  hash: string;
+  /** Short hash — a full sha256 in a 288px panel is a wall. */
+  shortHash: string;
+  when: string;
+  size: string;
+  title: string;
+  assessment: string;
+  /** True for the reading that is current — the one the panel shows above. */
+  current: boolean;
+};
+
+type VersionLike = {
+  content_hash: string;
+  seen_at: number;
+  size_bytes?: number;
+  title?: string;
+  assessment?: string;
+};
+
+/**
+ * The timeline, newest first.
+ *
+ * Formatting lives here rather than in JSX for the same reason the lead-gen
+ * counting does: a date format and a "which one is current" decision are both
+ * things a test can pin, and neither is visible in a rendered panel until it is
+ * wrong.
+ */
+export function versionLines(versions: VersionLike[]): VersionLine[] {
+  return versions.map((v, i) => ({
+    hash: v.content_hash,
+    shortHash: v.content_hash.slice(0, 8),
+    when: formatSeen(v.seen_at),
+    size: formatBytes(v.size_bytes),
+    title: v.title ?? "",
+    assessment: v.assessment ?? "",
+    // The list is newest first, so the first row is what the node says now.
+    current: i === 0,
+  }));
+}
+
+function formatSeen(unix: number): string {
+  if (!unix) return "—";
+  return new Date(unix * 1000).toLocaleString("tr-TR", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** Bytes as a person reads them. Deliberately coarse: this is a size, not a measurement. */
+export function formatBytes(n?: number): string {
+  if (!n || n <= 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}

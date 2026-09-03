@@ -37,12 +37,36 @@ type Config struct {
 	// all; `llm.NewRouter` reads it that way and the distil tier then fails
 	// loudly, which is the honest answer. Putting "claude" back here is the one
 	// line that restores the old behaviour.
-	AgyCLIPath      string
-	AgyPrintTimeout time.Duration
-	DistillProvider string
-	DistillModel    string
-	DistillFallback string
-	ReasonProvider  string
+	//
+	// DistillModelChain is the other kind of fallback, and the distinction is
+	// the whole reason it is a separate field. DistillFallback moves work to
+	// another *provider*, which is what task-51 refused because it moves the
+	// bill with it. This one stays on `agy` and only changes the *model*, and
+	// agy meters its models in two independent free pools: the Gemini tiers
+	// draw on one, the Claude and GPT-OSS tiers on a second. Exhausting the
+	// first therefore says nothing about the second, so trying it is not a
+	// hand-off to a paid tier — it is the same free login, spending a bucket
+	// that was already full. Ordered cheapest first; an empty slice is no
+	// chain, and the distil tier fails loudly exactly as before.
+	AgyCLIPath        string
+	AgyPrintTimeout   time.Duration
+	DistillProvider   string
+	DistillModel      string
+	DistillFallback   string
+	DistillModelChain []string
+	ReasonProvider    string
+
+	// LLMProviders is what an operator may route a run to by hand, and the
+	// only thing they may route it to: the daemon rejects a provider or model
+	// that is not in this table, because both names become argv to a
+	// subprocess.
+	//
+	// The class routing above is still the default and still the right answer
+	// for everything the daemon starts on its own. This exists for the one
+	// case the routing cannot serve — a lead-gen run somebody is watching,
+	// where which tier spends the minutes and the money is the operator's call
+	// and not a property of the work.
+	LLMProviders []LLMProviderChoice
 
 	// Brain — the node core (task-41). Nodes live in the same store as the
 	// project memory, keyed by (project_path, kind, source_key) so re-ingesting
@@ -104,6 +128,16 @@ type Config struct {
 	// The backoff is what stands between "agy is signed out" and a thousand
 	// failed subprocesses an hour. It doubles from Min to Max and resets on the
 	// first pass that distils anything.
+	// BrainVersionsPerNode is how much of a node's history the store keeps: one
+	// row per distinct content hash it has carried, oldest pruned on insert. A
+	// bound rather than none because a file edited every minute for a year
+	// would otherwise become the largest table in the database.
+	BrainVersionsPerNode int
+
+	// BrainNodeVersionsInline is how much history rides node detail, so the
+	// panel does not need a second call for the common case.
+	BrainNodeVersionsInline int
+
 	BrainScanRoots        []string
 	BrainScanIdleInterval time.Duration
 	BrainScanBackoffMin   time.Duration
@@ -143,11 +177,27 @@ type Config struct {
 	// is read once in Load and nowhere else.
 	GitHubToken string
 
-	// Timeouts
-	SearchTimeout   time.Duration
-	CrawlTimeout    time.Duration
-	RefineTimeout   time.Duration
-	ResearchTimeout time.Duration
+	// Timeouts.
+	//
+	// These are network budgets, not preferences, and they are sized for a
+	// link that loses packets: a retransmit on a lossy connection routinely
+	// costs several seconds, and the original values were tight enough that a
+	// single one of them turned a working fetch into a failed stage.
+	//
+	// Constants, not knobs (SD-1): the right number is a property of a lossy
+	// link in general, not of one operator's afternoon, and an environment
+	// variable that could disable a timeout is a worse failure than one that
+	// is too short. Raising any of these is a one-line change here.
+	//
+	// LLMHealthTimeout is deliberately not one of them. A health probe is
+	// asking "is this CLI installed and signed in", and the answer arrives
+	// promptly or not at all; giving it the same patience as real work would
+	// let one unusable provider hold /diagnostics open for minutes.
+	SearchTimeout    time.Duration
+	CrawlTimeout     time.Duration
+	RefineTimeout    time.Duration
+	ResearchTimeout  time.Duration
+	LLMHealthTimeout time.Duration
 
 	// Concurrency
 	MaxConcurrentCrawls  int
@@ -221,6 +271,11 @@ type Config struct {
 	CodingAttachmentMaxBytes int64
 	AttachmentDir            string
 
+	// ClaudeAccountsDir is the directory whose subdirectories are credential
+	// slots. It is the same convention the operator's shell already uses, so a
+	// slot registered there is a slot Mimir spends without being told twice.
+	ClaudeAccountsDir string
+
 	// Project memory (M8). Long-lived per-project context distilled from
 	// session transcripts, so a new session is told what this repository
 	// already learned instead of rediscovering it. Losing it costs tokens,
@@ -265,6 +320,28 @@ type Config struct {
 	MapScrapeWaitSelector string
 	MapScrapeMaxResults   int
 	MapScrapeMaxScrolls   int
+	// MapScrapeStartTimeout bounds bringing the sidecar up, image build
+	// included. MapScrapeComposeFile is where that is started from; it is
+	// derived, not chosen — see defaultMapScrapeComposeFile.
+	MapScrapeStartTimeout time.Duration
+	MapScrapeComposeFile  string
+	// MapScrapeModelMaxChars bounds what the model fallback is fed when the
+	// selectors read nothing. A rendered feed is megabytes of script and
+	// base64 imagery; this is the slice of it that is worth paying to read.
+	MapScrapeModelMaxChars  int
+	MapScrapeModelMaxItems  int
+	MapScrapeModelMaxTokens int
+
+	// Contact enrichment: one page per company, read for a phone number and an
+	// email address. The char bound is what a front page needs for its footer
+	// to be in scope; the token bound is three short fields and nothing else.
+	ContactModelMaxChars  int
+	ContactModelMaxTokens int
+
+	// ExportDir is where lead-gen workbooks are written. Derived beside the
+	// store, like TranscriptDir: an operator looking for one file should find
+	// every file this app writes in the same place.
+	ExportDir string
 
 	// Lead-gen categorization (Phase 2 / M5). The normalized category
 	// vocabulary and the Google-type rule table are code, in internal/leadgen —
@@ -312,6 +389,22 @@ type Config struct {
 	// store.GetRegionSearch / GetCompany.
 	LeadgenRegionTTL time.Duration
 
+	// The lead ledger (task-63). Page bounds for the ledger reads, not a
+	// behaviour knob: the ledger grows without limit by design, and a client
+	// that asks for all of it would be asking the daemon to hold a table it
+	// cannot render anyway.
+	LeadsPageDefault int
+	LeadsPageMax     int
+	LeadRunsMax      int
+
+	// The chat archive (task-65). Page bounds only: the archive grows without
+	// limit by design, and these say how much of it one request may carry.
+	ChatSessionsMax   int
+	ChatTurnsPage     int
+	ChatTurnsMax      int
+	ChatSearchDefault int
+	ChatSearchMax     int
+
 	// Daemon plumbing (Phase 2 / M2) — process plumbing, parent-provided.
 	//
 	// These are not behaviour knobs (SD-1). They answer "where do I listen and
@@ -351,12 +444,113 @@ func defaultClaudeProjectsDir() string {
 	return filepath.Join(home, ".claude", "projects")
 }
 
+// defaultClaudeAccountsDir is where a Claude Code credential slot lives: one
+// directory per identity, hashed by the CLI into a keychain entry name. It
+// mirrors the operator's shell convention (`CLAUDE_ACCOUNTS_DIR`, default
+// `~/.claude-accounts`) so both spend the same slots.
+//
+// The shell variable itself is deliberately not read. The daemon runs under
+// launchd, which hands it PATH and HOME and nothing else, so reading it would
+// make discovery depend on who happened to start the daemon. Computed like
+// defaultClaudeProjectsDir; MIMIR_CLAUDE_ACCOUNTS_DIR points it at a temp tree
+// for tests only.
+//
+// An empty result is a defined state: discovery then finds the CLI's own slot
+// and nothing else, which is exactly what a machine with one account has.
+func defaultClaudeAccountsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude-accounts")
+}
+
+// defaultMapScrapeComposeFile is where the daemon starts the Maps sidecar from.
+//
+// Two candidates, in order: the copy `scripts/install-agent.sh` places beside
+// the installed binary, and the one in a repository checkout the process
+// happens to be running from. The installed daemon has no idea where the
+// repository is — launchd starts it from the home directory — so shipping the
+// deploy assets next to it is what makes a key-free region search work on a
+// machine that never opens the repo.
+//
+// An empty result is a defined state: the sidecar then has to be started with
+// `make maps-up`, and mapscrape.EnsureRunning says exactly that.
+func defaultMapScrapeComposeFile(storePath string) string {
+	candidates := []string{
+		filepath.Join(filepath.Dir(storePath), "deploy", "playwright-maps", "docker-compose.yml"),
+		filepath.Join("deploy", "playwright-maps", "docker-compose.yml"),
+	}
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			abs, err := filepath.Abs(c)
+			if err != nil {
+				return c
+			}
+			return abs
+		}
+	}
+	return ""
+}
+
 // CodingModelChoice is one entry in the coding-task model picker: the string
 // `claude --model` receives, and the name a human reads. Two fields because
 // the CLI's identifiers are not written for a dropdown.
 type CodingModelChoice struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
+}
+
+// LLMProviderChoice is one provider the operator may route a run to, with the
+// models that provider will actually accept.
+//
+// Nested rather than two flat lists because the pairing is the constraint that
+// matters: `gemini-3.8-flash-high` is meaningless to the `claude` CLI and
+// `claude-opus-5` is meaningless to `agy`, and a picker built from two
+// independent lists is a picker that can produce a combination the daemon has
+// to reject.
+type LLMProviderChoice struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// DefaultModel is what this provider runs when the operator picks the
+	// provider and leaves the model alone. It is always one of Models.
+	DefaultModel string              `json:"default_model"`
+	Models       []CodingModelChoice `json:"models"`
+}
+
+// HasLLMModel reports whether (provider, model) is a pair the daemon will run.
+//
+// The allow-list is the whole security argument for letting a client choose:
+// both names end up as argv to a subprocess, so nothing that did not come from
+// this table is ever passed on. An empty provider is "route by class" and an
+// empty model is "that provider's default" — both are valid, and both are
+// decided by the caller before asking.
+func (c Config) HasLLMModel(provider, model string) bool {
+	for _, p := range c.LLMProviders {
+		if p.ID != provider {
+			continue
+		}
+		if model == "" {
+			return true
+		}
+		for _, m := range p.Models {
+			if m.ID == model {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// LLMDefaultModel is the model a provider runs when none was named.
+func (c Config) LLMDefaultModel(provider string) string {
+	for _, p := range c.LLMProviders {
+		if p.ID == provider {
+			return p.DefaultModel
+		}
+	}
+	return ""
 }
 
 // HasCodingModel reports whether id is offerable. The empty string is not a
@@ -374,26 +568,76 @@ func (c Config) HasCodingModel(id string) bool {
 // It parses specific environment variables for test overrides but ignores invalid values.
 func Load() Config {
 	c := Config{
-		Crawl4AIBaseURL:        "http://127.0.0.1:11235",
-		DuckDuckGoHTMLURL:      "https://html.duckduckgo.com/html/",
-		DuckDuckGoLiteURL:      "https://lite.duckduckgo.com/lite/",
-		ClaudeCLIPath:          "claude",
-		ClaudeModel:            "claude-haiku-4-5-20251001",
-		AgyCLIPath:             "agy",
-		AgyPrintTimeout:        90 * time.Second,
-		DistillProvider:        "agy",
-		// -high, not -low: the operator asked for the better answer on every
-		// distil. A node is written once and read by every later session, so a
-		// summary that is worth more is worth more forever — and the tier is
-		// free either way. The price is wall clock: a pass takes longer, so a
-		// first sweep of a machine is a longer afternoon.
-		DistillModel:           "gemini-3.7-flash-high",
-		DistillFallback:        "",
-		ReasonProvider:         "claude",
-		SearchTimeout:          10 * time.Second,
-		CrawlTimeout:           45 * time.Second,
-		RefineTimeout:          60 * time.Second,
-		ResearchTimeout:        120 * time.Second,
+		Crawl4AIBaseURL:   "http://127.0.0.1:11235",
+		DuckDuckGoHTMLURL: "https://html.duckduckgo.com/html/",
+		DuckDuckGoLiteURL: "https://lite.duckduckgo.com/lite/",
+		ClaudeCLIPath:     "claude",
+		ClaudeModel:       "claude-haiku-4-5-20251001",
+		AgyCLIPath:        "agy",
+		AgyPrintTimeout:   240 * time.Second,
+		DistillProvider:   "agy",
+		// -low, reversing the -high this held until 2026-09-03. The old note
+		// argued the tier is "free either way", and that turned out to be the
+		// wrong unit: free is not unmetered. agy's Gemini pool is a weekly
+		// budget, the resident Brain scan distils continuously against it, and
+		// the effort suffix is what decides how many thinking tokens each node
+		// costs. The operator asked for the token-safest configuration, so the
+		// budget is now the thing being optimised and -low is the answer.
+		//
+		// Still pinned to an exact tag (SD-5): 3.8 is the current generation.
+		DistillModel: "gemini-3.8-flash-low",
+		// Provider-level fallback stays off — see the field's comment.
+		DistillFallback: "",
+		// The second free pool, cheapest first. GPT-OSS leads because it is the
+		// only one of the three that does not think before answering, so it is
+		// the cheapest way to keep the tier alive once Gemini's weekly budget
+		// is spent. Opus is deliberately absent: it is the most expensive model
+		// agy offers, and a chain that reaches for it to compress one node
+		// would spend the reserve this chain exists to protect.
+		DistillModelChain: []string{"gpt-oss-120b-medium", "claude-sonnet-4-6"},
+		ReasonProvider:    "claude",
+
+		// Pinned, exactly like CodingModels and for the same reason: an alias
+		// means "whatever is latest when this runs", and an operator who chose
+		// a model is entitled to get that model. The price is that this list
+		// is edited when a generation ships.
+		//
+		// `agy models` lists older generations too; they are left out because
+		// a picker is a recommendation, and nothing here is served by offering
+		// a superseded model. The effort suffix is part of the identifier, so
+		// the three Flash tiers are three entries rather than a second control.
+		LLMProviders: []LLMProviderChoice{
+			{
+				ID:           "agy",
+				Label:        "Antigravity (agy) — ücretsiz",
+				DefaultModel: "gemini-3.8-flash-low",
+				Models: []CodingModelChoice{
+					{ID: "gemini-3.8-flash-high", Label: "Gemini 3.8 Flash (High)"},
+					{ID: "gemini-3.8-flash-medium", Label: "Gemini 3.8 Flash (Medium)"},
+					{ID: "gemini-3.8-flash-low", Label: "Gemini 3.8 Flash (Low)"},
+					{ID: "gemini-3.1-pro-high", Label: "Gemini 3.1 Pro (High)"},
+					{ID: "gemini-3.1-pro-low", Label: "Gemini 3.1 Pro (Low)"},
+					{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (agy)"},
+					{ID: "claude-opus-4-6-thinking", Label: "Claude Opus 4.6 (agy)"},
+					{ID: "gpt-oss-120b-medium", Label: "GPT-OSS 120B (agy)"},
+				},
+			},
+			{
+				ID:           "claude",
+				Label:        "Claude Code — kotanızdan harcar",
+				DefaultModel: "claude-haiku-4-5-20251001",
+				Models: []CodingModelChoice{
+					{ID: "claude-opus-5", Label: "Opus 5"},
+					{ID: "claude-sonnet-5", Label: "Sonnet 5"},
+					{ID: "claude-haiku-4-5-20251001", Label: "Haiku 4.5"},
+				},
+			},
+		},
+		SearchTimeout:          30 * time.Second,
+		CrawlTimeout:           150 * time.Second,
+		RefineTimeout:          180 * time.Second,
+		ResearchTimeout:        360 * time.Second,
+		LLMHealthTimeout:       20 * time.Second,
 		MaxConcurrentCrawls:    4,
 		MaxConcurrentRefines:   2,
 		GlobalCrawlSlots:       6,
@@ -443,6 +687,8 @@ func Load() Config {
 		BrainPromptVersion:       "brain-v2",
 		BrainPromoteBatch:        200,
 		BrainCommitBatch:         100,
+		BrainVersionsPerNode:     50,
+		BrainNodeVersionsInline:  10,
 		BrainScanBatch:           12,
 		BrainScanConcurrency:     3,
 		BrainScanMaxFileBytes:    96 << 10,
@@ -466,8 +712,13 @@ func Load() Config {
 		ProductDescriptionMaxChars: 600,
 		BioMaxChars:                300,
 		BusinessAboutMaxChars:      400,
-		GMapsPageTimeout:           30 * time.Second, // verified empirically: 20-25s was not enough for the h1 wait to succeed against a live container
-		GMapsWaitForSelector:       "h1",
+		// 90s, not the 30s that was verified empirically against a live
+		// container: that measurement was taken on a healthy link, and it was
+		// already the tightest of the three (20-25s did not leave room for the
+		// h1 wait). A lossy connection spends its budget on retransmits before
+		// the page has begun rendering, so the headroom is the fix.
+		GMapsPageTimeout:     90 * time.Second,
+		GMapsWaitForSelector: "h1",
 
 		CodingModel: "claude-sonnet-5",
 		// Full names, not the CLI's `opus`/`sonnet` aliases. An alias means
@@ -501,6 +752,10 @@ func Load() Config {
 		// that the daemon holds one in memory without thinking about it.
 		CodingAttachmentMaxBytes: 10 << 20,
 
+		// One directory per Claude Code identity, the same tree the operator's
+		// shell already switches between.
+		ClaudeAccountsDir: defaultClaudeAccountsDir(),
+
 		// 60 is the Places API's own ceiling for places:searchText, not a
 		// preference. The token ceiling is the same order as a research brief:
 		// a lead list is read by an agent, and 60 companies of structured
@@ -519,10 +774,25 @@ func Load() Config {
 		// Crawl4AI fetch takes. The scroll ceiling is what stops a query with
 		// thousands of matches from scrolling until the timeout.
 		MapScrapeBaseURL:      "http://127.0.0.1:11236",
-		MapScrapeTimeout:      120 * time.Second,
+		MapScrapeTimeout:      300 * time.Second,
 		MapScrapeWaitSelector: `div[role="feed"]`,
 		MapScrapeMaxResults:   60,
 		MapScrapeMaxScrolls:   12,
+		// Generous because the first start on a fresh machine builds the image
+		// — a Playwright base plus npm install — and a build that is killed
+		// half way leaves the operator with neither a container nor an answer.
+		MapScrapeStartTimeout: 10 * time.Minute,
+		// ~60k characters is roughly 15–20k input tokens after trimming — the
+		// point where a feed's business names are all present but the page's
+		// tail of markup is not being paid for. The item and token ceilings
+		// match the feed's own cap: this recovers a page, it does not enlarge
+		// one.
+		MapScrapeModelMaxChars:  60000,
+		MapScrapeModelMaxItems:  60,
+		MapScrapeModelMaxTokens: 2000,
+
+		ContactModelMaxChars:  12000,
+		ContactModelMaxTokens: 200,
 
 		LeadgenCategoryVersion:   "leadgen-v1",
 		LeadgenBatchSize:         20,
@@ -543,6 +813,16 @@ func Load() Config {
 		LeadgenEmailMaxTokens: 600,
 
 		LeadgenRegionTTL: 30 * 24 * time.Hour,
+
+		LeadsPageDefault: 200,
+		LeadsPageMax:     1000,
+		LeadRunsMax:      100,
+
+		ChatSessionsMax:   200,
+		ChatTurnsPage:     100,
+		ChatTurnsMax:      500,
+		ChatSearchDefault: 25,
+		ChatSearchMax:     100,
 
 		// Loopback is a security property of this daemon, not a preference:
 		// there is deliberately no override for the host.
@@ -590,6 +870,9 @@ func Load() Config {
 	if val := os.Getenv("MIMIR_CLAUDE_PROJECTS_DIR"); val != "" {
 		c.ClaudeProjectsDir = val
 	}
+	if val := os.Getenv("MIMIR_CLAUDE_ACCOUNTS_DIR"); val != "" {
+		c.ClaudeAccountsDir = val
+	}
 
 	// Process plumbing, parent-provided. An unparseable port keeps the default
 	// (0 = kernel-assigned) rather than failing, like every other override
@@ -615,6 +898,11 @@ func Load() Config {
 	// Derived after the override above so a test pointing StorePath at a temp
 	// directory gets an isolated transcript directory for free.
 	c.TranscriptDir = filepath.Join(filepath.Dir(c.StorePath), "transcripts")
+	c.ExportDir = filepath.Join(filepath.Dir(c.StorePath), "exports")
+	c.MapScrapeComposeFile = defaultMapScrapeComposeFile(c.StorePath)
+	if val := os.Getenv("MIMIR_MAPSCRAPE_COMPOSE"); val != "" {
+		c.MapScrapeComposeFile = val
+	}
 	c.AttachmentDir = filepath.Join(filepath.Dir(c.StorePath), "attachments")
 	// Where the agy Stop hook drops a conversation for the daemon to pick up.
 	// A directory rather than an HTTP call: the hook then needs no token,
@@ -681,6 +969,20 @@ func (c Config) Validate() error {
 		return errors.New("DistillFallback must be \"\", \"claude\" or \"agy\", got: " + c.DistillFallback)
 	}
 
+	// Every chain entry becomes argv to a subprocess, so it is checked against
+	// the same table an operator's hand-picked model is checked against — a
+	// typo here would otherwise reach the CLI as a model name and fail only
+	// once the primary pool was already spent.
+	for _, model := range c.DistillModelChain {
+		if model == "" {
+			return errors.New("DistillModelChain must not contain an empty model")
+		}
+		if !c.HasLLMModel(c.DistillProvider, model) {
+			return errors.New("DistillModelChain has a model " + c.DistillProvider +
+				" does not offer: " + model)
+		}
+	}
+
 	if c.BrainRelateCandidates <= 0 || c.BrainNeighborCap <= 0 || c.BrainSearchLimit <= 0 {
 		return errors.New("brain count fields must be > 0")
 	}
@@ -714,11 +1016,14 @@ func (c Config) Validate() error {
 	if c.BrainScanDepth <= 0 {
 		return errors.New("BrainScanDepth must be > 0")
 	}
+	if c.BrainVersionsPerNode <= 0 || c.BrainNodeVersionsInline <= 0 {
+		return errors.New("brain version bounds must be > 0")
+	}
 	if c.BrainScanBatch <= 0 || c.BrainScanConcurrency <= 0 || c.BrainScanMaxFileBytes <= 0 {
 		return errors.New("brain scan fields must be > 0")
 	}
 
-	if c.SearchTimeout <= 0 || c.CrawlTimeout <= 0 || c.RefineTimeout <= 0 || c.ResearchTimeout <= 0 {
+	if c.SearchTimeout <= 0 || c.CrawlTimeout <= 0 || c.RefineTimeout <= 0 || c.ResearchTimeout <= 0 || c.LLMHealthTimeout <= 0 {
 		return errors.New("timeout fields must be > 0")
 	}
 
@@ -764,6 +1069,20 @@ func (c Config) Validate() error {
 	}
 	if c.CodingModel == "" {
 		return errors.New("CodingModel is empty")
+	}
+	// Every provider must offer a model, and its default must be one of them —
+	// a picker whose default is not in its own list is a picker that produces
+	// a request the daemon then rejects.
+	for _, prov := range c.LLMProviders {
+		if prov.ID == "" || len(prov.Models) == 0 {
+			return errors.New("every LLMProviders entry needs an ID and at least one model")
+		}
+		if !c.HasLLMModel(prov.ID, prov.DefaultModel) {
+			return errors.New("LLMProviders entry " + prov.ID + " has a default model that is not one of its models")
+		}
+	}
+	if len(c.LLMProviders) == 0 {
+		return errors.New("LLMProviders is empty")
 	}
 	if len(c.CodingModels) == 0 {
 		return errors.New("CodingModels is empty")
@@ -817,6 +1136,21 @@ func (c Config) Validate() error {
 	if c.MapScrapeWaitSelector == "" {
 		return errors.New("MapScrapeWaitSelector is empty")
 	}
+	// MapScrapeComposeFile is deliberately not checked: an absent compose file
+	// costs the ability to *start* the sidecar, not the ability to use one that
+	// is already running.
+	if c.MapScrapeStartTimeout <= 0 {
+		return errors.New("MapScrapeStartTimeout must be > 0")
+	}
+	if c.MapScrapeModelMaxChars <= 0 || c.MapScrapeModelMaxItems <= 0 || c.MapScrapeModelMaxTokens <= 0 {
+		return errors.New("the mapscrape model-fallback bounds must be > 0")
+	}
+	if c.ContactModelMaxChars <= 0 || c.ContactModelMaxTokens <= 0 {
+		return errors.New("the contact-enrichment bounds must be > 0")
+	}
+	if c.ExportDir == "" {
+		return errors.New("ExportDir is empty")
+	}
 	if c.MapScrapeTimeout <= 0 {
 		return errors.New("MapScrapeTimeout must be > 0")
 	}
@@ -846,6 +1180,15 @@ func (c Config) Validate() error {
 	}
 	if c.LeadgenRegionTTL <= 0 {
 		return errors.New("LeadgenRegionTTL must be > 0")
+	}
+	if c.LeadsPageDefault <= 0 || c.LeadsPageMax < c.LeadsPageDefault || c.LeadRunsMax <= 0 {
+		return errors.New("lead ledger page bounds must be > 0 with Max >= Default")
+	}
+	if c.ChatSessionsMax <= 0 || c.ChatTurnsPage <= 0 || c.ChatTurnsMax < c.ChatTurnsPage {
+		return errors.New("chat archive page bounds must be > 0 with Max >= page")
+	}
+	if c.ChatSearchDefault <= 0 || c.ChatSearchMax < c.ChatSearchDefault {
+		return errors.New("chat search bounds must be > 0 with Max >= Default")
 	}
 
 	// Project memory (M8). ClaudeProjectsDir is deliberately not checked: an

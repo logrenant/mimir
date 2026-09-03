@@ -9,6 +9,11 @@
 // none at all.
 package leadgen
 
+import (
+	"strings"
+	"unicode"
+)
+
 // Category is a normalized, business-shaped classification — the unit every
 // later lead-gen stage groups by. It is deliberately much smaller than
 // Google's ~100-value type taxonomy: an operator segments outreach by "beauty"
@@ -233,6 +238,119 @@ func CategoryForTypes(primaryType string, types []string) (Category, bool) {
 	}
 	for _, t := range types {
 		if c, ok := typeRules[t]; ok {
+			return c, true
+		}
+	}
+	return CategoryUnknown, false
+}
+
+// nameRules maps a distinctive word in a business name to a category.
+//
+// It exists because a scraped row carries no types[]: Google's own taxonomy is
+// only attached to Places API results, so for a region answered by mapscrape
+// tier 2 always missed and every company fell through to the model. That made
+// a free, deterministic stage depend on a rate-limited one — when the CLI's
+// quota was spent, an entire region came back `unknown`.
+//
+// Only unambiguous words are listed. A name is weaker evidence than a type, so
+// the bar for entry here is that the word names the trade outright ("eczane",
+// "yazılım") rather than merely suggesting it — a guess stored as MethodRule
+// would be indistinguishable from a fact, and would suppress the model tier
+// that could have answered correctly.
+//
+// Keys are matched against the folded name (see foldName), so they are written
+// lowercase and without Turkish diacritics.
+var nameRules = map[string]Category{
+	// software, agencies, IT
+	"yazilim":       CategoryProfessionalServices,
+	"bilisim":       CategoryProfessionalServices,
+	"software":      CategoryProfessionalServices,
+	"teknoloji":     CategoryProfessionalServices,
+	"teknolojileri": CategoryProfessionalServices,
+	"ajans":         CategoryProfessionalServices,
+	"reklam":        CategoryProfessionalServices,
+	"medya":         CategoryProfessionalServices,
+	"danismanlik":   CategoryProfessionalServices,
+	"muhasebe":      CategoryProfessionalServices,
+	"hukuk":         CategoryProfessionalServices,
+	"avukat":        CategoryProfessionalServices,
+	"mimarlik":      CategoryProfessionalServices,
+	"sigorta":       CategoryProfessionalServices,
+	"emlak":         CategoryProfessionalServices,
+
+	// health
+	"eczane":    CategoryHealth,
+	"hastane":   CategoryHealth,
+	"klinik":    CategoryHealth,
+	"dis":       CategoryHealth,
+	"veteriner": CategoryHealth,
+
+	// food and drink
+	"restaurant": CategoryRestaurant,
+	"restoran":   CategoryRestaurant,
+	"lokanta":    CategoryRestaurant,
+	"kebap":      CategoryRestaurant,
+	"pastane":    CategoryRestaurant,
+	"kafe":       CategoryRestaurant,
+
+	// other trades
+	"kuafor":   CategoryBeauty,
+	"berber":   CategoryBeauty,
+	"guzellik": CategoryBeauty,
+	"spor":     CategoryFitness,
+	"fitness":  CategoryFitness,
+	"oto":      CategoryAutomotive,
+	"otomotiv": CategoryAutomotive,
+	"lastik":   CategoryAutomotive,
+	"otel":     CategoryHospitality,
+	"pansiyon": CategoryHospitality,
+	"kurs":     CategoryEducation,
+	"dershane": CategoryEducation,
+	"akademi":  CategoryEducation,
+	"anaokulu": CategoryEducation,
+}
+
+// foldName lowercases a name and folds Turkish diacritics to ASCII so one rule
+// key matches every way an operator writes it. strings.ToLower alone is not
+// enough: it maps "İ" to "i̇" (an i with a combining dot), so "YAZILIM",
+// "Yazılım" and "yazilim" would otherwise be three different strings.
+func foldName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range strings.ToLower(name) {
+		switch r {
+		case 'ı':
+			b.WriteRune('i')
+		case 'ş':
+			b.WriteRune('s')
+		case 'ğ':
+			b.WriteRune('g')
+		case 'ü':
+			b.WriteRune('u')
+		case 'ö':
+			b.WriteRune('o')
+		case 'ç':
+			b.WriteRune('c')
+		case '̇': // combining dot above, left behind by ToLower("İ")
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// CategoryForName classifies from the business name alone.
+//
+// The last resort before the model, and only consulted when types[] answered
+// nothing. Words are matched whole — splitting on non-letters rather than using
+// strings.Contains — because a substring match reads "oto" inside "fotoğraf"
+// and files a photographer under automotive.
+func CategoryForName(name string) (Category, bool) {
+	for _, word := range strings.FieldsFunc(foldName(name), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if c, ok := nameRules[word]; ok {
 			return c, true
 		}
 	}

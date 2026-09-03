@@ -2,6 +2,8 @@ package leadgen
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -10,20 +12,21 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/store"
 )
 
-// RegionSearcher is the primary data source (Google Places). *maps.Client
-// satisfies it.
-type RegionSearcher interface {
-	SearchText(ctx context.Context, q maps.Query) ([]maps.Company, error)
-}
-
-// RegionScraper is the fallback data source (the Playwright sidecar).
-// *mapscrape.Client satisfies it. It may be nil — then a Places failure is a
-// hard failure, with nothing to fall back to.
-type RegionScraper interface {
-	Search(ctx context.Context, q maps.Query) ([]maps.Company, error)
+// RegionSource answers "which companies are in this region", from whichever
+// provider is available. *regionsearch.Router satisfies it, and it owns the
+// order: the free scrape first, the billed Places API as the fallback.
+//
+// One seam rather than two because the order is a policy that belongs in one
+// place — this pipeline used to hold half of it, and the maps_search tool's
+// registration held the other half implicitly.
+type RegionSource interface {
+	Search(ctx context.Context, q maps.Query) ([]maps.Company, string, []string, error)
+	Available() bool
 }
 
 // RegionStore is the region-search cache. *store.Store satisfies it. A nil
@@ -33,8 +36,15 @@ type RegionStore interface {
 	PutRegionSearch(ctx context.Context, regionKey, query string, cs []maps.Company) error
 }
 
-// ErrNoData means neither the Places API nor the scrape fallback could produce
-// a company list — the pipeline has nothing to work with.
+// LedgerStore is the durable lead record — not a cache. *store.Store satisfies
+// it, and a nil LedgerStore is a working pipeline: the run still answers, it is
+// just not remembered (SD-6).
+type LedgerStore interface {
+	PutLeadRun(ctx context.Context, run store.LeadRun, rows []store.LeadRow) error
+}
+
+// ErrNoData means no configured source could produce a company list — the
+// pipeline has nothing to work with.
 var ErrNoData = errors.New("leadgen: region search produced no data from any source")
 
 // CompanyLead is one company carried through every stage that ran. Its company
@@ -93,8 +103,12 @@ type CategoryReport struct {
 // Report is the whole pipeline result. Notes collects the diagnostic gaps from
 // every stage — none of them is a reason to fail (SD-6).
 type Report struct {
-	Region         string           `json:"region"`
-	Query          string           `json:"query"`
+	Region string `json:"region"`
+	Query  string `json:"query"`
+	// Source is which provider answered — "mapscrape" or "places_api", empty
+	// on a cache hit. The two differ in field coverage, so a client reading an
+	// empty phone column needs to know which it is looking at.
+	Source         string           `json:"source,omitempty"`
 	FromCache      bool             `json:"from_cache"`
 	RanCategorize  bool             `json:"ran_categorize"`
 	RanGapAnalysis bool             `json:"ran_gap_analysis"`
@@ -115,6 +129,15 @@ type RunRequest struct {
 	WithGapAnalysis bool
 	// WithEmails runs stage 4.
 	WithEmails bool
+	// Selection is the operator's choice of provider and model for the model
+	// stages of this run — 2, 3 and 4. The zero value routes by class, which
+	// is what every caller that does not offer the choice sends.
+	//
+	// It does not reach the region search. That stage's model fallback
+	// (internal/mapsllm, used when the scrape's selectors fail) is wired at
+	// construction and shared by every caller of maps_search, so a per-run
+	// override there would need a seam this pipeline does not own.
+	Selection llm.Selection
 }
 
 // Pipeline threads region search → categorize → per-category gap analysis →
@@ -122,22 +145,41 @@ type RunRequest struct {
 // near-zero-token; stages 3–4 are opt-in per request.
 type Pipeline struct {
 	cfg         config.Config
-	searcher    RegionSearcher
-	scraper     RegionScraper
+	source      RegionSource
 	regionStore RegionStore
 	categorizer *Categorizer
 	gaps        *GapAnalyzerRunner
 	emails      *EmailRunner
+	// contacts fills phone and email from a company's own website. Nil is a
+	// working pipeline: the export then writes what the search returned.
+	contacts ContactEnricher
+	// ledger is the durable record of what a run found. Nil forgets the run.
+	ledger LedgerStore
 }
 
-// NewPipeline wires the orchestrator. scraper, regionStore, categorizer, gaps
-// and emails may each be nil; the pipeline degrades the corresponding stage
-// rather than failing.
-func NewPipeline(cfg config.Config, searcher RegionSearcher, scraper RegionScraper, rs RegionStore, cat *Categorizer, gaps *GapAnalyzerRunner, emails *EmailRunner) *Pipeline {
+// UseContacts installs the contact enricher used by Export.
+//
+// Set after construction rather than taken by NewPipeline because it is only
+// ever used by the export path — a lead-gen run that nobody exports must not
+// fetch sixty websites — and because the enricher needs the same crawl client
+// this package does not otherwise know about.
+func (p *Pipeline) UseContacts(e ContactEnricher) { p.contacts = e }
+
+// UseLedger installs the durable lead record.
+//
+// Set after construction for the same reason UseContacts is: NewPipeline's
+// parameters are the stages, and the ledger is not a stage — it is what happens
+// to a finished run. A pipeline without one behaves exactly as it did before
+// the ledger existed.
+func (p *Pipeline) UseLedger(l LedgerStore) { p.ledger = l }
+
+// NewPipeline wires the orchestrator. regionStore, categorizer, gaps and emails
+// may each be nil; the pipeline degrades the corresponding stage rather than
+// failing. The source may not: with nothing to search there is no pipeline.
+func NewPipeline(cfg config.Config, source RegionSource, rs RegionStore, cat *Categorizer, gaps *GapAnalyzerRunner, emails *EmailRunner) *Pipeline {
 	return &Pipeline{
 		cfg:         cfg,
-		searcher:    searcher,
-		scraper:     scraper,
+		source:      source,
 		regionStore: rs,
 		categorizer: cat,
 		gaps:        gaps,
@@ -152,8 +194,8 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
-	if p.searcher == nil {
-		return Report{}, errors.New("leadgen: pipeline has no region searcher")
+	if p.source == nil || !p.source.Available() {
+		return Report{}, errors.New("leadgen: pipeline has no region search source")
 	}
 
 	region := req.Region
@@ -163,12 +205,20 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 
 	rep := Report{Region: region, Query: req.Query.Text}
 
-	companies, fromCache, notes, err := p.regionSearch(ctx, req.Query)
+	// Bind the three model stages to this run's selection. Done once here
+	// rather than at each call site so a run cannot end up half on one model
+	// and half on another.
+	categorizer := p.categorizer.With(req.Selection)
+	gapsRunner := p.gaps.With(req.Selection)
+	emailRunner := p.emails.With(req.Selection)
+
+	companies, source, fromCache, notes, err := p.regionSearch(ctx, req.Query)
 	rep.Notes = append(rep.Notes, notes...)
 	if err != nil {
 		return Report{}, err
 	}
 	rep.FromCache = fromCache
+	rep.Source = source
 
 	leads := make([]CompanyLead, len(companies))
 	for i, c := range companies {
@@ -176,8 +226,8 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 	}
 
 	// Stage 2 — categorize. Near-zero-token; always runs when wired.
-	if p.categorizer != nil {
-		results, catGaps, err := p.categorizer.Categorize(ctx, companies)
+	if categorizer != nil {
+		results, catGaps, err := categorizer.Categorize(ctx, companies)
 		if err != nil {
 			return Report{}, err
 		}
@@ -195,10 +245,10 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 
 	// Stage 3 — gap analysis, one call per real category, bounded fan-out.
 	gapText := map[Category]string{}
-	wantGaps := (req.WithGapAnalysis || req.WithEmails) && p.gaps != nil
+	wantGaps := (req.WithGapAnalysis || req.WithEmails) && gapsRunner != nil
 	if wantGaps {
 		rep.RanGapAnalysis = true
-		reports, gapNotes := p.analyzeGaps(ctx, region, companies, byCategory)
+		reports, gapNotes := p.analyzeGaps(ctx, gapsRunner, region, companies, byCategory)
 		rep.Notes = append(rep.Notes, gapNotes...)
 		rep.Categories = reports
 		for _, cr := range reports {
@@ -211,19 +261,101 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 	}
 
 	// Stage 4 — one email per company that has a gap analysis for its category.
-	if req.WithEmails && p.emails != nil {
+	if req.WithEmails && emailRunner != nil {
 		rep.RanEmails = true
-		emailNotes := p.draftEmails(ctx, companies, leads, gapText)
+		emailNotes := p.draftEmails(ctx, emailRunner, companies, leads, gapText)
 		rep.Notes = append(rep.Notes, emailNotes...)
 	}
 
 	rep.Companies = leads
+
+	// Last, and never fatal: the ledger is what makes a run outlive its
+	// response, but a run that answered is a run that succeeded.
+	if note := p.record(ctx, req, rep, leads); note != "" {
+		rep.Notes = append(rep.Notes, note)
+	}
+
 	return rep, nil
 }
 
-// regionSearch resolves the company list: cache, then Places, then the scrape
-// fallback. A hit is a hit; only "no source produced anything" is an error.
-func (p *Pipeline) regionSearch(ctx context.Context, q maps.Query) ([]maps.Company, bool, []string, error) {
+// record writes the run and its companies to the ledger. It returns a note
+// rather than an error: every other stage degrades this way, and losing the
+// record costs the operator a row in a table, not the answer on the screen.
+//
+// A lead with no place_id is skipped — the ledger is keyed by it, exactly as
+// the outreach drafts are.
+func (p *Pipeline) record(ctx context.Context, req RunRequest, rep Report, leads []CompanyLead) string {
+	if p.ledger == nil || len(leads) == 0 {
+		return ""
+	}
+
+	rows := make([]store.LeadRow, 0, len(leads))
+	for _, l := range leads {
+		if l.PlaceID == "" {
+			continue
+		}
+		rows = append(rows, store.LeadRow{
+			PlaceID:        l.PlaceID,
+			Name:           l.Name,
+			Address:        l.Address,
+			Latitude:       l.Latitude,
+			Longitude:      l.Longitude,
+			Rating:         l.Rating,
+			ReviewCount:    l.ReviewCount,
+			Website:        l.Website,
+			Phone:          l.Phone,
+			PrimaryType:    l.PrimaryType,
+			BusinessStatus: l.BusinessStatus,
+			Source:         l.Source,
+			Category:       string(l.Category),
+			CategoryMethod: l.CategoryMethod,
+		})
+	}
+	if len(rows) == 0 {
+		return "lead defteri: hiçbir şirketin place_id'si yok, koşu kaydedilmedi"
+	}
+
+	runID, err := newRunID()
+	if err != nil {
+		return "lead defteri: koşu kimliği üretilemedi: " + err.Error()
+	}
+
+	run := store.LeadRun{
+		ID:           runID,
+		RegionKey:    req.Query.Key(),
+		Query:        rep.Query,
+		RegionLabel:  rep.Region,
+		Source:       rep.Source,
+		CompanyCount: len(rows),
+		WithGaps:     rep.RanGapAnalysis,
+		WithEmails:   rep.RanEmails,
+		RanAt:        time.Now(),
+	}
+	if err := p.ledger.PutLeadRun(ctx, run, rows); err != nil {
+		return "lead defteri yazılamadı: " + err.Error()
+	}
+	return ""
+}
+
+// newRunID returns an opaque id for one lead-gen run. Random rather than
+// derived from the query: the same search run twice is two runs, and that is
+// the whole point of keeping a history.
+func newRunID() (string, error) {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("leadgen: generating run id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// regionSearch resolves the company list: the cache, then whichever sources the
+// router has, in its order. A hit is a hit; only "no source produced anything"
+// is an error.
+//
+// The order itself is not decided here — it is internal/regionsearch's, and it
+// puts the free scrape ahead of the billed API. This function owns the cache
+// and nothing else about provenance.
+func (p *Pipeline) regionSearch(ctx context.Context, q maps.Query) ([]maps.Company, string, bool, []string, error) {
 	var notes []string
 	key := q.Key()
 
@@ -232,40 +364,32 @@ func (p *Pipeline) regionSearch(ctx context.Context, q maps.Query) ([]maps.Compa
 		if err != nil {
 			notes = append(notes, "region cache unavailable: "+err.Error())
 		} else if ok {
-			return cs, true, notes, nil
+			return cs, "", true, notes, nil
 		}
 	}
 
-	cs, err := p.searcher.SearchText(ctx, q)
+	cs, source, searchNotes, err := p.source.Search(ctx, q)
+	notes = append(notes, searchNotes...)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, false, notes, ctxErr
+			return nil, "", false, notes, ctxErr
 		}
-		if p.scraper == nil {
-			return nil, false, notes, fmt.Errorf("%w: places api failed and no scrape fallback is configured: %v", ErrNoData, err)
-		}
-		notes = append(notes, "places api failed, using scrape fallback: "+err.Error())
-		cs, err = p.scraper.Search(ctx, q)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, false, notes, ctxErr
-			}
-			return nil, false, notes, fmt.Errorf("%w: both places api and scrape fallback failed: %v", ErrNoData, err)
-		}
+		return nil, "", false, notes, fmt.Errorf("%w: %v", ErrNoData, err)
 	}
+	notes = append(notes, "region search answered by "+source)
 
 	if p.regionStore != nil {
 		if err := p.regionStore.PutRegionSearch(ctx, key, q.Text, cs); err != nil {
 			notes = append(notes, "caching region search failed: "+err.Error())
 		}
 	}
-	return cs, false, notes, nil
+	return cs, source, false, notes, nil
 }
 
 // analyzeGaps runs stage 3 for every real category with at least one company,
 // in bounded-concurrency batches. Output order is the sorted category order,
 // regardless of completion order.
-func (p *Pipeline) analyzeGaps(ctx context.Context, region string, companies []maps.Company, byCategory map[Category][]int) ([]CategoryReport, []string) {
+func (p *Pipeline) analyzeGaps(ctx context.Context, runner *GapAnalyzerRunner, region string, companies []maps.Company, byCategory map[Category][]int) ([]CategoryReport, []string) {
 	cats := sortedCategories(byCategory)
 
 	reports := make([]CategoryReport, len(cats))
@@ -297,7 +421,7 @@ func (p *Pipeline) analyzeGaps(ctx context.Context, region string, companies []m
 			if err := gctx.Err(); err != nil {
 				return err
 			}
-			res, gaps, err := p.gaps.AnalyzeCategory(gctx, region, cat, batch)
+			res, gaps, err := runner.AnalyzeCategory(gctx, region, cat, batch)
 			if err != nil {
 				return err
 			}
@@ -322,7 +446,7 @@ func (p *Pipeline) analyzeGaps(ctx context.Context, region string, companies []m
 // draftEmails runs stage 4 for every company whose category produced a gap
 // analysis, in bounded-concurrency batches. Writes results back into leads
 // (each goroutine touches a distinct index, so the slice needs no lock).
-func (p *Pipeline) draftEmails(ctx context.Context, companies []maps.Company, leads []CompanyLead, gapText map[Category]string) []string {
+func (p *Pipeline) draftEmails(ctx context.Context, runner *EmailRunner, companies []maps.Company, leads []CompanyLead, gapText map[Category]string) []string {
 	limit := p.cfg.MaxConcurrentRefines
 	if limit <= 0 {
 		limit = 1
@@ -341,7 +465,7 @@ func (p *Pipeline) draftEmails(ctx context.Context, companies []maps.Company, le
 			if err := gctx.Err(); err != nil {
 				return err
 			}
-			res, gaps, err := p.emails.DraftFor(gctx, companies[i], leads[i].Category, gap)
+			res, gaps, err := runner.DraftFor(gctx, companies[i], leads[i].Category, gap)
 			if err != nil {
 				return err
 			}

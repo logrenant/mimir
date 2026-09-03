@@ -67,6 +67,50 @@ Not paying twice for work already done — a Crawl4AI fetch already made, or a
   `ErrEmailNotFound` if there is no row to act on. Key is
   `(place_id, prompt_version)`, `prompt_version` = `config.LeadgenEmailVersion`.
 
+- **`leads` is a record, not a cache (0016, task-63).** Everything else in this
+  package exists so work is not paid for twice; the ledger exists so a run
+  outlives its own HTTP response. That is why it is beside `companies` rather
+  than inside it: `GetCompany` deletes expired rows as it reads them and
+  `GetRegionSearch` misses a whole region when one member ages out, which is
+  correct for a cache and would silently lose businesses from a record. The
+  ledger has no TTL and no reader that deletes. `PutLeadRun` is one transaction
+  — run row, lead upserts, memberships — so a run can never name businesses the
+  ledger does not hold, and its `ON CONFLICT` never overwrites a populated
+  column with an empty one: the free scrape returns no phone where the billed
+  Places call did, and a later re-run through the cheaper provider must not
+  erase a number already known. `lead_run_members` carries its own `category`
+  because a taxonomy bump rewrites `leads.category`, and what a past run
+  answered should stay readable.
+
+- **`chat_turns` is the conversation; `memory_episodes` is the index (0017,
+  task-65).** They are written from one parse, keyed by the same
+  `episode_key`, and they trade in opposite directions: the episode row clips
+  the prompt and the assistant text (`sessionlog.MaxPromptChars` /
+  `MaxAssistantChars`, applied by `internal/memory`, not by the parser) so a
+  recap prompt stays cheap, and the archive keeps exactly what that clipping
+  drops. Nothing here is distilled and no model ever reads it whole, which is
+  what makes running it over a backlog of months a migration rather than a
+  bill. `PutChatTurn` recomputes its session's span and turn count from the
+  turns rather than incrementing them: a transcript still being written is
+  re-read from its offset every pass, and an incremented count would climb
+  forever. `chat_fts` is external-content like the other two indexes, with the
+  same `'delete'`-before-re-insert triggers and the same rule about aliases.
+
+- **`brain_node_versions` is appended by the upsert, not by a caller (0018,
+  task-67).** The old content hash is only visible inside `UpsertBrainNode`,
+  before it writes — a caller would have to read the row first and race itself
+  — and putting it there means every ingest path (the resident scan,
+  `mimir-scan`, `brain_scan_repo`, the capture loop) gets history without a
+  second writer existing. A version is written when the hash moved or the node
+  is new, never when `ContentHash` is empty: a failed distil deliberately
+  arrives with an empty hash so the file is offered again, and recording that
+  would write a row claiming the file became unreadable. The table is keyed by
+  rowid, not `(node_id, content_hash)`, because reverting a file to a previous
+  version is a real event and deserves its own row. `BrainVersionsPerNode` is
+  read once at `Open` and pruned on insert — a file edited every minute for a
+  year must not become the largest table here, and this package has no
+  background sweeper to trim it later.
+
 - **Migrations are append-only.** `migrations/NNNN_*.sql`, applied in lexical
   filename order and recorded in `schema_migrations`. Never edit a file that
   has shipped — add the next number. `Open` is idempotent.

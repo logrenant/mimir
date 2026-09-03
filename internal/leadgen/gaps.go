@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/maps"
 	"github.com/logrenant/mimir/internal/refine"
 	"github.com/logrenant/mimir/internal/store"
@@ -45,6 +46,29 @@ type GapAnalyzerRunner struct {
 	cfg      config.Config
 	analyzer GapAnalyzer
 	store    GapStore
+	// sel is the operator's model override for this run. Zero routes by class.
+	sel llm.Selection
+}
+
+// With returns the same stage bound to one run's model selection. A copy, for
+// the reason Categorizer.With gives: the runner is shared across runs.
+func (r *GapAnalyzerRunner) With(sel llm.Selection) *GapAnalyzerRunner {
+	if r == nil || sel.IsZero() {
+		return r
+	}
+	cp := *r
+	cp.sel = sel
+	return &cp
+}
+
+// promptVersion namespaces the cache by the model that wrote the analysis, so
+// switching model produces a fresh synthesis rather than replaying the old
+// one. An unselected run keeps every entry it has already cached.
+func (r *GapAnalyzerRunner) promptVersion() string {
+	if key := r.sel.Key(); key != "" {
+		return r.cfg.LeadgenGapVersion + "@" + key
+	}
+	return r.cfg.LeadgenGapVersion
 }
 
 // NewGapAnalyzer wires the runner. analyzer or s may be nil; a nil analyzer
@@ -93,7 +117,7 @@ func (r *GapAnalyzerRunner) AnalyzeCategory(ctx context.Context, region string, 
 	key := store.GapAnalysisKey{
 		Region:         region,
 		Category:       string(cat),
-		PromptVersion:  r.cfg.LeadgenGapVersion,
+		PromptVersion:  r.promptVersion(),
 		CompanySetHash: companySetHash(sorted),
 	}
 
@@ -122,6 +146,7 @@ func (r *GapAnalyzerRunner) AnalyzeCategory(ctx context.Context, region string, 
 		Category:  string(cat),
 		Companies: gapFacts(sorted),
 		MaxTokens: r.cfg.LeadgenGapMaxTokens,
+		Selection: r.sel,
 	})
 	if err != nil {
 		// A cancelled caller is the one failure that is not a gap: nobody is

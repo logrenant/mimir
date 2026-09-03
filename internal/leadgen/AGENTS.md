@@ -8,6 +8,23 @@ stages into one call.
 
 ## Rules for this directory
 
+- **This package does not decide which region-search source to ask.**
+  `internal/regionsearch` owns that order (free scrape first, billed Places
+  behind it) and the pipeline holds one `RegionSource` seam. The pipeline owns
+  the *cache* around that call and nothing else about provenance; a second
+  source-ordering decision here is exactly the split that existed before
+  task-55, where this file and the `maps_search` registration each knew half of
+  it.
+- **The export is a view, not a stage.** `Export` writes what a `Report`
+  already says, plus contact details from `internal/contacts` when the caller
+  asked for them. It runs no model of its own, and enrichment is off by default
+  because it is one page fetch per company — a run nobody exports must not
+  fetch sixty websites.
+- **One sheet per category, and the summary first.** The question the file
+  answers is asked one category at a time ("who are the dentists, and which of
+  them has no website"), and a spreadsheet that has to be filtered first answers
+  it worse. Excel's own limits — 31 characters, no `:\/?*[]`, no duplicate
+  names — are `sheetName`'s job, and a category must never cost a sheet.
 - **The rule table is the primary tier; the model is the exception.** Three
   tiers run in order, cheapest first: the `company_categorization` cache, the
   static Google-type table, then `internal/refine.Classify` for what is left. A
@@ -124,6 +141,38 @@ stages into one call.
   writes a distinct `leads` index, so the slice needs no lock. The known
   per-call vs. process-wide limitation from task-29/30 still applies — this is
   where a global bound belongs if one is added.
+- **The ledger is what happens *to* a finished run, not a stage of it.** It is
+  installed with `UseLedger` after construction, like `UseContacts`, so
+  `NewPipeline`'s parameters stay the stages. `record` runs last, skips a lead
+  with no `place_id` (the ledger is keyed by it, exactly as the outreach drafts
+  are), and turns any failure into a `Report` note. A run that answered is a run
+  that succeeded — losing the record costs a row in a table, never the answer on
+  the screen (SD-6). The run id is random rather than derived from the query:
+  the same search run twice is two runs, which is the whole point of keeping a
+  history.
+- **The model selection binds once, at the top of `Run`.** `RunRequest.Selection`
+  is the operator's provider/model choice for this run, and `Run` calls
+  `.With(sel)` on all three model stages before any of them executes — so a run
+  cannot end up half on one model and half on another. `With` returns a *copy*
+  rather than taking a parameter on `Categorize`/`AnalyzeCategory`/`DraftFor`:
+  the stage runners are built once and shared by every concurrent run, and a
+  field written per request would decide what somebody else's run spends. The
+  zero selection returns the receiver unchanged, so a caller that offers no
+  picker behaves exactly as it did before this existed.
+- **A selection namespaces the caches it reads.** Each stage folds
+  `Selection.Key()` into its own version string (`…@agy/gemini-3.1-pro-high`).
+  Without it a run switched to another model is served the previous model's
+  answers and never calls the one that was chosen — the picker would look like
+  it did nothing. The zero selection contributes nothing to the string, so every
+  entry cached before the picker existed is still a hit. The cost is on the
+  email stage and is worth being deliberate about: a draft a human marked
+  "sent" under one model is not replayed for another, so switching model
+  mid-region can re-draft a letter that has already gone out.
+- **The selection does not reach the region search.** `internal/mapsllm` — the
+  model fallback used when the scrape's selectors fail — is wired at
+  construction and shared by every caller of `maps_search`, so a per-run
+  override there would need a seam this pipeline does not own. Stages 2, 3 and 4
+  are what the picker controls, and they are where a run spends its tokens.
 - **`nil` collaborators degrade, they do not panic.** A nil categorizer,
   gap runner, email runner, region store or scraper each disables its stage or
   its cache; only a nil searcher is fatal.

@@ -35,6 +35,7 @@ type Agy struct {
 	cliPath    string
 	model      string
 	timeout    time.Duration
+	health     time.Duration
 	scratchDir string
 }
 
@@ -50,12 +51,28 @@ func NewAgy(cfg config.Config) *Agy {
 		cliPath:    cfg.AgyCLIPath,
 		model:      cfg.DistillModel,
 		timeout:    cfg.AgyPrintTimeout,
+		health:     cfg.LLMHealthTimeout,
 		scratchDir: filepath.Join(filepath.Dir(cfg.StorePath), "scratch"),
 	}
 }
 
 func (a *Agy) Name() string  { return "agy" }
 func (a *Agy) Model() string { return a.model }
+
+// WithModel returns the same provider bound to a different model.
+//
+// A copy rather than a mutation: one router is shared by every concurrent call
+// in the daemon, and a per-request model that wrote through to it would decide
+// which model somebody else's run spends. Empty means "keep the configured
+// one", so a caller with no preference passes its selection through untouched.
+func (a *Agy) WithModel(model string) Provider {
+	if a == nil || model == "" || model == a.model {
+		return a
+	}
+	cp := *a
+	cp.model = model
+	return &cp
+}
 
 func (a *Agy) unavailable(cause error) error {
 	return fmt.Errorf("%w: `%s` CLI not usable (model %s) — run `agy` once to sign in, or check it is on PATH (cause: %v)",
@@ -68,13 +85,23 @@ func (a *Agy) Health(ctx context.Context) error {
 	if a.cliPath == "" {
 		return a.unavailable(errors.New("no agy CLI path configured"))
 	}
-	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	ctx, cancel := context.WithTimeout(ctx, a.healthBudget())
 	defer cancel()
 
 	if err := exec.CommandContext(ctx, a.cliPath, "models").Run(); err != nil {
 		return a.unavailable(err)
 	}
 	return nil
+}
+
+// healthBudget is how long a liveness probe may take. It falls back to the
+// call budget only for a hand-built Config that never set one — the daemon's
+// own always does.
+func (a *Agy) healthBudget() time.Duration {
+	if a.health > 0 {
+		return a.health
+	}
+	return a.timeout
 }
 
 // agyResult is the shape of `agy --output-format json`'s stdout. structured_output

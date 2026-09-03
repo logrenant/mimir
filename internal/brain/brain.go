@@ -164,6 +164,12 @@ type Input struct {
 	// without re-reading the body — the whole reason a repository scan can be
 	// run twice without paying twice. Empty is normal.
 	ContentHash string
+
+	// SizeBytes and ModifiedAt describe the source file as the scanner found
+	// it. They reach the version row and nothing else: a node says what a
+	// source means, and how big it was is only interesting as history.
+	SizeBytes  int64
+	ModifiedAt time.Time
 }
 
 // NodeID is the node's identity: the project, the kind and the source key.
@@ -233,6 +239,8 @@ func (c *Core) Ingest(ctx context.Context, in Input) (IngestResult, error) {
 		SourceKey:     source,
 		Body:          body,
 		ContentHash:   in.ContentHash,
+		SizeBytes:     in.SizeBytes,
+		ModifiedAt:    in.ModifiedAt,
 		PromptVersion: c.cfg.BrainPromptVersion,
 	}
 

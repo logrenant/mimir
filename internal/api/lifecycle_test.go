@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/logrenant/mimir/internal/account"
@@ -199,6 +201,8 @@ type fakeAccounts struct {
 	lastLabel  string
 	lastDir    string
 	deleted    string
+	synced     []account.Slot
+	background string
 	err        error
 }
 
@@ -223,6 +227,16 @@ func (f *fakeAccounts) Get(_ context.Context, id string) (account.Account, error
 
 func (f *fakeAccounts) Delete(_ context.Context, id string) error {
 	f.deleted = id
+	return f.err
+}
+
+func (f *fakeAccounts) Sync(_ context.Context, slots []account.Slot) ([]account.Account, error) {
+	f.synced = slots
+	return f.list, f.err
+}
+
+func (f *fakeAccounts) SetBackground(_ context.Context, id string) error {
+	f.background = id
 	return f.err
 }
 
@@ -260,6 +274,64 @@ func TestDeleteAccount_InUseIs409(t *testing.T) {
 	w := do(h, http.MethodDelete, "/accounts/a1", testToken, "")
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status: got %d, want 409", w.Code)
+	}
+}
+
+// A discovered slot answers to the accounts directory, so forgetting it here
+// would promise a removal the next scan takes back.
+func TestDeleteAccount_DiscoveredIs409(t *testing.T) {
+	accounts := &fakeAccounts{err: fmt.Errorf("%w: eziode", account.ErrAccountDiscovered)}
+	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
+
+	w := do(h, http.MethodDelete, "/accounts/a1", testToken, "")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", w.Code)
+	}
+}
+
+// The scan is the daemon's reading of the accounts directory, handed to the
+// registry: the default slot always, plus every directory in the tree.
+func TestScanAccounts_RegistersWhatTheDirectoryHolds(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "eziode"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cfg := testConfig()
+	cfg.ClaudeAccountsDir = root
+
+	accounts := &fakeAccounts{list: []account.Account{{ID: "a1", Label: "Default"}}}
+	h := New(cfg, Deps{Accounts: accounts}).Handler()
+
+	w := do(h, http.MethodPost, "/accounts/scan", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if len(accounts.synced) != 2 {
+		t.Fatalf("synced %+v, want the default slot and eziode", accounts.synced)
+	}
+	if accounts.synced[0].ConfigDir != "" || accounts.synced[1].Label != "eziode" {
+		t.Errorf("synced the wrong slots: %+v", accounts.synced)
+	}
+}
+
+// Empty is a real answer — the CLI's own slot — which is why this route sets a
+// value rather than deleting a resource.
+func TestSetBackgroundAccount_MarksAndClears(t *testing.T) {
+	accounts := &fakeAccounts{list: []account.Account{{ID: "a1", Label: "Default"}}}
+	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
+
+	if w := do(h, http.MethodPost, "/accounts/background", testToken, `{"account_id":"a2"}`); w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if accounts.background != "a2" {
+		t.Errorf("the mark did not reach the registry: %q", accounts.background)
+	}
+
+	if w := do(h, http.MethodPost, "/accounts/background", testToken, `{"account_id":""}`); w.Code != http.StatusOK {
+		t.Fatalf("clearing: got %d", w.Code)
+	}
+	if accounts.background != "" {
+		t.Errorf("clearing did not reach the registry: %q", accounts.background)
 	}
 }
 

@@ -362,6 +362,16 @@ func (m *Memory) ingestSession(ctx context.Context, p Project, src source) (int,
 		if err := m.store.PutEpisode(ctx, m.toRow(e, hot)); err != nil {
 			return stored, err
 		}
+		// The conversation itself, beside the index entry it just became. One
+		// parse feeds both, which is the only reason the archive is affordable
+		// — a second read of every transcript would double the ingest.
+		//
+		// A failed archive write does not stop the ingest: the episode is
+		// stored and the transcript is still on disk, so the next pass over
+		// this offset would have to fail again to lose anything.
+		if err := m.archiveTurn(ctx, e); err != nil {
+			return stored, err
+		}
 		stored++
 	}
 
@@ -403,6 +413,12 @@ func (m *Memory) ingestRun(ctx context.Context, src source) (int, error) {
 		return 0, err
 	}
 	if err := m.store.PutEpisode(ctx, m.toRow(e, false)); err != nil {
+		return 0, err
+	}
+	// A coding run is one turn: the prompt the operator typed into the board,
+	// and everything the run said back. Archived on the same seam as a session
+	// so the Terminals history is searchable with the rest.
+	if err := m.archiveTurn(ctx, e); err != nil {
 		return 0, err
 	}
 

@@ -118,13 +118,13 @@ func ParseAntigravity(r io.Reader, src Source, startOffset int64) ([]Episode, in
 // should cost fidelity, not the episode.
 func extractAgyPrompt(content string) string {
 	if m := agyRequestRe.FindStringSubmatch(content); len(m) == 2 {
-		return clip(strings.TrimSpace(m[1]), MaxPromptChars)
+		return strings.TrimSpace(m[1])
 	}
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" || strings.HasPrefix(trimmed, "<") {
 		return ""
 	}
-	return clip(trimmed, MaxPromptChars)
+	return trimmed
 }
 
 type agyBuilder struct {
@@ -153,7 +153,7 @@ func (b *agyBuilder) touch(t time.Time) {
 
 func (b *agyBuilder) addAssistant(content string) {
 	text := strings.TrimSpace(content)
-	if text == "" || b.assistant.Len() >= MaxAssistantChars {
+	if text == "" {
 		return
 	}
 	if b.assistant.Len() > 0 {
@@ -229,7 +229,7 @@ func (b *agyBuilder) build(src Source) Episode {
 		StartedAt:     b.startedAt,
 		EndedAt:       b.endedAt,
 		UserPrompt:    b.prompt,
-		AssistantText: clip(strings.TrimSpace(b.assistant.String()), MaxAssistantChars),
+		AssistantText: strings.TrimSpace(b.assistant.String()),
 		ToolCalls:     b.tools,
 		FilesTouched:  b.files,
 	}

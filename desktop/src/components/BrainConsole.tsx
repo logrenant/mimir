@@ -226,6 +226,10 @@ function colorFor(kind: BrainScanEvent["kind"]): string {
       return "#2547e8";
     case "project":
       return "#eef0f2";
+    // A re-read is not a first read. It gets the electric accent because it is
+    // the only line that says "you edited that file and Brain noticed".
+    case "changed":
+      return "#2547e8";
     default:
       return "#8a9099";
   }

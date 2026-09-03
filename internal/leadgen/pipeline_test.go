@@ -11,6 +11,8 @@ import (
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/maps"
 	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/regionsearch"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // --- fakes for the region-search stage -----------------------------------
@@ -32,13 +34,18 @@ func (f *fakeSearcher) SearchText(_ context.Context, q maps.Query) ([]maps.Compa
 }
 
 type fakeScraper struct {
+	mu     sync.Mutex
 	calls  int
+	lastQ  maps.Query
 	result []maps.Company
 	err    error
 }
 
-func (f *fakeScraper) Search(_ context.Context, _ maps.Query) ([]maps.Company, error) {
+func (f *fakeScraper) Search(_ context.Context, q maps.Query) ([]maps.Company, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
+	f.lastQ = q
 	return f.result, f.err
 }
 
@@ -89,11 +96,11 @@ func pipeConfig() config.Config {
 
 // wiredPipeline returns a pipeline with all three model stages on in-process
 // fakes, plus handles to the two that cost tokens.
-func wiredPipeline(t *testing.T) (*Pipeline, *fakeSearcher, *fakeAnalyzer, *fakeDrafter) {
+func wiredPipeline(t *testing.T) (*Pipeline, *fakeScraper, *fakeAnalyzer, *fakeDrafter) {
 	t.Helper()
 	cfg := pipeConfig()
 
-	searcher := &fakeSearcher{}
+	searcher := &fakeScraper{}
 	analyzer := &fakeAnalyzer{}
 	drafter := &fakeDrafter{}
 
@@ -101,7 +108,7 @@ func wiredPipeline(t *testing.T) (*Pipeline, *fakeSearcher, *fakeAnalyzer, *fake
 	gaps := NewGapAnalyzer(cfg, analyzer, newFakeGapStore())
 	emails := NewEmailRunner(cfg, drafter, newFakeEmailStore())
 
-	p := NewPipeline(cfg, searcher, nil, &fakeRegionStore{}, cat, gaps, emails)
+	p := NewPipeline(cfg, regionsearch.Standard(regionsearch.Sources{Sidecar: searcher}), &fakeRegionStore{}, cat, gaps, emails)
 	return p, searcher, analyzer, drafter
 }
 
@@ -181,12 +188,15 @@ func TestPipeline_RegionCacheHitSkipsSearch(t *testing.T) {
 	}
 }
 
-func TestPipeline_ScrapeFallback(t *testing.T) {
+// The free source answers and the billed one is never touched. This is the
+// whole point of the order: a machine with a Places key still spends nothing on
+// a region search that the scrape can serve.
+func TestPipeline_FreeSourceAnswersAndPlacesIsNotCalled(t *testing.T) {
 	cfg := pipeConfig()
-	searcher := &fakeSearcher{err: errors.New("places 503")}
 	scraper := &fakeScraper{result: []maps.Company{pipeCompany("p1", "restaurant")}}
+	searcher := &fakeSearcher{result: []maps.Company{pipeCompany("p2", "dentist")}}
 
-	p := NewPipeline(cfg, searcher, scraper, &fakeRegionStore{},
+	p := NewPipeline(cfg, regionsearch.Standard(regionsearch.Sources{Sidecar: scraper, Places: searcher}), &fakeRegionStore{},
 		New(cfg, &fakeClassifier{}, newFakeStore()), nil, nil)
 
 	rep, err := p.Run(context.Background(), RunRequest{Query: maps.Query{Text: "x"}})
@@ -196,19 +206,44 @@ func TestPipeline_ScrapeFallback(t *testing.T) {
 	if len(rep.Companies) != 1 || rep.Companies[0].Category != CategoryRestaurant {
 		t.Fatalf("expected the scraped restaurant, got %+v", rep.Companies)
 	}
-	if scraper.calls != 1 {
-		t.Errorf("scraper calls = %d, want 1", scraper.calls)
+	if searcher.calls != 0 {
+		t.Errorf("the billed source was called %d times, want 0", searcher.calls)
 	}
-	if !hasNoteContaining(rep.Notes, "scrape fallback") {
-		t.Errorf("expected a fallback note, got %v", rep.Notes)
+	if !hasNoteContaining(rep.Notes, "answered by "+maps.SourceScrape) {
+		t.Errorf("expected a provenance note, got %v", rep.Notes)
 	}
 }
 
-func TestPipeline_NoDataWhenBothSourcesFail(t *testing.T) {
+// And the reverse: the scrape is down, so the key earns its keep.
+func TestPipeline_FallsBackToPlacesWhenTheScrapeFails(t *testing.T) {
 	cfg := pipeConfig()
+	scraper := &fakeScraper{err: errors.New("sidecar unavailable")}
+	searcher := &fakeSearcher{result: []maps.Company{pipeCompany("p1", "restaurant")}}
+
+	p := NewPipeline(cfg, regionsearch.Standard(regionsearch.Sources{Sidecar: scraper, Places: searcher}), &fakeRegionStore{},
+		New(cfg, &fakeClassifier{}, newFakeStore()), nil, nil)
+
+	rep, err := p.Run(context.Background(), RunRequest{Query: maps.Query{Text: "x"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(rep.Companies) != 1 {
+		t.Fatalf("expected the billed result, got %+v", rep.Companies)
+	}
+	if searcher.calls != 1 {
+		t.Errorf("places calls = %d, want 1", searcher.calls)
+	}
+	if !hasNoteContaining(rep.Notes, "billed") {
+		t.Errorf("a billed answer must say so, got %v", rep.Notes)
+	}
+}
+
+func TestPipeline_NoDataWhenEverySourceFails(t *testing.T) {
+	cfg := pipeConfig()
+	scraper := &fakeScraper{err: errors.New("sidecar down")}
 	searcher := &fakeSearcher{err: errors.New("places down")}
 
-	p := NewPipeline(cfg, searcher, nil, nil, nil, nil, nil)
+	p := NewPipeline(cfg, regionsearch.Standard(regionsearch.Sources{Sidecar: scraper, Places: searcher}), nil, nil, nil, nil)
 
 	_, err := p.Run(context.Background(), RunRequest{Query: maps.Query{Text: "x"}})
 	if !errors.Is(err, ErrNoData) {
@@ -274,5 +309,112 @@ func TestPipeline_CancelledContext(t *testing.T) {
 
 	if _, err := p.Run(ctx, RunRequest{Query: maps.Query{Text: "x"}, WithEmails: true}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
+	}
+}
+
+// --- the ledger ------------------------------------------------------------
+
+type fakeLedger struct {
+	mu    sync.Mutex
+	runs  []store.LeadRun
+	rows  [][]store.LeadRow
+	err   error
+	calls int
+}
+
+func (f *fakeLedger) PutLeadRun(_ context.Context, run store.LeadRun, rows []store.LeadRow) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return f.err
+	}
+	f.runs = append(f.runs, run)
+	f.rows = append(f.rows, rows)
+	return nil
+}
+
+func TestPipeline_RecordsTheRunInTheLedger(t *testing.T) {
+	p, searcher, _, _ := wiredPipeline(t)
+	ledger := &fakeLedger{}
+	p.UseLedger(ledger)
+
+	searcher.result = []maps.Company{pipeCompany("p1", "dentist"), pipeCompany("p2", "hair_salon")}
+
+	rep, err := p.Run(context.Background(), RunRequest{
+		Query:  maps.Query{Text: "Kadikoy dentist"},
+		Region: "Kadikoy",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if ledger.calls != 1 {
+		t.Fatalf("want one ledger write, got %d", ledger.calls)
+	}
+	if got := len(ledger.rows[0]); got != 2 {
+		t.Fatalf("want 2 recorded companies, got %d", got)
+	}
+	if ledger.runs[0].Query != "Kadikoy dentist" || ledger.runs[0].RegionLabel != "Kadikoy" {
+		t.Fatalf("run not described: %+v", ledger.runs[0])
+	}
+	if ledger.runs[0].ID == "" {
+		t.Error("a run must carry an id")
+	}
+	if ledger.rows[0][0].Category != string(rep.Companies[0].Category) {
+		t.Error("the recorded category must be the one the report shows")
+	}
+}
+
+// The ledger is a record, not a stage: failing to write it costs a note, not
+// the answer (SD-6).
+func TestPipeline_LedgerFailureIsANoteNotAnError(t *testing.T) {
+	p, searcher, _, _ := wiredPipeline(t)
+	p.UseLedger(&fakeLedger{err: errors.New("disk on fire")})
+
+	searcher.result = []maps.Company{pipeCompany("p1", "dentist")}
+
+	rep, err := p.Run(context.Background(), RunRequest{Query: maps.Query{Text: "Kadikoy dentist"}})
+	if err != nil {
+		t.Fatalf("a ledger failure must not fail the run: %v", err)
+	}
+	if len(rep.Companies) != 1 {
+		t.Fatalf("the run must still answer, got %d companies", len(rep.Companies))
+	}
+	if !hasNoteContaining(rep.Notes, "lead defteri") {
+		t.Errorf("want a ledger note, got %v", rep.Notes)
+	}
+}
+
+// The ledger is keyed by place_id, exactly as the outreach drafts are.
+func TestPipeline_LedgerSkipsCompaniesWithoutAPlaceID(t *testing.T) {
+	p, searcher, _, _ := wiredPipeline(t)
+	ledger := &fakeLedger{}
+	p.UseLedger(ledger)
+
+	anon := pipeCompany("", "dentist")
+	searcher.result = []maps.Company{pipeCompany("p1", "dentist"), anon}
+
+	if _, err := p.Run(context.Background(), RunRequest{Query: maps.Query{Text: "Kadikoy dentist"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(ledger.rows[0]); got != 1 {
+		t.Fatalf("want only the identified company recorded, got %d", got)
+	}
+}
+
+// A pipeline with no ledger is the pipeline as it was before the ledger.
+func TestPipeline_NoLedgerStillRuns(t *testing.T) {
+	p, searcher, _, _ := wiredPipeline(t)
+	searcher.result = []maps.Company{pipeCompany("p1", "dentist")}
+
+	rep, err := p.Run(context.Background(), RunRequest{Query: maps.Query{Text: "Kadikoy dentist"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(rep.Companies) != 1 {
+		t.Fatalf("want 1 company, got %d", len(rep.Companies))
+	}
+	if hasNoteContaining(rep.Notes, "lead defteri") {
+		t.Errorf("no ledger means no ledger note, got %v", rep.Notes)
 	}
 }

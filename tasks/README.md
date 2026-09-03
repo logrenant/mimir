@@ -26,6 +26,20 @@
 | [task-49](task-49-machine-scan.md) | done | `bin/mimir-scan`: every project under a root read into Brain — discovery, untracked files included, undistilled files retried. |
 | [task-51](task-51-resident-scan.md) | done | The distil tier is agy-only; the daemon keeps one scan running over ~/development and ~/Documents, reads PDFs, and serves the graph. |
 | [task-52](task-52-desktop-brain.md) | done | Desktop: the Brain tab — scan control and a force-directed picture of the knowledge base. |
+| [task-53](task-53-account-discovery.md) | done | `~/.claude-accounts` is the authority for credential slots: scanned at startup, discovered slots cannot be forgotten, and the daemon's own model calls spend a chosen account. |
+| [task-54](task-54-desktop-account-slots.md) | done | Desktop: discovered slots are marked rather than forgettable, refresh rescans the directory, and the background account is a row control. |
+| [task-55](task-55-keyless-region-search.md) | done | Region search with no Google credential: one router that asks the free scrape first, a sidecar the daemon starts itself, and lead-gen no longer gated on a Places key. |
+| [task-56](task-56-desktop-region-source.md) | done | Desktop: the results header says which provider answered — free scrape or billed Places — so a missing phone column reads as a source difference. |
+| [task-57](task-57-contacts-and-export.md) | done | A model fallback for a feed the selectors cannot read, a third region-search provider, website-based contact enrichment, and the per-category Excel workbook. |
+| [task-58](task-58-desktop-export.md) | done | Desktop: "Excel'e aktar" with an enrichment toggle, and a reveal command scoped to the exports directory. |
+| [task-59](task-59-classify-fallback.md) | done | Classification, and only classification, falls back to claude haiku when the distil tier is signed out — otherwise every scraped company is `unknown`. |
+| [task-60](task-60-leadgen-workspace.md) | done | Desktop: the lead-gen workspace — a category rail, a sortable company table with a detail panel, and a draft queue reviewed one letter at a time. |
+| [task-61](task-61-gemini-38.md) | done | The distil tier moves to `gemini-3.8-flash-high` — newer, and the tag the account actually serves. |
+| [task-63](task-63-lead-ledger.md) | done | The lead ledger: a run outlives its response — one row per business, a run history beside it, and three reads that cost nothing. |
+| [task-64](task-64-desktop-leads.md) | done | Desktop: the lead-gen screen opens on saved businesses instead of an empty panel. |
+| [task-65](task-65-chat-archive.md) | done | The chat archive: Claude Code, Terminals and agy conversations stored verbatim, searchable, model-free. |
+| [task-67](task-67-file-versions.md) | done | File version history: what a scanned file used to mean, and a scan that says out loud when it re-read one. |
+| [task-68](task-68-desktop-versions.md) | done | Desktop: the node version timeline. |
 
 They are split by file, not by package: the odd-numbered tasks own
 `internal/**` and `cmd/**`, the even-numbered ones own `desktop/**`, so a

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Terminal, StatusDot } from "../components/Terminal";
 import { BrainConsole, statusOf } from "../components/BrainConsole";
+import { ShellTerminal } from "../components/ShellTerminal";
 import { useTerminals } from "../components/TerminalsProvider";
-import { api, DaemonError, type BrainScanStatus, type Run } from "../lib/daemon";
+import { api, DaemonError, type BrainScanStatus, type Run, type TerminalProfile } from "../lib/daemon";
 import { recentRuns } from "../lib/terminals";
 import { cardTitle, isSetTime } from "../lib/board";
 
@@ -29,6 +30,13 @@ export function Terminals() {
   // TerminalsProvider or teaching it a second kind of thing.
   const [brainOpen, setBrainOpen] = useState(false);
   const [scan, setScan] = useState<BrainScanStatus | null>(null);
+
+  // The interactive shell is a third kind of pane, beside the brain console and
+  // a run's transcript. It is identified by profile name rather than by a
+  // Session, because it has no run row: nothing dispatched it, the operator
+  // opened a terminal.
+  const [profiles, setProfiles] = useState<TerminalProfile[]>([]);
+  const [shell, setShell] = useState<TerminalProfile | null>(null);
   const active = brainOpen ? null : (sessions.find((s) => s.runID === activeID) ?? sessions[0] ?? null);
 
   // One slow poll, only for the sidebar's dot and label. The console does its
@@ -88,6 +96,24 @@ export function Terminals() {
     };
   }, [recentsOpen]);
 
+  // The daemon owns the profile list so the picker and the shell that runs the
+  // command cannot disagree about what a name means.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { profiles } = await api.terminalProfiles();
+        if (!cancelled) setProfiles(profiles);
+      } catch {
+        // A daemon too old to know the route still runs coding sessions; the
+        // shell section simply does not appear.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const openMap = useMemo(
     () => Object.fromEntries(sessions.map((s) => [s.runID, s])),
     [sessions],
@@ -115,8 +141,31 @@ export function Terminals() {
           status={statusOf(scan)}
           label="agy · sürekli tarama"
           detail={scan ? `${scan.nodes_total} düğüm` : undefined}
-          onClick={() => setBrainOpen(true)}
+          onClick={() => {
+            setShell(null);
+            setBrainOpen(true);
+          }}
         />
+
+        {profiles.length > 0 && (
+          <>
+            <div style={{ height: 12 }} />
+            <SectionLabel>KABUK</SectionLabel>
+            {profiles.map((p) => (
+              <SidebarRow
+                key={p.name}
+                on={shell?.name === p.name}
+                status={shell?.name === p.name ? "running" : "idle"}
+                label={p.name}
+                detail={p.command}
+                onClick={() => {
+                  setBrainOpen(false);
+                  setShell(p);
+                }}
+              />
+            ))}
+          </>
+        )}
 
         <div style={{ height: 12 }} />
         <SectionLabel>OTURUMLAR</SectionLabel>
@@ -135,6 +184,7 @@ export function Terminals() {
             label={session.title}
             onClick={() => {
               setBrainOpen(false);
+              setShell(null);
               setActive(session.runID);
             }}
           />
@@ -202,6 +252,7 @@ export function Terminals() {
                 }
                 onClick={() => {
                   setBrainOpen(false);
+                  setShell(null);
                   open(run);
                 }}
               />
@@ -213,6 +264,8 @@ export function Terminals() {
       <div style={{ minWidth: 0, minHeight: 0 }}>
         {brainOpen ? (
           <BrainConsole />
+        ) : shell ? (
+          <ShellTerminal key={shell.name} profile={shell} />
         ) : active ? (
           <Terminal session={active} onStop={(id) => void stop(id)} onClose={close} />
         ) : (

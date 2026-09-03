@@ -4,6 +4,7 @@ import type { BrainGraphEdge, BrainGraphNode } from "./daemon";
 import {
   degrees,
   fitView,
+  formatBytes,
   hitTest,
   initialView,
   kindStyle,
@@ -16,6 +17,7 @@ import {
   rng,
   screenToWorld,
   seedLayout,
+  versionLines,
   visibleLabels,
   worldSize,
   worldToScreen,
@@ -294,5 +296,39 @@ describe("initialView", () => {
     const centre = worldToScreen(view, cx, cy);
     expect(Math.abs(centre.x - 600)).toBeLessThan(220);
     expect(Math.abs(centre.y - 400)).toBeLessThan(220);
+  });
+});
+
+describe("the version timeline", () => {
+  const versions = [
+    { content_hash: "b".repeat(64), seen_at: 1_700_003_600, size_bytes: 2048, assessment: "yeni okuma" },
+    { content_hash: "a".repeat(64), seen_at: 1_700_000_000, size_bytes: 1024, assessment: "eski okuma" },
+  ];
+
+  // The list is newest first, so the first row is what the panel already shows
+  // above it — saying so is what stops the timeline reading as two unrelated
+  // assessments.
+  it("marks only the newest reading as current", () => {
+    const lines = versionLines(versions);
+    expect(lines.map((l) => l.current)).toEqual([true, false]);
+  });
+
+  it("shortens the hash — a full sha256 does not fit a side panel", () => {
+    expect(versionLines(versions)[0].shortHash).toHaveLength(8);
+  });
+
+  it("keeps each reading with its own version", () => {
+    expect(versionLines(versions)[1].assessment).toBe("eski okuma");
+  });
+
+  it("a missing size is blank, not '0 B'", () => {
+    expect(formatBytes(undefined)).toBe("");
+    expect(formatBytes(0)).toBe("");
+  });
+
+  it("sizes read the way a person reads them", () => {
+    expect(formatBytes(900)).toBe("900 B");
+    expect(formatBytes(2048)).toBe("2 KB");
+    expect(formatBytes(3 * 1024 * 1024)).toBe("3.0 MB");
   });
 });

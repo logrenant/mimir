@@ -93,7 +93,7 @@ ve yanında düğümlerle kenarların kuvvet yönlendirmeli resmi (`GET /brain/g
 taramanın arada oturum olmayan hâli: bir kökün altındaki bütün projeleri bulur —
 git checkout'ları ve hiç repo olmamış ama kendi dosyaları olan klasörler — ve her
 birini bitene kadar sürer, ilerlemeyi stderr'e yazar. Dosya başına `agy`
-üzerinden bir `gemini-3.7-flash-high` çağrısı; `-n` faturayı söyler, hiçbir şey
+üzerinden bir `gemini-3.8-flash-high` çağrısı; `-n` faturayı söyler, hiçbir şey
 harcamaz. Damıtılamayan bir düğüm content hash tutmaz, yani sağlayıcının çöktüğü
 bir aralık sonsuza dek atlanmaz, bir sonraki çalışmada yeniden denenir.
 
@@ -156,10 +156,22 @@ olarak taşır.
 | `GET /projects` | kayıtlı proje klasörlerini listeler |
 | `POST /projects` | `{ path }` → kanonikleştir (`Abs`+`EvalSymlinks`), `/`, `$HOME` ve kara listedeki kökleri reddet, var olan bir dizin olmalı → opak bir `project_id` döner. **Asla varsayılan proje yok.** |
 | `POST /coding-tasks` | `{ project_id, prompt }` → klasör kapsamlı akışlı bir `claude` oturumu başlatır, bir `run_id` döner |
+| `GET /accounts` · `POST /accounts` · `DELETE /accounts/{id}` | Claude Code kimlik yuvaları — kimlik başına bir dizin. Taramadan gelen yuva silinemez: onun var olduğuna hesap dizini karar verir |
+| `POST /accounts/scan` | `~/.claude-accounts` yeniden okunur, bulunanlar kaydedilir (daemon açılışta da yapar) |
+| `GET /accounts/{id}/status` | bir yuva için canlı `claude auth status` — kim giriş yapmış, hangi planla. Bedava |
+| `POST /accounts/background` | `{ account_id }` → daemon'un **kendi** model çağrılarının harcayacağı yuva; boş = CLI'ın varsayılanı |
+| `POST /maps/leadgen/export` | aynı gövde + `{ enrich, dir }` → `.xlsx` yazar (özet + kategori başına bir sayfa), yolunu ve sayıları döner |
 | `GET /coding-tasks/{id}` | çalıştırma meta verisi / durum / maliyet |
 | `GET /ws/runs/{id}` | WebSocket: çalıştırmanın JSONL transkriptini yeniden oynatır, sonra canlı olay veri yolunu takip eder — `RunStarted`, `TextDelta`, `ReasoningDelta`, `ToolCall`, `ToolResult`, `RunCompleted`, `RunFailed`, `rate_limit`; `Event.Seq` üzerinden birleştirilir, böylece kayıp veren bir veri yolu izleyiciye asla boşluk göstermez |
-| `POST /maps/leadgen` | `{ query, region, count, language_code, region_code, near, gap_analysis, emails }` → lead-gen pipeline'ını çalıştırır (§5); yalnızca Places anahtarıyla kaydedilir |
+| `POST /maps/leadgen` | `{ query, region, count, language_code, region_code, near, gap_analysis, emails, provider?, model? }` → lead-gen pipeline'ını çalıştırır (§5); yalnızca Places anahtarıyla kaydedilir. `provider`/`model`, model aşamalarının hangi katmanı harcayacağını belirler; ikisi de yoksa sınıfa göre yönlendirilir |
+| `GET /llm/providers` | `provider`/`model` alanlarının denetlendiği sağlayıcı/model izin listesi ve hiçbiri gönderilmediğinde bir çalıştırmanın alacağı varsayılan. Her daemon'da yanıtlar — masaüstündeki seçici bunun bir görünümüdür, kopyası değil |
 | `POST /maps/emails/status` | `{ place_id, status }`, status ∈ draft / sent / skipped — SQL, bir bölge yeniden çalıştırmasında `sent`/`skipped` taslağın yeniden üretilmesini engeller; yalnızca Places anahtarıyla kaydedilir |
+| `GET /maps/leads` | Lead defteri: bir koşunun bulduğu her işletme, kategorisi ve taslak durumuyla. Süzgeçler: `category`, `run_id`, `q`, `without_website`, `limit`, `offset`. Hiçbir şey harcamaz, hiçbir yerde arama yapmaz |
+| `GET /maps/leads/categories` | Kategori rayı — aynı süzgeç altında, sayfanın değil defterin tamamı üzerinden sayılır |
+| `GET /maps/leads/runs` | Koşu geçmişi: hangi arama neyi, ne zaman buldu |
+| `GET /chat/sessions` · `GET /chat/sessions/{id}` | Kelimesi kelimesine sohbet arşivi — Claude Code oturumları, daemon'ın kendi kodlama koşuları ve agy konuşmaları, tur tur |
+| `GET /chat/search` | Söylenenin tam metni üzerinde arama, proje kimliğiyle sınırlandırılabilir |
+| `GET /brain/nodes/{id}/versions` | Bir düğümün geçmişi: kaynağın taşıdığı her farklı içerik hash'i için bir kayıt, o sürümün değerlendirmesiyle |
 | `/mcp`, `/mcp/` | tüm MCP araç seti StreamableHTTP üzerinden — stdio ile aynı kayıt defteri, aynı kontrol noktası |
 
 ---
@@ -186,7 +198,61 @@ düşünce/eylem akışını canlı, saniye saniye izleyin.
 - **Zarif kapanış.** SIGTERM'de daemon, çıkmadan önce devam eden çalıştırmaları
   boşaltır.
 
+**Kapasite kimlik başına bir çalıştırmadır ve kimlikler diskten gelir.** Bir
+kimlik yuvası, CLI'ın hash'leyip Keychain girdisi adına çevirdiği bir dizindir
+(`CLAUDE_SECURESTORAGE_CONFIG_DIR`): `~/.claude-accounts/<ad>` bir hesap, hiç
+dizin olmaması ise CLI'ın kendi yuvasıdır. Daemon bu ağacı açılışta tarar —
+operatörün kabuğunun (`claude-acct`, `claude-who`) zaten kullandığı kural — yani
+terminalden giriş yapılmış bir yuva, ikinci kez kaydedilmeden burada bir şerit
+olur. İki kimlik = aynı anda iki task; bir task bir yuvaya iğnelenebilir ya da
+otomatik bırakılabilir. Mimir hiçbir kimlik bilgisini okumaz, taşımaz, geçersiz
+kılmaz: yalnızca alt süreci bir yuvaya yöneltir.
+
+Daemon'un kendi model çağrıları — refine, distill, recap — dispatcher'dan
+geçmez; arka plan hesabı olarak işaretlenmiş yuvayı, işaret yoksa CLI'ın
+varsayılanını harcarlar.
+
 Gereksinim: `$PATH` üzerinde ve giriş yapılmış `claude` CLI.
+
+---
+
+### Bölge araması Google kimlik bilgisi istemiyor
+
+`internal/regionsearch` sağlayıcıları tek bir sabit sırayla sorar, **önce
+bedava olan**:
+
+| Sıra | Sağlayıcı | Maliyet | Verdiği |
+|---|---|---|---|
+| 1 | `internal/mapscrape` — halka açık Maps sonuç akışı, yerel bir Playwright konteyneri render eder | yok; kimlik bilgisi gerekmez | ad, koordinat, puan, yorum sayısı, bazen web sitesi ve adres |
+| 2 | `internal/mapsllm` — aynı sayfa Crawl4AI ile çekilir, claude haiku okur | model token'ı; Google parası değil | sayfa render olduğunda aynı alanlar |
+| 3 | `internal/maps` — Google Places API | her istek faturalanır | yukarıdakiler + telefon, biçimli adres ve Google `types[]` |
+
+Model aynı zamanda scraper'ın kendi kurtarma yolu: seçiciler hiçbir şey
+okuyamadığında — o markup Google'ın ve haber vermeden değişir — render edilmiş
+sayfa aynı profille yeniden okunur, bölge boş bildirilmez. Bir şey ayrıştırabilen
+akış modele hiç gitmez, ve buradaki hiçbir prompt sayfada olmayan bir şirketi
+üretemez.
+
+Konteyner operatörün derdi değil: onu kapalı bulan bir arama, daemon'un yanına
+kurulan compose dosyasıyla `docker compose up -d` çalıştırır, sağlık kontrolünü
+bekler ve isteği bir kez tekrarlar. `make maps-up` hâlâ elle başlatır. Kaynak
+bilgisi her satırla birlikte gider — kazınmış bir `place_id` `mapscrape:` önekini
+taşır, yani faturalı bir satırın üzerine asla yazamaz — ve rapor, `maps_search`
+yanıtı ve masaüstü rozeti hangi kaynağın cevapladığını söyler.
+
+### Excel çıktısı
+
+`POST /maps/leadgen/export` aramayı çalıştırır ve
+`~/Library/Application Support/mimir/exports/` altına bir `.xlsx` yazar: bir özet
+sayfası, ardından **her kategori için bir sayfa**. Her satırda şirket, web
+sitesi olup olmadığı, web sitesi, telefon, e-posta, adres, puan, koordinat,
+şirketi hangi kaynağın bulduğu ve iletişim bilgisini hangi katmanın bulduğu var.
+
+`enrich: true` ile daemon her şirketin kendi sitesini bir kez açar ve iletişim
+bilgilerini oradan okur — önce `tel:`/`mailto:` bağlantısı ya da alt bilgideki
+numara, yalnızca onların bulamadığı sayfalarda claude haiku, ve modelin cevabı
+da aynı kalıplardan geçirilir. Hiçbir şey tahmin edilmez: boş bir telefon hücresi
+"arandı, bulunamadı" demektir ve yöntem sütunu hangi katmanın baktığını söyler.
 
 ---
 
@@ -204,6 +270,22 @@ liste üretmedi) veya iptal edilmiş bir bağlam için hata döner. Diğer her �
 | 2 | **Kategorize et** | çoğunlukla hayır | Şirket başına normalleştirilmiş bir `Category`. Statik bir Google-`types[]` → kategori tablosu yaygın durumu ücretsiz yanıtlar; `claude` yalnızca belirsiz kalıntıyı, kapalı bir sözcük dağarcığına karşı, gruplar hâlinde sınıflandırır (düz metin çıktısı yok). | `company_categorization` (`LeadgenCategoryVersion` ile anahtarlanır) |
 | 3 | **Kategori başına boşluk analizi** | evet | Bir kategorideki ortak boşluklar/ihtiyaçlar; şirket başına deterministik hesaplanan beş skalerden sentezlenir (asla ham sayfa değil). SD-7 katı token tavanı. | `category_gap_analysis` (`region, category, LeadgenGapVersion, company_set_hash` ile anahtarlanır) |
 | 4 | **Erişim e-postası** | evet | Şirket başına bir taslak pazarlama e-postası; o şirketin bilgileri + kategorisinin 3. aşama boşluk analizi verilir. | `outreach_emails` (`place_id, prompt_version` ile anahtarlanır; bölge yeniden çalıştırmasının uyduğu bir `status` ile) |
+
+### Modeli seçmek
+
+2–4. aşamalar *sınıfa* göre yönlendirilir — tek seferlik sıkıştırma ücretsiz
+`agy` katmanına, sentez `claude`'a — ve bir çalıştırma hiçbir şey istemediğinde
+aldığı budur. Bunun yerine bir çalıştırma bir sağlayıcı ve model adı
+verebilir (`provider` / `model`, ya da masaüstündeki lead-gen ekranının
+seçicisi); o zaman üç model aşamasının üçü de onu harcar. Çift, hiçbir yere
+gitmeden önce `config.LLMProviders`'a karşı denetlenir, çünkü iki metin de bir
+alt sürecin argv'sine dönüşür; tanınmayan bir çift 400'dür, sessizce
+varsayılana düşmek değil. Bir seçim ayrıca erişilebilirlik yedeğini de kapatır
+ve okuduğu önbellekleri ad alanına ayırır — farklı bir modelle yapılan
+çalıştırma, öncekinin yanıtlarını tekrarlamak yerine gerçekten o modeli çağırır.
+Bölge aramasının kendi model yedeği (`internal/mapsllm`) buna dâhil değildir:
+o, kuruluş anında bağlanır ve `maps_search`'ün her çağıranı tarafından
+paylaşılır.
 
 `Pipeline.Run` her zaman 1–2. aşamaları yapar. 3. aşama `gap_analysis: true` iken;
 4. aşama `emails: true` iken (bu boşluk analizini de gerektirir) çalışır. İki model
@@ -256,6 +338,7 @@ asla MCP tüketicisinin gördüğü bir doğruluk kaynağı değildir.
 | `crawl_pages` | ham crawl önbelleği (markdown + HTML), `sha256(url)` ile anahtarlı | `config.PageCacheTTL` |
 | `refined_pages` | rafine önbelleği (rafine metin + token tahmini) | aynı TTL; `RefinePromptVersion` yükseltmesi |
 | `projects` | kod görevi çalıştırıcısı için kanonikleştirilmiş klasör yolu | değiştirmek için yeniden seç |
+| `accounts` | kimlik yuvaları: dizin, taramadan mı geldiği, ve daemon'un kendi çağrılarının hangisini harcadığı | açılışta yeniden taranır; yalnızca ekler |
 | `coding_runs` | çalıştırma meta verisi, maliyet, oturum id'si, transkript işaretçisi | yok (geçmiş) |
 | `companies` | normalleştirilmiş Places/kazıma sonucu, `place_id` ile anahtarlı | çağıran tarafın verdiği uzun TTL (~30 gün) |
 | `region_searches` | bir bölge aramasının döndürdüğü sıralı `place_id` listesi | aynı TTL; okumada ya hep ya hiç |
@@ -266,6 +349,11 @@ asla MCP tüketicisinin gördüğü bir doğruluk kaynağı değildir.
 | `memory_notes` | `context_remember` ile sabitlenen olgular | yok — ingest tarafından asla yeniden yazılmaz |
 | `memory_ingest_state` | her transkriptin ne kadarının ayrıştırıldığı | transkript küçüldüğünde sıfırlanır (eklenmiş değil, değiştirilmiş demektir) |
 | `memory_fts` | episode başlık, özet, dosya ve komutları üzerinde FTS5 indeksi | trigger'larla senkron tutulur |
+| `leads` | Lead defteri: bulunmuş her işletme için tek satır, kategorisiyle. **Önbellek değil kayıt** — TTL yok, okuyan hiçbir şey silmez | yok; yeniden koşu alanları tazeler ama dolu bir alanı boşaltmaz |
+| `lead_runs` · `lead_run_members` | Hangi arama hangi işletmeyi, ne zaman buldu | yok (geçmiş) |
+| `chat_sessions` · `chat_turns` | Konuşmalar olduğu gibi — `memory_episodes`'ın kırptığı metin. Aynı ayrıştırmadan, aynı episode anahtarıyla yazılır | yok; yeniden okuma turu çoğaltmaz, günceller |
+| `chat_fts` | İstem ve asistan yanıtları üzerinde FTS5 indeksi | trigger'larla senkron tutulur |
+| `brain_node_versions` | Bir düğüm kaynağının taşıdığı her farklı içerik hash'i için bir kayıt: ne zaman, ne kadar büyüktü, ne anlama geliyordu. Dosya içeriği saklanmaz | eklemede `BrainVersionsPerNode` sınırına budanır |
 
 Claude Code token'ı harcayan her şey `internal/refine`'daki tek `claude -p`
 headless alt sürecinden geçer: sayfalar için `Distil`, M8'den beri proje hafızası

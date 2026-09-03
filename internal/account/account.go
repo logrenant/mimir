@@ -38,6 +38,11 @@ var (
 	// ErrAccountInUse means the account still has work attached to it, so
 	// forgetting it now would strand a queue.
 	ErrAccountInUse = errors.New("account: this account still has queued or running work")
+
+	// ErrAccountDiscovered means the slot was found on disk, and the disk is
+	// what decides it exists. Forgetting it here would promise a removal the
+	// next scan takes back.
+	ErrAccountDiscovered = errors.New("account: this slot comes from the accounts directory — remove the directory to remove the slot")
 )
 
 // Account is a registered credential slot.
@@ -47,10 +52,16 @@ type Account struct {
 	// ConfigDir is empty for the CLI's default slot. It is reported so the
 	// operator can tell two slots apart; it holds no secret, only a path whose
 	// hash names a keychain entry.
-	ConfigDir  string    `json:"config_dir"`
-	IsDefault  bool      `json:"is_default"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastUsedAt time.Time `json:"last_used_at"`
+	ConfigDir string `json:"config_dir"`
+	IsDefault bool   `json:"is_default"`
+	// Discovered means a scan found this slot on disk. Those rows answer to
+	// the filesystem, so they cannot be forgotten from the app: removing one
+	// means removing its directory.
+	Discovered bool `json:"discovered"`
+	// IsBackground marks the slot the daemon's own model calls spend.
+	IsBackground bool      `json:"is_background"`
+	CreatedAt    time.Time `json:"created_at"`
+	LastUsedAt   time.Time `json:"last_used_at"`
 }
 
 // Store is the persistence the registry needs. *store.Store satisfies it.
@@ -60,6 +71,9 @@ type Store interface {
 	FindAccountByConfigDir(ctx context.Context, dir string) (store.AccountRow, bool, error)
 	ListAccounts(ctx context.Context) ([]store.AccountRow, error)
 	TouchAccount(ctx context.Context, id string, at time.Time) error
+	MarkAccountDiscovered(ctx context.Context, id string) error
+	SetBackgroundAccount(ctx context.Context, id string) error
+	GetBackgroundAccount(ctx context.Context) (store.AccountRow, bool, error)
 	DeleteAccount(ctx context.Context, id string) error
 	CountRunsForAccount(ctx context.Context, id string, statuses ...string) (int, error)
 }
@@ -81,12 +95,14 @@ func newID() (string, error) {
 
 func fromRow(r store.AccountRow) Account {
 	return Account{
-		ID:         r.ID,
-		Label:      r.Label,
-		ConfigDir:  r.ConfigDir,
-		IsDefault:  r.ConfigDir == "",
-		CreatedAt:  r.CreatedAt,
-		LastUsedAt: r.LastUsedAt,
+		ID:           r.ID,
+		Label:        r.Label,
+		ConfigDir:    r.ConfigDir,
+		IsDefault:    r.ConfigDir == "",
+		Discovered:   r.Discovered,
+		IsBackground: r.IsBackground,
+		CreatedAt:    r.CreatedAt,
+		LastUsedAt:   r.LastUsedAt,
 	}
 }
 
@@ -208,13 +224,21 @@ func (r *Registry) Touch(ctx context.Context, id string, at time.Time) error {
 	return r.store.TouchAccount(ctx, id, at)
 }
 
-// Delete forgets a slot, refusing while work still points at it.
+// Delete forgets a slot, refusing a discovered one outright and any slot that
+// still has work pointing at it.
 //
 // The credentials are not touched: they live in the keychain, and Mimir has no
 // business logging anybody out. Deleting here means "stop offering this slot".
 func (r *Registry) Delete(ctx context.Context, id string) error {
-	if _, err := r.Get(ctx, id); err != nil {
+	acct, err := r.Get(ctx, id)
+	if err != nil {
 		return err
+	}
+	// A discovered slot is the accounts directory's, not this registry's. The
+	// next scan would register it again, so accepting the delete would report
+	// a removal that does not hold.
+	if acct.Discovered {
+		return fmt.Errorf("%w: %s", ErrAccountDiscovered, acct.Label)
 	}
 	n, err := r.store.CountRunsForAccount(ctx, id,
 		store.RunStatusQueued, store.RunStatusRunning)
