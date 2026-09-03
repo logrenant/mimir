@@ -4,6 +4,37 @@ Bu dosya [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) biçimini,
 sürüm numaraları [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 kuralını izler.
 
+## [2.11.1] — 2026-09-03
+
+**İki hesap aynı anda açık kalıyor, ve `claude` artık her seferinde yeniden
+erişim izni sormuyor.**
+
+### Düzeltildi
+
+- **Kabuğun ömrü artık soketin ömrü değil.** pty'yi websocket sahipleniyordu:
+  her bağlantıda yeni bir `Start`, ve socket kapanınca `Close` kabuğa SIGHUP.
+  Arayüz de aynı anda tek terminal mount ettiği için ikinci hesabı açmak
+  birincinin viewer'ını unmount ediyor, o da soketi kapatıyor, o da **kabuğu
+  öldürüyordu**. Artık oturumları `ptyterm.Registry` sahipleniyor: viewer
+  ayrılır, kabuk çalışmaya devam eder. İki hesap aynı anda açık kalabiliyor.
+- **Tekrar tekrar sorulan workspace-trust sorusu.** Aynı hatanın ikinci yüzüydü:
+  öldürülen her oturumla birlikte, operatörün az önce verdiği "Yes, I trust this
+  folder" cevabını taşıyan `claude` süreci de gidiyordu, ve profil her
+  değiştiğinde sıfırdan bir `claude` başlıyordu. Oturum yaşadığı için cevap da
+  yaşıyor.
+- **`Registry.Kill` haritadan senkron siliyor.** Eskiden silme işini, kabuk
+  gerçekten ölünce uyanan gözcü goroutine yapıyordu; bir oturumu öldürüp hemen
+  "ne çalışıyor" diye soran çağıran, hâlâ çalıştığı cevabını alıyordu.
+
+### Eklendi
+
+- **Oturum geçmişi geri oynatma.** Bir profile yeniden bağlanan viewer, kabuğun
+  o ana kadar söylediklerini (son 256 KiB) alıyor — profil değiştirip geri
+  dönünce boş ekran değil, bıraktığın ekran geliyor.
+- **`DELETE /terminals/{profile}`** — viewer kapatmak artık kabuğu bitirmediği
+  için, bir oturumu kasten sonlandırmanın tek yolu. Kabuğu kapanmış bir panelde
+  "yeniden başlat" düğmesi.
+
 ## [2.11.0] — 2026-09-03
 
 **Bir lead artık aranabilir bir şey: telefonlar defterde, ve bir bölge tek bir

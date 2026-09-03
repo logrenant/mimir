@@ -37,6 +37,10 @@ export function Terminals() {
   // opened a terminal.
   const [profiles, setProfiles] = useState<TerminalProfile[]>([]);
   const [shell, setShell] = useState<TerminalProfile | null>(null);
+  // Which shells are mounted. Append-only for the life of the screen: a
+  // profile the operator has opened keeps its terminal, because the whole
+  // point is that both accounts stay up while they look at one of them.
+  const [opened, setOpened] = useState<string[]>([]);
   const active = brainOpen ? null : (sessions.find((s) => s.runID === activeID) ?? sessions[0] ?? null);
 
   // One slow poll, only for the sidebar's dot and label. The console does its
@@ -155,11 +159,16 @@ export function Terminals() {
               <SidebarRow
                 key={p.name}
                 on={shell?.name === p.name}
-                status={shell?.name === p.name ? "running" : "idle"}
+                // Running means the shell is up, not that you are looking at
+                // it — that distinction is the feature, so the dot has to show
+                // it. The daemon's own view (`running`) wins once it has been
+                // read, so a shell left over from a previous window shows too.
+                status={p.running || opened.includes(p.name) ? "running" : "idle"}
                 label={p.name}
                 detail={p.command}
                 onClick={() => {
                   setBrainOpen(false);
+                  setOpened((names) => (names.includes(p.name) ? names : [...names, p.name]));
                   setShell(p);
                 }}
               />
@@ -262,10 +271,32 @@ export function Terminals() {
       </div>
 
       <div style={{ minWidth: 0, minHeight: 0 }}>
-        {brainOpen ? (
+        {/*
+         * Every shell opened this session stays mounted, hidden rather than
+         * removed. Unmounting is what broke it before: the cleanup closed the
+         * socket, and the socket owned the pty, so looking at the second
+         * account hung up the first — taking with it the workspace-trust
+         * answer, which is why `claude` asked again every time.
+         *
+         * The daemon now keeps the shell either way (internal/ptyterm), so
+         * this is belt and braces: it also preserves the scrollback and the
+         * cursor position, which a remount would replay but not restore.
+         */}
+        {opened.map((name) => {
+          const p = profiles.find((x) => x.name === name);
+          if (!p) return null;
+          return (
+            <div
+              key={name}
+              style={{ height: "100%", minHeight: 0, display: shell?.name === name ? "block" : "none" }}
+            >
+              <ShellTerminal profile={p} />
+            </div>
+          );
+        })}
+
+        {shell ? null : brainOpen ? (
           <BrainConsole />
-        ) : shell ? (
-          <ShellTerminal key={shell.name} profile={shell} />
         ) : active ? (
           <Terminal session={active} onStop={(id) => void stop(id)} onClose={close} />
         ) : (

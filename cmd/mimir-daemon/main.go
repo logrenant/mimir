@@ -366,6 +366,11 @@ func run() error {
 	// that went away without deleting its own leaves the server half alive.
 	srv.CloseMCPSessions()
 
+	// Interactive shells outlive their viewer on purpose, so they have to be
+	// ended here: nothing else will. A shell left running holds a pty this
+	// process owned, which after exit is a terminal nobody can see or reach.
+	httpAPI.CloseTerminals()
+
 	// Drain before the deferred store close: a run still writing its result
 	// row needs the database to still be open.
 	slog.Info("waiting for in-flight runs")
