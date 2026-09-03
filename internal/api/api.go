@@ -30,6 +30,7 @@ import (
 	"github.com/logrenant/mimir/internal/leadgen"
 	mimirmcp "github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/ptyterm"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -174,10 +175,30 @@ type Server struct {
 	cfg     config.Config
 	deps    Deps
 	started time.Time
+
+	// terminals owns the interactive shells. Held by the server rather than
+	// passed in Deps because it is not a dependency the daemon injects — it is
+	// state this process keeps, and a shell has to outlive the request that
+	// opened it or two profiles could never be open at once.
+	terminals *ptyterm.Registry
 }
 
 func New(cfg config.Config, deps Deps) *Server {
-	return &Server{cfg: cfg, deps: deps, started: time.Now()}
+	return &Server{
+		cfg:       cfg,
+		deps:      deps,
+		started:   time.Now(),
+		terminals: ptyterm.NewRegistry(),
+	}
+}
+
+// CloseTerminals ends every interactive shell, for daemon shutdown. Without it
+// the shells would outlive the daemon that has their pty, which is a leak the
+// operator cannot see or reach.
+func (s *Server) CloseTerminals() {
+	if s.terminals != nil {
+		s.terminals.CloseAll()
+	}
 }
 
 // Handler returns the fully wrapped route tree. Every route — /mcp included —
@@ -199,6 +220,7 @@ func (s *Server) Handler() http.Handler {
 	// operator's own shell — so it is registered unconditionally.
 	mux.HandleFunc("GET /terminals/profiles", s.handleTerminalProfiles)
 	mux.HandleFunc("GET /ws/terminals/pty", s.handleTerminalPTY)
+	mux.HandleFunc("DELETE /terminals/{profile}", s.handleKillTerminal)
 
 	if s.deps.Accounts != nil {
 		mux.HandleFunc("GET /accounts", s.handleListAccounts)

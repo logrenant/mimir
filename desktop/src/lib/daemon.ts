@@ -675,11 +675,23 @@ function leadsQuery(q?: LeadsQuery): string {
  * One identity a terminal session can be opened as, mirroring
  * ptyterm.Profile. `command` is the line typed at the operator's own prompt.
  */
-export type TerminalProfile = { name: string; command: string };
+export type TerminalProfile = {
+  name: string;
+  command: string;
+  /**
+   * Whether the daemon has a live shell for this profile. Not the same as
+   * "you are looking at it": a session outlives its viewer, which is what lets
+   * both accounts stay open at once.
+   */
+  running?: boolean;
+};
 
 export const api = {
   health: () => request<Health>("/healthz"),
   terminalProfiles: () => request<{ profiles: TerminalProfile[] }>("/terminals/profiles"),
+  // The only thing that ends a shell now that closing a viewer does not.
+  killTerminal: (profile: string) =>
+    request<void>(`/terminals/${encodeURIComponent(profile)}`, { method: "DELETE" }),
   diagnostics: () => request<Diagnostics>("/diagnostics"),
   listProjects: () => request<{ projects: Project[] }>("/projects"),
   listAccounts: () => request<{ accounts: Account[] }>("/accounts"),

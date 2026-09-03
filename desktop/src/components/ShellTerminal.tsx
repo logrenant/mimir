@@ -23,11 +23,17 @@ export function ShellTerminal({ profile }: { profile: TerminalProfile }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closed, setClosed] = useState(false);
+  // Bumped to ask for a fresh shell. Needed because sessions now outlive their
+  // viewer: a shell the operator exited stays exited, and without this the
+  // pane would show a dead terminal with no way back to a live one.
+  const [attempt, setAttempt] = useState(0);
 
   // Keyed on the profile name: choosing a different identity is a different
   // session, and re-running the effect is how it gets one. Anything else would
   // keep the first shell and only relabel it.
   useEffect(() => {
+    setClosed(false);
+    setError(null);
     const host = hostRef.current;
     if (!host) return;
 
@@ -105,6 +111,10 @@ export function ShellTerminal({ profile }: { profile: TerminalProfile }) {
     // The shell only learns the viewport changed if we tell it, and a program
     // drawing a full screen redraws on the SIGWINCH that follows.
     const onResize = () => {
+      // A hidden pane measures 0x0. Fitting to that would tell the shell it
+      // has no screen, and the program drawing on it would reflow to nothing
+      // — so the inactive terminal keeps the size it had until it is shown.
+      if (host.clientWidth === 0 || host.clientHeight === 0) return;
       fit.fit();
       if (socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: "resize", rows: term.rows, cols: term.cols }));
@@ -116,10 +126,12 @@ export function ShellTerminal({ profile }: { profile: TerminalProfile }) {
     return () => {
       disposed = true;
       observer.disconnect();
+      // Closing the socket only detaches now: the daemon owns the shell, so
+      // this leaves it running for the next viewer (internal/ptyterm).
       socket?.close();
       term.dispose();
     };
-  }, [profile.name]);
+  }, [profile.name, attempt]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -127,8 +139,23 @@ export function ShellTerminal({ profile }: { profile: TerminalProfile }) {
         <div style={{ color: "#e5484d", fontSize: 12, padding: "6px 10px" }}>{error}</div>
       ) : null}
       {closed && !error ? (
-        <div style={{ color: "#8a9099", fontSize: 12, padding: "6px 10px" }}>
-          oturum kapandı — başka bir profil seçerek yenisini açabilirsin
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px" }}>
+          <span style={{ color: "#8a9099", fontSize: 12 }}>oturum kapandı</span>
+          <button
+            type="button"
+            onClick={() => setAttempt((n) => n + 1)}
+            style={{
+              background: "none",
+              border: "1px solid #24272d",
+              borderRadius: 2,
+              color: "#eef0f2",
+              cursor: "pointer",
+              fontSize: 11,
+              padding: "2px 8px",
+            }}
+          >
+            yeniden başlat
+          </button>
         </div>
       ) : null}
       <div ref={hostRef} style={{ flex: 1, minHeight: 0, padding: "4px 6px" }} />
