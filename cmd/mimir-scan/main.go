@@ -4,7 +4,7 @@
 // caller is a session with a request timeout and a context budget. Reading a
 // whole machine that way means hundreds of round-trips through a model that is
 // not the one doing the reading — the session pays for a job whose actual work
-// is a `gemini-3.7-flash-high` call per file (internal/llm routes the distil
+// is a `gemini-3.8-flash-low` call per file (internal/llm routes the distil
 // class to `agy`, and falls back to `claude` only when agy is missing or out of
 // quota).
 //

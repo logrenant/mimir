@@ -9,7 +9,7 @@ function status(over: Partial<BrainScanStatus> = {}): BrainScanStatus {
     paused: false,
     roots: [],
     provider: "agy",
-    model: "gemini-3.7-flash-high",
+    model: "gemini-3.8-flash-high",
     project_index: 0,
     project_count: 0,
     remaining: 0,

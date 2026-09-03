@@ -28,17 +28,25 @@ func TestConfigDefaults(t *testing.T) {
 		t.Errorf("expected %s, got %s", "claude", c.ClaudeCLIPath)
 	}
 
-	if c.SearchTimeout != 10*time.Second {
-		t.Errorf("expected %v, got %v", 10*time.Second, c.SearchTimeout)
+	// Sized for a link that loses packets, not for a healthy one: a retransmit
+	// costs seconds, and the earlier values were tight enough that one of them
+	// turned a working fetch into a failed stage.
+	if c.SearchTimeout != 30*time.Second {
+		t.Errorf("expected %v, got %v", 30*time.Second, c.SearchTimeout)
 	}
-	if c.CrawlTimeout != 45*time.Second {
-		t.Errorf("expected %v, got %v", 45*time.Second, c.CrawlTimeout)
+	if c.CrawlTimeout != 150*time.Second {
+		t.Errorf("expected %v, got %v", 150*time.Second, c.CrawlTimeout)
 	}
-	if c.RefineTimeout != 60*time.Second {
-		t.Errorf("expected %v, got %v", 60*time.Second, c.RefineTimeout)
+	if c.RefineTimeout != 180*time.Second {
+		t.Errorf("expected %v, got %v", 180*time.Second, c.RefineTimeout)
 	}
-	if c.ResearchTimeout != 120*time.Second {
-		t.Errorf("expected %v, got %v", 120*time.Second, c.ResearchTimeout)
+	if c.ResearchTimeout != 360*time.Second {
+		t.Errorf("expected %v, got %v", 360*time.Second, c.ResearchTimeout)
+	}
+	// A liveness probe is not work, and is deliberately not scaled with the
+	// budgets above: one unusable provider must not hold /diagnostics open.
+	if c.LLMHealthTimeout != 20*time.Second {
+		t.Errorf("expected %v, got %v", 20*time.Second, c.LLMHealthTimeout)
 	}
 
 	if c.MaxConcurrentCrawls != 4 {
@@ -248,6 +256,46 @@ func TestDefaultModelIsOffered(t *testing.T) {
 	for _, m := range c.CodingModels {
 		if m.ID == "" || m.Label == "" {
 			t.Errorf("incomplete model choice: %+v", m)
+		}
+	}
+}
+
+func TestHasLLMModel_AllowsOnlyPublishedPairs(t *testing.T) {
+	c := config.Load()
+
+	if !c.HasLLMModel("agy", "gemini-3.8-flash-high") {
+		t.Error("agy/gemini-3.8-flash-high should be offerable")
+	}
+	// The same model id reached through the wrong CLI is not a near miss, it
+	// is a subprocess that cannot run: the pairing is the constraint.
+	if c.HasLLMModel("claude", "gemini-3.8-flash-high") {
+		t.Error("a Gemini model must not be offerable through the claude CLI")
+	}
+	if c.HasLLMModel("gpt", "anything") {
+		t.Error("an unknown provider must not be offerable")
+	}
+	// Empty model means "that provider's default", which is a valid request.
+	if !c.HasLLMModel("claude", "") {
+		t.Error("an empty model should mean the provider's default, not a rejection")
+	}
+	if got := c.LLMDefaultModel("claude"); got != "claude-haiku-4-5-20251001" {
+		t.Errorf("LLMDefaultModel(claude) = %q", got)
+	}
+	if got := c.LLMDefaultModel("gpt"); got != "" {
+		t.Errorf("LLMDefaultModel(gpt) = %q, want empty for an unknown provider", got)
+	}
+}
+
+// Every provider's default must be one of its own models, or the picker offers
+// a "varsayılan" the daemon then rejects.
+func TestLLMProviders_DefaultsAreOfferable(t *testing.T) {
+	c := config.Load()
+	if len(c.LLMProviders) == 0 {
+		t.Fatal("LLMProviders is empty")
+	}
+	for _, p := range c.LLMProviders {
+		if !c.HasLLMModel(p.ID, p.DefaultModel) {
+			t.Errorf("provider %s defaults to %q, which is not one of its models", p.ID, p.DefaultModel)
 		}
 	}
 }

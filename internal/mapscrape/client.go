@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,6 +30,11 @@ const maxResponseBytes = 6 << 20
 type Client struct {
 	httpClient *http.Client
 	cfg        config.Config
+
+	// extractor is the model fallback for a feed the selectors could not read.
+	// Optional: a scraper without one is still a scraper, it just fails where
+	// this would have recovered.
+	extractor FeedExtractor
 }
 
 func New(cfg config.Config) *Client {
@@ -39,7 +45,7 @@ func New(cfg config.Config) *Client {
 }
 
 func (c *Client) unavailable(cause error) error {
-	return fmt.Errorf("%w at %s: %v — run `make maps-up` to start it",
+	return fmt.Errorf("%w at %s: %v — the daemon starts it on the next region search; `make maps-up` starts it now",
 		ErrSidecarUnavailable, c.cfg.MapScrapeBaseURL, cause)
 }
 
@@ -132,7 +138,26 @@ func (c *Client) Search(ctx context.Context, q maps.Query) ([]maps.Company, erro
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
-		return nil, c.unavailable(err)
+		// A refused connection is the sidecar being down, and this is the one
+		// capability that needs no credential — so bring it up and ask once
+		// more rather than sending the operator to a terminal. Only the
+		// transport failure retries: a sidecar that answered has answered.
+		if startErr := c.EnsureRunning(ctx); startErr != nil {
+			return nil, errors.Join(c.unavailable(err), startErr)
+		}
+		retry, retryErr := http.NewRequestWithContext(ctx, http.MethodPost,
+			c.cfg.MapScrapeBaseURL+"/search", bytes.NewReader(body))
+		if retryErr != nil {
+			return nil, c.unavailable(retryErr)
+		}
+		retry.Header.Set("Content-Type", "application/json")
+		resp, err = c.httpClient.Do(retry)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, c.unavailable(err)
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -160,6 +185,29 @@ func (c *Client) Search(ctx context.Context, q maps.Query) ([]maps.Company, erro
 	}
 
 	companies, skipped, err := ParseFeed(payload.HTML, time.Now().UTC())
+	// Nothing parsed, but the page is in hand. Either the feed was genuinely
+	// empty or Google moved the markup this package is anchored on — and the
+	// second is the failure this scraper was always expected to have. A model
+	// reading the same page is the recovery path; it reads what rendered, and
+	// invents nothing.
+	//
+	// ErrNoResults is the only error worth recovering from: a page this could
+	// not even parse as HTML is not one a model should be paid to read.
+	if errors.Is(err, ErrNoResults) || (err == nil && len(companies) == 0) {
+		recovered, mErr := c.modelFallback(ctx, payload.HTML)
+		if mErr != nil {
+			slog.Warn("mapscrape model fallback did not recover the feed",
+				"error", mErr, "rendered_bytes", len(payload.HTML))
+			return nil, ErrNoResults
+		}
+		slog.Info("mapscrape feed read by the model fallback",
+			"places", len(recovered), "rendered_bytes", len(payload.HTML))
+		companies = recovered
+		if len(companies) > limit {
+			companies = companies[:limit]
+		}
+		return companies, nil
+	}
 	if err != nil {
 		return nil, err
 	}

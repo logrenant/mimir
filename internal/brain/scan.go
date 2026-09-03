@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/sync/errgroup"
@@ -42,6 +43,15 @@ type ScanResult struct {
 	Scanned int `json:"scanned"`
 	Skipped int `json:"skipped_unchanged"`
 	Failed  int `json:"failed"`
+
+	// Changed counts the files this pass re-read because their content moved,
+	// as opposed to files it had never seen. Both are Scanned, and a console
+	// that cannot tell them apart can never say the detection is working —
+	// which is the only visible sign that editing a file re-teaches Brain.
+	Changed int `json:"changed,omitempty"`
+
+	// ChangedFiles names what Changed counted, like FailedFiles does.
+	ChangedFiles []string `json:"changed_files,omitempty"`
 
 	// Unreadable is a file the extractor could not turn into text — a PDF that
 	// is page images, or a machine with no poppler. It is deliberately not
@@ -111,6 +121,11 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 		rel     string
 		content string
 		hash    string
+		size    int64
+		modTime time.Time
+		// changed is true when this file had a stored hash and it moved. A
+		// file seen for the first time is not a change.
+		changed bool
 	}
 	var pending []candidate
 
@@ -134,7 +149,8 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 		// The digest is of the file's bytes, never of the text extracted from
 		// them, and it is taken before the extractor runs. That is what makes a
 		// second sweep over ~/Documents spawn neither pdftotext nor agy.
-		if known[rel] == hash {
+		previous, seen := known[rel]
+		if seen && previous == hash {
 			res.Skipped++
 			continue
 		}
@@ -144,7 +160,14 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 			res.Unreadable++
 			continue
 		}
-		pending = append(pending, candidate{rel: rel, content: content, hash: hash})
+		pending = append(pending, candidate{
+			rel:     rel,
+			content: content,
+			hash:    hash,
+			size:    info.Size(),
+			modTime: info.ModTime(),
+			changed: seen,
+		})
 	}
 
 	batch := pending
@@ -178,6 +201,8 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 				Content:     "File: " + cand.rel + "\n\n" + cand.content,
 				ProjectPath: projectPath,
 				ContentHash: cand.hash,
+				SizeBytes:   cand.size,
+				ModifiedAt:  cand.modTime,
 			})
 
 			mu.Lock()
@@ -201,6 +226,10 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 			}
 			res.Scanned++
 			res.Files = append(res.Files, cand.rel)
+			if cand.changed {
+				res.Changed++
+				res.ChangedFiles = append(res.ChangedFiles, cand.rel)
+			}
 			return nil
 		})
 	}
@@ -210,6 +239,7 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 
 	sort.Strings(res.Files)
 	sort.Strings(res.FailedFiles)
+	sort.Strings(res.ChangedFiles)
 	return res, nil
 }
 

@@ -34,7 +34,7 @@ type AccountsAPI = {
   /** Keyed by account id. Absent means "not probed yet", not "signed out". */
   statuses: Record<string, AccountStatus>;
   error: string | null;
-  /** Re-reads the list and re-probes every slot. */
+  /** Rescans the accounts directory, re-reads the list, re-probes every slot. */
   refresh: () => void;
 };
 
@@ -93,7 +93,15 @@ export function AccountsProvider({ children }: { children: ReactNode }) {
     // cached identities are exactly what must not survive it.
     probed.current.clear();
     setStatuses({});
-    void load();
+    // And it is also what they click after *creating* a slot, so the scan goes
+    // first: the daemon reads the accounts directory at startup, and a
+    // directory made since then would otherwise need a restart to appear. A
+    // failed scan is not a failed refresh — the list still loads below, and
+    // load() reports whatever went wrong with that.
+    void api
+      .scanAccounts()
+      .catch(() => undefined)
+      .then(load);
   }, [load]);
 
   useEffect(() => {

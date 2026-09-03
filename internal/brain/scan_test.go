@@ -281,3 +281,62 @@ func TestScan_UndistilledFilesAreRetriedNotSkipped(t *testing.T) {
 		t.Errorf("remaining = %d, want all 3 offered again", again.Remaining)
 	}
 }
+
+// A changed file and a new one are both Scanned. Telling them apart is what
+// lets the console say the detection is working — an operator who edits a
+// document and sees it named there knows Brain re-read it.
+func TestScan_ChangedIsCountedApartFromNew(t *testing.T) {
+	dir := scanRepo(t)
+	st := newFakeStore()
+	c := scanCore(t, st, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+
+	first, err := c.Scan(context.Background(), dir, &fakeHashes{}, ScanOptions{Limit: 50})
+	if err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	if first.Changed != 0 {
+		t.Fatalf("a first sighting is not a change: %+v", first)
+	}
+
+	known := map[string]string{}
+	for _, n := range st.nodes {
+		known[n.SourceKey] = n.ContentHash
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "brand-new.md"), []byte("# New\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.Scan(context.Background(), dir, &fakeHashes{m: known}, ScanOptions{Limit: 50})
+	if err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	if got.Scanned != 2 {
+		t.Fatalf("want both files scanned, got %d", got.Scanned)
+	}
+	if got.Changed != 1 || len(got.ChangedFiles) != 1 || got.ChangedFiles[0] != "README.md" {
+		t.Errorf("only the edited file is a change: %+v", got)
+	}
+}
+
+// The version row records the file as the scanner found it, so the size and
+// mtime have to survive the trip from os.Stat to the store.
+func TestScan_CarriesTheFilesShapeToTheStore(t *testing.T) {
+	dir := scanRepo(t)
+	st := newFakeStore()
+	c := scanCore(t, st, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+
+	if _, err := c.Scan(context.Background(), dir, &fakeHashes{}, ScanOptions{Limit: 50}); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, n := range st.nodes {
+		if n.Kind != KindFile {
+			continue
+		}
+		if n.SizeBytes <= 0 || n.ModifiedAt.IsZero() {
+			t.Fatalf("%s lost its size or mtime: %+v", n.SourceKey, n)
+		}
+	}
+}

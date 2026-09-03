@@ -23,7 +23,7 @@ scrape fallback container when it is running.
    - That subprocess makes its own request to the Anthropic API (model `claude-haiku-4-5-20251001`), authenticated with the operator's own `claude login` session — **scraped page content is sent to Anthropic** to be distilled. There is no separate API key configured by Mimir; it rides the existing Claude Code login.
    - Every call runs with `--restricted`, `--strict-mcp-config`, and every built-in tool force-denied via `--disallowedTools` — the subprocess can only emit text, never take an action, read local files, or reach the network itself.
 4. **`agy` CLI (local subprocess, task-41)** — the *distil* tier, and the one most page content now goes through:
-   - The operator's own Antigravity CLI, invoked headless via `exec`, riding its existing sign-in. Model `gemini-3.7-flash-high`, pinned. **Scraped page content is sent to Google** to be distilled; before task-41 that content went to Anthropic instead. No API key is configured by Mimir either way.
+   - The operator's own Antigravity CLI, invoked headless via `exec`, riding its existing sign-in. Model `gemini-3.8-flash-high`, pinned. **Scraped page content is sent to Google** to be distilled; before task-41 that content went to Anthropic instead. No API key is configured by Mimir either way.
    - **This subprocess is less tightly bounded than the claude one, and that is a real difference, not a wording change.** `agy` has no `--disallowedTools` and no `--strict-mcp-config`. Three things stand in for them: `--sandbox`; a working directory that is an empty scratch dir under the store's parent rather than any repository (`agy` reads `AGENTS.md` and `.agents/rules` from wherever it starts, and this subprocess's entire input is untrusted text); and `MIMIR_NESTED=1`, which `cmd/mimir-mcp` answers by serving **no tools**, so the globally-registered Mimir cannot be recursed into. All three are asserted by tests in `internal/llm`.
    - What has not changed: the fail-closed choke-point in `internal/mcp/finalize.go` still decides what reaches the consumer, whichever provider produced it.
    - **There is no fallback.** If `agy` is absent or out of quota the distil path is down: page content reaches no model at all and the affected tools return an error. That is a deliberate narrowing (task-51) and it is a security property as much as a billing one — the set of destinations scraped text can reach shrinks from {Google, Anthropic} to {Google}.
@@ -54,6 +54,13 @@ Mimir guarantees that the parent Claude Code session is protected from data poll
 - Raw HTML, script payloads, and unrefined bulk text are **never** returned to the Claude session.
 - Output from tools (`fetch_page`, `research`) passes through a strict choke-point (`internal/mcp/finalize.go`). It enforces maximum token ceilings and inspects the payload for raw signatures. `mimir-daemon`'s `/mcp` serves the **same** registry, so an HTTP tool call goes through the same choke-point as a stdio one.
 - All scraped content is routed through a local, headless CLI call — the distil tier (`agy`) by default, the `claude` tier when it is unavailable — to extract key points and synthesize brief summaries before it can reach the parent session. The choke-point is what enforces this, not the provider, so the guarantee does not change with the routing.
+- **The lead-gen model picker is an allow-list, not a passthrough.** `POST
+  /maps/leadgen` accepts an optional `provider`/`model` pair, and both strings
+  end up as `--model` argv to a local CLI subprocess. They are checked against
+  `config.LLMProviders` — a constant in the binary — before they reach
+  `internal/llm`; anything else is a 400, never a fall back to the default. A
+  client can therefore choose *among the tiers this build ships*, and can never
+  name a binary, a flag, or a model the build does not know about.
 - The Track B `/maps/*` routes return only structured facts and already-refined text (each gap analysis and email body passed `clampOutput` once when it was generated). The Maps stages that touch a model are fed deterministically-computed scalars, never a raw page; categorization additionally constrains the model to a closed vocabulary so no model-written free text leaves that package.
 
 ## Secrets & Credentials

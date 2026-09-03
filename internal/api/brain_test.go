@@ -59,12 +59,14 @@ func (f *fakeScanner) ScanNow() bool {
 }
 
 type fakeGraphStore struct {
-	ranked   []store.BrainNodeDegree
-	nodes    []store.BrainNodeRow
-	edges    []store.BrainEdgeRow
-	projects []store.BrainProjectCount
-	lastPath string
-	limit    int
+	ranked       []store.BrainNodeDegree
+	nodes        []store.BrainNodeRow
+	edges        []store.BrainEdgeRow
+	projects     []store.BrainProjectCount
+	versions     []store.BrainNodeVersion
+	lastPath     string
+	limit        int
+	versionLimit int
 }
 
 func (f *fakeGraphStore) BrainGraphIDs(_ context.Context, projectPath string, limit int) ([]store.BrainNodeDegree, error) {
@@ -96,6 +98,14 @@ func (f *fakeGraphStore) BrainEdgesAmong(context.Context, []string, int) ([]stor
 
 func (f *fakeGraphStore) BrainProjects(context.Context) ([]store.BrainProjectCount, error) {
 	return f.projects, nil
+}
+
+func (f *fakeGraphStore) BrainNodeVersions(_ context.Context, _ string, limit int) ([]store.BrainNodeVersion, error) {
+	f.versionLimit = limit
+	if limit < len(f.versions) {
+		return f.versions[:limit], nil
+	}
+	return f.versions, nil
 }
 
 type fakeBrainReader struct {
@@ -355,5 +365,63 @@ func TestBrainNode_UnknownIDIs404(t *testing.T) {
 	w := do(h, http.MethodGet, "/brain/nodes/nope", testToken, "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("unknown node = %d, want 404: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- version history -------------------------------------------------------
+
+func twoVersions() []store.BrainNodeVersion {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	return []store.BrainNodeVersion{
+		{ContentHash: "hash-2", SeenAt: now, Title: "scan.go", Assessment: "yeni okuma", SizeBytes: 900},
+		{ContentHash: "hash-1", SeenAt: now.Add(-time.Hour), Title: "scan.go", Assessment: "eski okuma", SizeBytes: 800},
+	}
+}
+
+func TestBrainNodeVersions_ServesTheHistory(t *testing.T) {
+	deps, gs, _ := graphDeps()
+	gs.versions = twoVersions()
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodGet, "/brain/nodes/n1/versions", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "eski okuma") {
+		t.Errorf("the superseded reading must be readable: %s", w.Body.String())
+	}
+	if gs.versionLimit != testConfig().BrainVersionsPerNode {
+		t.Errorf("want the configured bound, got %d", gs.versionLimit)
+	}
+}
+
+// History rides node detail so the panel does not fetch an empty list for
+// every file on the machine — and a node with one version has no history worth
+// showing.
+func TestBrainNode_CarriesHistoryOnlyWhenThereIsSome(t *testing.T) {
+	deps, gs, _ := graphDeps()
+	gs.versions = twoVersions()
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodGet, "/brain/nodes/n1", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	var got brainNodeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Versions) != 2 {
+		t.Fatalf("want 2 inline versions, got %d", len(got.Versions))
+	}
+
+	gs.versions = twoVersions()[:1]
+	w = do(h, http.MethodGet, "/brain/nodes/n1", testToken, "")
+	got = brainNodeResponse{}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Versions) != 0 {
+		t.Errorf("a single version is not a history: %+v", got.Versions)
 	}
 }

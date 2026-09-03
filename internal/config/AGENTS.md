@@ -22,12 +22,20 @@ The single source of every operational value. Enforces **SD-1**.
   | `MIMIR_MAPSCRAPE_URL` | `MapScrapeBaseURL` | `http://127.0.0.1:11236` |
   | `MIMIR_STORE_PATH` | `StorePath` | `<os.UserConfigDir()>/mimir/mimir.db` |
   | `MIMIR_CLAUDE_PROJECTS_DIR` | `ClaudeProjectsDir` | `<os.UserHomeDir()>/.claude/projects` |
+  | `MIMIR_CLAUDE_ACCOUNTS_DIR` | `ClaudeAccountsDir` | `<os.UserHomeDir()>/.claude-accounts` |
+  | `MIMIR_MAPSCRAPE_COMPOSE` | `MapScrapeComposeFile` | the copy beside the installed binary, else `deploy/playwright-maps/docker-compose.yml` |
 
   There is **no** override for timeouts, concurrency limits, result caps, output
   ceilings, politeness interval, `ClaudeModel`, `PageCacheTTL`,
   `RefinePromptVersion`, the `Leadgen*` values, the `Memory*` values, the
   `MapScrape*` bounds, or any Stage-F scraper constant (`*MaxTokens`, `*MaxChars`, `GMapsPageTimeout`,
   `GMapsWaitForSelector`). Adding one is an SD-1 violation.
+
+  `ClaudeAccountsDir` reads only the `MIMIR_`-prefixed override, never the
+  shell's own `CLAUDE_ACCOUNTS_DIR`. The daemon runs under launchd, which hands
+  it `PATH` and `HOME` and nothing else, so honouring the bare variable would
+  make which accounts exist depend on who started the daemon — the one thing
+  a discovered slot must not depend on.
 
   Note the split in the two scraper rows: the container **address** is
   overridable (a test points it at an `httptest` server), while
@@ -118,6 +126,16 @@ The single source of every operational value. Enforces **SD-1**.
   (`claude-haiku-4-5-20251001`), never a bare alias like `haiku` (SD-5). The
   refiner is the local `claude` CLI invoked headless via `exec` — no API key,
   no HTTP endpoint; it rides the operator's existing Claude Code login.
+- **`LLMProviders` is a published allow-list, not a knob.** It is the set of
+  provider/model pairs an operator may route one lead-gen run to, checked by
+  `HasLLMModel` before either string reaches `internal/llm` — both become
+  `--model` argv to a subprocess, so nothing outside this constant may pass.
+  It does not make the *daemon's* routing tunable: `DistillProvider` /
+  `ReasonProvider` / `DistillModel` are still what everything the daemon starts
+  on its own uses, and a run that names nothing gets exactly them. The same
+  shape as `CodingModels`, for the same reason — a per-request choice among
+  values pinned in the binary is not configuration, and every id in it is a
+  fully-qualified pinned tag (SD-5), never an alias.
 - New fields for Track A's paid providers (`docs/ROADMAP.md` §A.3) do not belong
   here until that track is promoted.
 

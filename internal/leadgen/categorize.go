@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/maps"
 	"github.com/logrenant/mimir/internal/refine"
 )
@@ -47,10 +48,40 @@ type Categorizer struct {
 	cfg        config.Config
 	classifier Classifier
 	store      Store
+	// sel is the operator's model override for this run. Zero routes by class.
+	sel llm.Selection
 }
 
 func New(cfg config.Config, classifier Classifier, s Store) *Categorizer {
 	return &Categorizer{cfg: cfg, classifier: classifier, store: s}
+}
+
+// With returns the same stage bound to one run's model selection.
+//
+// A copy rather than a parameter on Categorize, because a Categorizer is built
+// once at wiring time and shared by every concurrent run: a field somebody
+// wrote per request would decide which model another operator's run spends.
+// The copy is cheap and lives exactly as long as the run that made it.
+func (c *Categorizer) With(sel llm.Selection) *Categorizer {
+	if c == nil || sel.IsZero() {
+		return c
+	}
+	cp := *c
+	cp.sel = sel
+	return &cp
+}
+
+// version namespaces the cache by the model that filled it.
+//
+// Without this a run switched to a different model would be served the last
+// model's answers and never call the one that was chosen — the selection would
+// look like it did nothing. The zero selection contributes nothing to the
+// string, so every categorization cached before this existed stays a hit.
+func (c *Categorizer) version() string {
+	if key := c.sel.Key(); key != "" {
+		return c.cfg.LeadgenCategoryVersion + "@" + key
+	}
+	return c.cfg.LeadgenCategoryVersion
 }
 
 // Categorize returns one Result per company, in input order.
@@ -85,7 +116,7 @@ func (c *Categorizer) Categorize(ctx context.Context, cs []maps.Company) ([]Resu
 			seen[company.PlaceID] = struct{}{}
 			ids = append(ids, company.PlaceID)
 		}
-		got, err := c.store.GetCategorizations(ctx, ids, c.cfg.LeadgenCategoryVersion)
+		got, err := c.store.GetCategorizations(ctx, ids, c.version())
 		if err != nil {
 			gaps = append(gaps, "categorization cache unavailable: "+err.Error())
 		} else {
@@ -103,7 +134,14 @@ func (c *Categorizer) Categorize(ctx context.Context, cs []maps.Company) ([]Resu
 			continue
 		}
 
-		if cat, ok := CategoryForTypes(company.PrimaryType, company.Types); ok {
+		// types[] first, then the name. A scraped row has no types at all, so
+		// without the second lookup every mapscrape region reached the model —
+		// and came back wholly `unknown` whenever its quota was spent.
+		cat, ok := CategoryForTypes(company.PrimaryType, company.Types)
+		if !ok {
+			cat, ok = CategoryForName(company.Name)
+		}
+		if ok {
 			results[i] = Result{PlaceID: company.PlaceID, Category: cat, Method: MethodRule}
 			if err := c.remember(ctx, company.PlaceID, cat, MethodRule); err != nil {
 				gaps = append(gaps, err.Error())
@@ -187,6 +225,7 @@ func (c *Categorizer) classifyResidual(ctx context.Context, residual []maps.Comp
 				Items:      classifyItems(batch),
 				Categories: CategoryStrings(),
 				MaxTokens:  c.cfg.LeadgenClassifyMaxTokens,
+				Selection:  c.sel,
 			})
 			if err != nil {
 				// A cancelled caller is the one failure that is not a gap: it
@@ -258,7 +297,7 @@ func (c *Categorizer) remember(ctx context.Context, placeID string, cat Category
 	if c.store == nil || placeID == "" {
 		return nil
 	}
-	if err := c.store.PutCategorization(ctx, placeID, c.cfg.LeadgenCategoryVersion, string(cat), method); err != nil {
+	if err := c.store.PutCategorization(ctx, placeID, c.version(), string(cat), method); err != nil {
 		return fmt.Errorf("caching category for %s: %w", placeID, err)
 	}
 	return nil

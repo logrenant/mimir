@@ -36,6 +36,12 @@ var ErrStoreUnavailable = errors.New("store: sqlite database unavailable")
 // Store is a handle on the local cache database.
 type Store struct {
 	db *sql.DB
+
+	// brainVersionsPerNode is how much of a node's history to keep. Read from
+	// the config once, at Open, rather than passed per call: it is an SD-1
+	// constant, and threading it through every UpsertBrainNode caller would
+	// have put a policy number in four packages that have no opinion about it.
+	brainVersionsPerNode int
 }
 
 func unavailable(cause error) error {
@@ -65,7 +71,7 @@ func Open(ctx context.Context, cfg config.Config) (*Store, error) {
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(4)
 
-	s := &Store{db: db}
+	s := &Store{db: db, brainVersionsPerNode: cfg.BrainVersionsPerNode}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err

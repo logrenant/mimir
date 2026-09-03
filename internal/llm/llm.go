@@ -77,8 +77,46 @@ type Response struct {
 type Provider interface {
 	Name() string
 	Model() string
+	// WithModel returns the same provider bound to a different model, or
+	// itself when the name is empty or already current. It returns a copy
+	// rather than mutating, because one provider value is shared by every
+	// concurrent call in the daemon.
+	WithModel(model string) Provider
 	Complete(ctx context.Context, r Request) (Response, error)
 	Health(ctx context.Context) error
+}
+
+// Selection is an operator's per-request override of the class routing.
+//
+// It exists because the class → provider mapping answers "what kind of work is
+// this", which is the right question for the daemon's own background passes and
+// the wrong one for a run somebody is watching: a lead-gen run costs real money
+// and real minutes, and which tier spends them is a decision the operator is
+// entitled to make per run. The zero value means "route it normally", so every
+// caller that has no opinion keeps the behaviour it had.
+//
+// Both fields are names from an allow-list the daemon publishes, never free
+// text from a client: they end up as argv to a subprocess.
+type Selection struct {
+	// Provider is a registered provider name ("agy", "claude"). Empty keeps
+	// the class's own provider.
+	Provider string
+	// Model is the model that provider should run. Empty keeps its configured
+	// model.
+	Model string
+}
+
+// IsZero reports whether the selection expresses no preference at all.
+func (s Selection) IsZero() bool { return s.Provider == "" && s.Model == "" }
+
+// Key is a stable identity for the selection, for callers that cache a model's
+// answer and must not serve it for a different one. The zero value's key is
+// empty, so an unselected run keeps hitting the cache entries it already wrote.
+func (s Selection) Key() string {
+	if s.IsZero() {
+		return ""
+	}
+	return s.Provider + "/" + s.Model
 }
 
 // Router resolves a Class to a Provider, and falls back when the first choice
@@ -94,6 +132,18 @@ type Provider interface {
 type Router struct {
 	byClass  map[Class]Provider
 	fallback map[Class]Provider
+	byName   map[string]Provider
+
+	// modelChain is the same provider tried again on a different model, per
+	// class. It runs before the provider-level fallback because it is the
+	// cheaper thing to be wrong about: staying on `agy` cannot move the bill
+	// to a paid login, it can only reach a second free pool that the first
+	// one's exhaustion says nothing about.
+	modelChain map[Class][]string
+
+	// claude is kept by concrete type so the daemon can tell it which
+	// credential slot to spend. Nothing else reaches past the interface.
+	claude *Claude
 }
 
 // NewRouter builds the providers named by cfg. It never fails: an unusable
@@ -130,8 +180,27 @@ func NewRouter(cfg config.Config) *Router {
 			Distill: pick(cfg.DistillProvider),
 			Reason:  pick(cfg.ReasonProvider),
 		},
-		fallback: fallback,
+		fallback:   fallback,
+		modelChain: map[Class][]string{Distill: cfg.DistillModelChain},
+		byName:     byName,
+		claude:     claude,
 	}
+}
+
+// UseEnviron decides what environment the claude provider's subprocesses run
+// with — which credential slot they spend, and which of the launching
+// session's variables they must not inherit.
+//
+// Set after construction rather than through config because the answer is
+// operator state the daemon reads at call time, not a pinned value (SD-1), and
+// because a router built before the account registry exists must still be
+// valid. Only the claude provider takes it: `agy` is a different CLI with its
+// own login.
+func (r *Router) UseEnviron(fn func() []string) {
+	if r == nil || r.claude == nil {
+		return
+	}
+	r.claude.UseEnviron(fn)
 }
 
 // Provider returns the primary provider for a class, for callers that need to
@@ -182,6 +251,20 @@ func (r *Router) Providers() []Provider {
 // starting a second subprocess on its behalf would be work nobody is waiting
 // for.
 func (r *Router) Complete(ctx context.Context, c Class, req Request) (Response, error) {
+	return r.CompleteWith(ctx, c, Selection{}, req)
+}
+
+// CompleteWith is Complete with an operator's override applied first.
+//
+// The fallback is deliberately dropped the moment a selection names a
+// provider. A fallback is availability, and availability is the daemon's own
+// policy; when an operator has said "run this on agy", quietly running it on
+// claude instead spends a different budget than the one they chose. An
+// unselected call keeps the fallback it always had.
+//
+// An unknown provider name is an error rather than a silent fall back to the
+// class default, for the same reason: a typo must not become a bill.
+func (r *Router) CompleteWith(ctx context.Context, c Class, sel Selection, req Request) (Response, error) {
 	if r == nil {
 		return Response{}, fmt.Errorf("%w: no router configured", ErrProviderUnavailable)
 	}
@@ -189,6 +272,17 @@ func (r *Router) Complete(ctx context.Context, c Class, req Request) (Response, 
 	primary := r.byClass[c]
 	if primary == nil {
 		return Response{}, fmt.Errorf("%w: no provider for class %q", ErrProviderUnavailable, c)
+	}
+
+	if sel.Provider != "" {
+		chosen, ok := r.byName[sel.Provider]
+		if !ok || chosen == nil {
+			return Response{}, fmt.Errorf("%w: no provider named %q", ErrProviderUnavailable, sel.Provider)
+		}
+		primary = chosen
+	}
+	if sel.Model != "" {
+		primary = primary.WithModel(sel.Model)
 	}
 
 	resp, err := primary.Complete(ctx, req)
@@ -202,8 +296,31 @@ func (r *Router) Complete(ctx context.Context, c Class, req Request) (Response, 
 		return Response{}, err
 	}
 
+	// A selection is still honoured to the letter: an operator who named a
+	// provider or a model gets that one or an error, never a substitute.
+	if sel.IsZero() {
+		for _, model := range r.modelChain[c] {
+			if model == "" || model == primary.Model() {
+				continue
+			}
+			resp, chainErr := primary.WithModel(model).Complete(ctx, req)
+			if chainErr == nil {
+				return resp, nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return Response{}, ctxErr
+			}
+			// A model that is unavailable means this pool is spent too, so the
+			// next one is worth trying. Anything else is the model answering
+			// badly, which no other model is a remedy for.
+			if !errors.Is(chainErr, ErrProviderUnavailable) {
+				return Response{}, chainErr
+			}
+		}
+	}
+
 	alt := r.fallback[c]
-	if alt == nil || alt.Name() == primary.Name() {
+	if !sel.IsZero() || alt == nil || alt.Name() == primary.Name() {
 		return Response{}, err
 	}
 

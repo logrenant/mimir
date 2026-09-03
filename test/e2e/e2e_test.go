@@ -76,7 +76,7 @@ printf '{"result": "%s", "is_error": false, "subtype": "success"}' "` + strings.
 	fakeAgyPath := filepath.Join(t.TempDir(), "fake-agy.sh")
 	fakeAgyScript := `#!/bin/sh
 if [ "$1" = "models" ]; then
-  echo "gemini-3.7-flash-high"
+  echo "gemini-3.8-flash-high"
   exit 0
 fi
 cat >/dev/null

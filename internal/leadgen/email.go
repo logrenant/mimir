@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/maps"
 	"github.com/logrenant/mimir/internal/refine"
 	"github.com/logrenant/mimir/internal/store"
@@ -40,6 +41,34 @@ type EmailRunner struct {
 	cfg     config.Config
 	drafter EmailDrafter
 	store   EmailStore
+	// sel is the operator's model override for this run. Zero routes by class.
+	sel llm.Selection
+}
+
+// With returns the same stage bound to one run's model selection. A copy, for
+// the reason Categorizer.With gives: the runner is shared across runs.
+func (r *EmailRunner) With(sel llm.Selection) *EmailRunner {
+	if r == nil || sel.IsZero() {
+		return r
+	}
+	cp := *r
+	cp.sel = sel
+	return &cp
+}
+
+// version namespaces the cache by the model that wrote the draft.
+//
+// It namespaces the *status* column with it, which is the part worth being
+// deliberate about: a draft the operator marked "sent" under one model is not
+// replayed for another, so switching model can re-draft a letter that has
+// already gone out. That is the honest trade — the alternative is serving a
+// draft the chosen model never wrote — and it is why switching model mid-region
+// is a decision, not a toggle.
+func (r *EmailRunner) version() string {
+	if key := r.sel.Key(); key != "" {
+		return r.cfg.LeadgenEmailVersion + "@" + key
+	}
+	return r.cfg.LeadgenEmailVersion
 }
 
 // NewEmailRunner wires the runner. drafter or s may be nil.
@@ -76,7 +105,7 @@ func (r *EmailRunner) DraftFor(ctx context.Context, company maps.Company, cat Ca
 		return res, gaps, nil
 	}
 
-	version := r.cfg.LeadgenEmailVersion
+	version := r.version()
 
 	// Tier 1: the cache. A draft, a sent email and a skipped one are all
 	// returned as-is — regenerating any of them either wastes tokens or
@@ -110,6 +139,7 @@ func (r *EmailRunner) DraftFor(ctx context.Context, company maps.Company, cat Ca
 		Rating:       company.Rating,
 		ReviewCount:  company.ReviewCount,
 		MaxTokens:    r.cfg.LeadgenEmailMaxTokens,
+		Selection:    r.sel,
 	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {

@@ -53,6 +53,17 @@ type Store interface {
 	MemoryStats(ctx context.Context, projectPath string) (store.MemoryStats, error)
 }
 
+// ChatArchive keeps the conversation itself — the text a Store row deliberately
+// clips. *store.Store satisfies it, and it is optional: a nil archive leaves
+// ingest exactly as it was before the archive existed (SD-6).
+//
+// A second interface rather than four more methods on Store because it fails
+// separately and is written on a different contract: Store rows are an index a
+// model reads, and this is a record no model ever reads.
+type ChatArchive interface {
+	PutChatTurn(ctx context.Context, t store.ChatTurnRow) error
+}
+
 // Refiner is the one model call this package makes.
 type Refiner interface {
 	Recap(ctx context.Context, in refine.RecapInput) (refine.Output, error)
@@ -80,11 +91,58 @@ type Memory struct {
 	store   Store
 	refiner Refiner
 	runs    RunSource
+	archive ChatArchive
 }
 
 // New builds a Memory. runs may be nil.
 func New(cfg config.Config, s Store, r Refiner, runs RunSource) *Memory {
 	return &Memory{cfg: cfg, store: s, refiner: r, runs: runs}
+}
+
+// UseArchive installs the verbatim chat archive.
+//
+// Set after construction rather than taken by New because it is not part of
+// what this package does: the memory distils, and the archive keeps. A Memory
+// without one behaves exactly as it did before task-65, which is also what
+// mimir-mcp gets — a short-lived stdio process has no backlog to archive.
+func (m *Memory) UseArchive(a ChatArchive) { m.archive = a }
+
+// archiveTurn stores the conversation behind an episode. It makes no model
+// call, and a failure is logged by the caller rather than aborting the ingest:
+// the episode row is the thing the memory promises, and the archive is what it
+// keeps beside it.
+func (m *Memory) archiveTurn(ctx context.Context, e sessionlog.Episode) error {
+	if m.archive == nil {
+		return nil
+	}
+	return m.archive.PutChatTurn(ctx, store.ChatTurnRow{
+		EpisodeKey:    e.Key,
+		SessionID:     e.SessionID,
+		ProjectPath:   e.ProjectPath,
+		SourceKind:    string(e.SourceKind),
+		GitBranch:     e.GitBranch,
+		SourcePath:    e.SourcePath,
+		StartedAt:     e.StartedAt,
+		EndedAt:       e.EndedAt,
+		UserPrompt:    e.UserPrompt,
+		AssistantText: e.AssistantText,
+		ToolCallsJSON: jsonOrEmpty(e.ToolCalls),
+		FilesJSON:     jsonOrEmpty(e.FilesTouched),
+		CommandsJSON:  jsonOrEmpty(e.Commands),
+		InputTokens:   e.InputTokens,
+		OutputTokens:  e.OutputTokens,
+		CostUSD:       e.CostUSD,
+	})
+}
+
+// jsonOrEmpty marshals v, falling back to an empty array. A value that will not
+// marshal costs the archive one column, never the turn.
+func jsonOrEmpty(v any) string {
+	blob, err := json.Marshal(v)
+	if err != nil {
+		return "[]"
+	}
+	return string(blob)
 }
 
 // facts is the structured half of an episode row. It is stored as JSON rather
@@ -109,13 +167,16 @@ type facts struct {
 // paying for a recap of an episode that is still being written, and the next
 // pass over a cold file restores the real score.
 func (m *Memory) toRow(e sessionlog.Episode, hot bool) store.EpisodeRow {
+	// The two text ceilings are applied here rather than in the parser: an
+	// episode row is an index entry, and since task-65 the same parse also
+	// feeds the chat archive, which keeps exactly the text this drops.
 	f := facts{
 		Files:      e.FilesTouched,
 		Commands:   e.Commands,
 		Failed:     e.FailedSteps(),
 		ToolCalls:  len(e.ToolCalls),
-		Prompt:     e.UserPrompt,
-		Outcome:    e.AssistantText,
+		Prompt:     sessionlog.Clip(e.UserPrompt, sessionlog.MaxPromptChars),
+		Outcome:    sessionlog.Clip(e.AssistantText, sessionlog.MaxAssistantChars),
 		SourceKind: string(e.SourceKind),
 	}
 	blob, err := json.Marshal(f)

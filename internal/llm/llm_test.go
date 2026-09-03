@@ -196,6 +196,81 @@ echo '{"result":"ok","is_error":false}'`)
 	}
 }
 
+// The daemon's own model calls are not coding runs, so nothing else decides
+// which credential slot they spend. When the environment builder is set, the
+// child gets exactly what it returns — and when it is not, the child inherits
+// this process, which is what a binary with no account registry can honestly
+// say.
+func TestClaude_SpendsTheSlotItIsGiven(t *testing.T) {
+	cfg := testConfig(t)
+	out := filepath.Join(t.TempDir(), "slot.txt")
+	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude",
+		`echo "[${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}]" > `+out+`
+echo '{"result":"ok","is_error":false}'`)
+
+	read := func(t *testing.T) string {
+		t.Helper()
+		b, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+
+	c := NewClaude(cfg)
+	c.UseEnviron(func() []string { return append(os.Environ(), "CLAUDE_SECURESTORAGE_CONFIG_DIR=/slots/eziode") })
+	if _, err := c.Complete(context.Background(), Request{User: "c"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := read(t); got != "[/slots/eziode]" {
+		t.Errorf("the chosen slot did not reach the child: %s", got)
+	}
+
+	// The default slot is the variable's absence, not an empty value: an empty
+	// string hashes into a third, nameless keychain entry.
+	c.UseEnviron(func() []string {
+		kept := make([]string, 0)
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "CLAUDE_SECURESTORAGE_CONFIG_DIR=") {
+				kept = append(kept, kv)
+			}
+		}
+		return kept
+	})
+	if _, err := c.Complete(context.Background(), Request{User: "c"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := read(t); got != "[unset]" {
+		t.Errorf("the default slot must be the variable's absence, got %s", got)
+	}
+}
+
+// The router carries the builder to the claude provider and nowhere else: agy
+// is a different CLI with its own login.
+func TestRouter_UseEnvironReachesClaude(t *testing.T) {
+	cfg := testConfig(t)
+	out := filepath.Join(t.TempDir(), "slot.txt")
+	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude",
+		`echo "[${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}]" > `+out+`
+echo '{"result":"ok","is_error":false}'`)
+
+	router := NewRouter(cfg)
+	router.UseEnviron(func() []string {
+		return append(os.Environ(), "CLAUDE_SECURESTORAGE_CONFIG_DIR=/slots/eziode")
+	})
+	if _, err := router.Provider(Reason).Complete(context.Background(), Request{User: "c"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	b, _ := os.ReadFile(out)
+	if got := strings.TrimSpace(string(b)); got != "[/slots/eziode]" {
+		t.Errorf("the router did not carry the slot: %s", got)
+	}
+
+	// A nil router is a real state in the daemon's wiring; it must not panic.
+	var nilRouter *Router
+	nilRouter.UseEnviron(func() []string { return nil })
+}
+
 // --- router ------------------------------------------------------------------
 
 // The fallback mechanism, exercised against a config that asks for one. The
@@ -309,5 +384,176 @@ func TestRouter_ProvidersListsEachOnce(t *testing.T) {
 			t.Errorf("%s listed twice", p.Name())
 		}
 		seen[p.Name()] = true
+	}
+}
+
+// --- selection ---------------------------------------------------------------
+
+func TestRouter_SelectionSendsTheWorkToTheNamedProvider(t *testing.T) {
+	cfg := testConfig(t)
+	// Distill routes to agy by default, so a selection naming claude is only
+	// honoured if CompleteWith actually overrules the class.
+	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `echo '{"status":"SUCCESS","response":"from agy"}'`)
+	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude", `echo '{"result":"from claude","is_error":false}'`)
+
+	got, err := NewRouter(cfg).CompleteWith(context.Background(), Distill,
+		Selection{Provider: "claude"}, Request{User: "c"})
+	if err != nil {
+		t.Fatalf("CompleteWith: %v", err)
+	}
+	if got.Text != "from claude" {
+		t.Errorf("Text = %q, want the selected provider's answer", got.Text)
+	}
+	if got.Provider != "claude" {
+		t.Errorf("Provider = %q, want claude", got.Provider)
+	}
+}
+
+func TestRouter_SelectionSendsTheChosenModelToTheCLI(t *testing.T) {
+	cfg := testConfig(t)
+	// The script echoes back the --model it was handed, which is the only
+	// evidence that the override reached argv rather than being dropped.
+	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--model" ]; then printf '{"status":"SUCCESS","response":"%s"}' "$2"; exit 0; fi
+  shift
+done
+echo '{"status":"SUCCESS","response":"no --model"}'`)
+
+	got, err := NewRouter(cfg).CompleteWith(context.Background(), Distill,
+		Selection{Provider: "agy", Model: "gemini-3.1-pro-high"}, Request{User: "c"})
+	if err != nil {
+		t.Fatalf("CompleteWith: %v", err)
+	}
+	if got.Text != "gemini-3.1-pro-high" {
+		t.Errorf("the CLI was run with model %q, want the selected one", got.Text)
+	}
+	if got.Model != "gemini-3.1-pro-high" {
+		t.Errorf("Model = %q, want the selected one reported back", got.Model)
+	}
+}
+
+// A selection must not write through to the shared router: the daemon runs
+// concurrent calls against one router, and a per-request model that mutated it
+// would decide what somebody else's run spends.
+func TestRouter_SelectionDoesNotChangeTheConfiguredModel(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `echo '{"status":"SUCCESS","response":"ok"}'`)
+
+	router := NewRouter(cfg)
+	if _, err := router.CompleteWith(context.Background(), Distill,
+		Selection{Provider: "agy", Model: "gemini-3.1-pro-low"}, Request{User: "c"}); err != nil {
+		t.Fatalf("CompleteWith: %v", err)
+	}
+
+	if got := router.Provider(Distill).Model(); got != cfg.DistillModel {
+		t.Errorf("router still routes to model %q, want the configured %q", got, cfg.DistillModel)
+	}
+}
+
+func TestRouter_SelectionRejectsAnUnknownProvider(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `echo '{"status":"SUCCESS","response":"ok"}'`)
+
+	_, err := NewRouter(cfg).CompleteWith(context.Background(), Distill,
+		Selection{Provider: "gpt"}, Request{User: "c"})
+	if !errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("err = %v, want ErrProviderUnavailable", err)
+	}
+}
+
+// A fallback is availability, and availability is the daemon's policy. Once an
+// operator has named a provider, quietly running somewhere else spends a budget
+// they did not choose.
+func TestRouter_SelectionSuppressesTheFallback(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DistillFallback = "claude"
+	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `exit 3`)
+	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude", `echo '{"result":"from claude","is_error":false}'`)
+
+	_, err := NewRouter(cfg).CompleteWith(context.Background(), Distill,
+		Selection{Provider: "agy"}, Request{User: "c"})
+	if !errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("err = %v, want the selected provider's own failure", err)
+	}
+	if strings.Contains(err.Error(), "fallback") {
+		t.Errorf("err = %v, want no fallback attempt for a selected run", err)
+	}
+}
+
+func TestSelection_KeyIsEmptyWhenNothingWasChosen(t *testing.T) {
+	if key := (Selection{}).Key(); key != "" {
+		t.Errorf("Key() = %q, want empty so an unselected run keeps its cache", key)
+	}
+	if key := (Selection{Provider: "agy", Model: "m"}).Key(); key != "agy/m" {
+		t.Errorf("Key() = %q, want agy/m", key)
+	}
+}
+
+// The Gemini pool running dry must not stop the distil tier while agy's second
+// free pool is still full. The chain stays on agy and only changes the model,
+// so nothing here can reach a paid login.
+func TestRouter_ModelChainKeepsTheDistilTierOnAgy(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DistillModel = "gemini-3.8-flash-low"
+	cfg.DistillModelChain = []string{"gpt-oss-120b-medium", "claude-sonnet-4-6"}
+	// Fails for the Gemini model, answers for anything else — which is how the
+	// two independent pools behave when the first is spent.
+	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `
+case "$*" in
+  *gemini*) exit 3 ;;
+  *gpt-oss-120b-medium*) echo '{"status":"SUCCESS","response":"from gpt-oss"}' ;;
+  *) exit 3 ;;
+esac`)
+
+	got, err := NewRouter(cfg).Complete(context.Background(), Distill, Request{User: "c"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got.Text != "from gpt-oss" {
+		t.Errorf("Text = %q, want the chain's answer", got.Text)
+	}
+	if got.Provider != "agy" {
+		t.Errorf("Provider = %q, want the work to have stayed on agy", got.Provider)
+	}
+}
+
+// An operator who named a model gets that model or an error. Substituting one
+// silently would spend a pool they did not choose.
+func TestRouter_ModelChainIsSkippedForAnExplicitSelection(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DistillModelChain = []string{"gpt-oss-120b-medium"}
+	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `
+case "$*" in
+  *gpt-oss-120b-medium*) echo '{"status":"SUCCESS","response":"from gpt-oss"}' ;;
+  *) exit 3 ;;
+esac`)
+
+	_, err := NewRouter(cfg).CompleteWith(context.Background(), Distill,
+		Selection{Provider: "agy", Model: "gemini-3.8-flash-low"}, Request{User: "c"})
+	if !errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("err = %v, want the selected model's failure", err)
+	}
+}
+
+// The shipped chain is ordered cheapest first and must not reach for Opus:
+// it is the most expensive model agy offers, and the chain exists to protect
+// the reserve, not to spend it compressing one node.
+func TestRouter_ShippedChainIsTokenSafe(t *testing.T) {
+	cfg := testConfig(t)
+	if len(cfg.DistillModelChain) == 0 {
+		t.Fatal("DistillModelChain is empty; the second free pool is unreachable")
+	}
+	if cfg.DistillModelChain[0] != "gpt-oss-120b-medium" {
+		t.Errorf("chain starts with %q, want the non-thinking model first",
+			cfg.DistillModelChain[0])
+	}
+	for _, m := range cfg.DistillModelChain {
+		if strings.Contains(m, "opus") {
+			t.Errorf("chain reaches for %q, the most expensive model agy offers", m)
+		}
+	}
+	if !strings.HasSuffix(cfg.DistillModel, "-low") {
+		t.Errorf("DistillModel = %q, want the lowest effort tier", cfg.DistillModel)
 	}
 }

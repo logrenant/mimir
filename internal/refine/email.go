@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/logrenant/mimir/internal/llm"
 )
 
 // Field clamps for the outreach-email prompt. BusinessName is provider-supplied
@@ -30,6 +32,10 @@ type EmailInput struct {
 	Rating       float64
 	ReviewCount  int
 	MaxTokens    int
+
+	// Selection overrides which provider and model answer. Zero routes by
+	// class.
+	Selection llm.Selection
 }
 
 // DraftEmail asks the refiner to write one short cold-outreach email to a
@@ -52,7 +58,7 @@ func (c *Client) DraftEmail(ctx context.Context, in EmailInput) (Output, error) 
 
 	system, user := buildEmailPrompt(in)
 
-	result, err := c.run(ctx, system, user)
+	result, err := c.run(ctx, in.Selection, system, user)
 	if err != nil {
 		return Output{}, err
 	}

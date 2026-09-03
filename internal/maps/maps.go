@@ -66,6 +66,10 @@ const FieldMask = "places.id," +
 const (
 	SourcePlacesAPI = "places_api"
 	SourceScrape    = "mapscrape"
+	// SourceModel is the Crawl4AI-plus-model reading of the same public feed:
+	// the third provider, for a machine where the Playwright sidecar cannot
+	// run. Its rows carry mapscrape's id prefix like any other scrape.
+	SourceModel = "mapsllm"
 )
 
 // Sentinel errors. Each carries an actionable fix in its message (SD-6);

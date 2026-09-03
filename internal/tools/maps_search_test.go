@@ -15,18 +15,30 @@ import (
 
 // fakeSearcher records the query it was handed so the tests can assert on
 // what would have been billed, and returns canned results.
+// fakeSearcher stands in for the region-search router: it answers, and it says
+// which source did — the two things the tool passes on.
 type fakeSearcher struct {
 	got    maps.Query
 	calls  int
+	source string
+	free   bool
+	notes  []string
 	result []maps.Company
 	err    error
 }
 
-func (f *fakeSearcher) SearchText(_ context.Context, q maps.Query) ([]maps.Company, error) {
+func (f *fakeSearcher) Search(_ context.Context, q maps.Query) ([]maps.Company, string, []string, error) {
 	f.calls++
 	f.got = q
-	return f.result, f.err
+	source := f.source
+	if source == "" {
+		source = maps.SourceScrape
+	}
+	return f.result, source, f.notes, f.err
 }
+
+func (f *fakeSearcher) Available() bool { return true }
+func (f *fakeSearcher) Free() bool      { return f.free }
 
 func mapsTestConfig() config.Config {
 	return config.Config{
@@ -257,24 +269,38 @@ func TestMapsSearch_TrimsToBudgetRatherThanFailingTheChokePoint(t *testing.T) {
 
 // The credential decides availability, not behaviour: a keyless install must
 // not advertise a tool whose every answer would be "no key".
-func TestRegisterAll_MapsSearchFollowsTheCredential(t *testing.T) {
+// Region search no longer follows the Places credential: the free scrape
+// provider needs none, so the tool is offered either way. What changes with a
+// key is only the fallback behind it.
+func TestRegisterAll_MapsSearchIsOfferedWithoutACredential(t *testing.T) {
 	cfg := config.Load()
 
-	cfg.PlacesAPIKey = ""
-	if names := registeredNames(t, cfg); contains(names, "maps_search") {
-		t.Errorf("maps_search was offered without a key: %v", names)
+	for _, key := range []string{"", "test-key"} {
+		cfg.PlacesAPIKey = key
+		names := registeredNames(t, cfg)
+		if !contains(names, "maps_search") {
+			t.Errorf("maps_search missing with PlacesAPIKey=%q: %v", key, names)
+		}
+		// The rest of the canonical set is unaffected either way.
+		for _, want := range []string{"web_search", "fetch_page", "research", "diagnostics"} {
+			if !contains(names, want) {
+				t.Errorf("%s missing from the canonical set: %v", want, names)
+			}
+		}
+	}
+}
+
+// The description is what a session reads before deciding to call a tool, so
+// "this costs money" has to follow the source that will actually answer.
+func TestMapsSearch_DescriptionNamesTheSourceThatWillAnswer(t *testing.T) {
+	free := NewMapsSearch(mapsTestConfig(), &fakeSearcher{free: true}).Description()
+	if !strings.Contains(free, "spends nothing") {
+		t.Errorf("a free primary must say so: %s", free)
 	}
 
-	cfg.PlacesAPIKey = "test-key"
-	names := registeredNames(t, cfg)
-	if !contains(names, "maps_search") {
-		t.Errorf("maps_search missing with a key present: %v", names)
-	}
-	// The rest of the canonical set is unaffected either way.
-	for _, want := range []string{"web_search", "fetch_page", "research", "diagnostics"} {
-		if !contains(names, want) {
-			t.Errorf("%s missing from the canonical set: %v", want, names)
-		}
+	billed := NewMapsSearch(mapsTestConfig(), &fakeSearcher{free: false}).Description()
+	if !strings.Contains(billed, "billed") {
+		t.Errorf("a billed-only source must say so: %s", billed)
 	}
 }
 

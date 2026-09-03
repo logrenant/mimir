@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/logrenant/mimir/internal/llm"
 )
 
 // The recap profile's bounds. Facts are already a reduction of a transcript —
@@ -60,7 +62,7 @@ func (c *Client) Recap(ctx context.Context, in RecapInput) (Output, error) {
 
 	system, user := buildRecapPrompt(RecapInput{Facts: facts, MaxTokens: in.MaxTokens})
 
-	result, err := c.run(ctx, system, user)
+	result, err := c.run(ctx, llm.Selection{}, system, user)
 	if err != nil {
 		return Output{}, err
 	}

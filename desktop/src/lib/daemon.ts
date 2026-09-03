@@ -120,6 +120,26 @@ export function wsURL(runID: string, ep: DaemonEndpoint): { url: string; protoco
   };
 }
 
+/**
+ * The interactive terminal socket's address and its auth.
+ *
+ * Same subprotocol trick as wsURL: the token is a request header, never a query
+ * parameter. The size travels in the query because the shell needs a sensible
+ * winsize from its very first line — waiting for the client's first resize
+ * frame would let the prompt wrap against a default 80 columns.
+ */
+export function ptyWSURL(
+  profile: string,
+  size: { rows: number; cols: number },
+  ep: DaemonEndpoint,
+): { url: string; protocol: string } {
+  const q = `profile=${encodeURIComponent(profile)}&rows=${size.rows}&cols=${size.cols}`;
+  return {
+    url: `${ep.base_url.replace(/^http/, "ws")}/ws/terminals/pty?${q}`,
+    protocol: `mimir.bearer.${ep.token}`,
+  };
+}
+
 // ---- the daemon's own shapes, mirrored ------------------------------------
 // One definition per Go struct, tags included, so a rename on either side is a
 // type error here rather than an undefined at runtime.
@@ -134,7 +154,22 @@ export type DiagnosticsDependency = {
 };
 
 export type Diagnostics = {
-  daemon: { ok: boolean; version: string; uptime_ms: number; store: string; projects: number };
+  daemon: {
+    ok: boolean;
+    version: string;
+    uptime_ms: number;
+    store: string;
+    projects: number;
+    places_configured?: boolean;
+    /**
+     * The region-search providers, in the order they will be tried, and
+     * whether the first one spends nothing. `places_configured` alone stopped
+     * describing this the moment the free scrape became the primary: a machine
+     * with no Google key still has region search.
+     */
+    region_sources?: string[];
+    region_search_free?: boolean;
+  };
   dependencies?: {
     crawl4ai?: DiagnosticsDependency;
     // The distil tier and the reason tier, separately: since task-51 agy has
@@ -185,6 +220,14 @@ export type Account = {
   label: string;
   config_dir: string;
   is_default: boolean;
+  /**
+   * Found by the daemon's scan of the accounts directory rather than
+   * registered here. Those slots answer to the filesystem: removing one means
+   * removing its directory, so the app does not offer to forget them.
+   */
+  discovered?: boolean;
+  /** The slot the daemon's own model calls spend — refine, distil, recap. */
+  is_background?: boolean;
   created_at?: string;
   last_used_at?: string;
 };
@@ -338,6 +381,8 @@ export type CategoryReport = {
 export type LeadgenReport = {
   region: string;
   query: string;
+  /** Which provider answered: "mapscrape" (free) or "places_api" (billed). */
+  source?: string;
   from_cache: boolean;
   ran_categorize: boolean;
   ran_gap_analysis: boolean;
@@ -357,9 +402,104 @@ export type LeadgenRequest = {
   near?: { latitude: number; longitude: number; radius_meters: number };
   gap_analysis?: boolean;
   emails?: boolean;
+  /**
+   * Which provider and model run this search's model stages. Both are
+   * optional and must travel together; omitting them routes by class, which
+   * is what the daemon does for everything it starts on its own.
+   */
+  provider?: string;
+  model?: string;
+};
+
+/**
+ * config.LLMProviderChoice — one provider with the models it accepts.
+ *
+ * Nested rather than two flat lists because the pairing is the constraint:
+ * a Gemini id means nothing to the `claude` CLI, and the daemon rejects the
+ * combination rather than guessing.
+ */
+export type LLMProvider = {
+  id: string;
+  label: string;
+  default_model: string;
+  models: LLMModel[];
+};
+
+/**
+ * config.CodingModelChoice as this route marshals it — id and label only.
+ *
+ * Not `CodingModel`, which carries the `default` flag the coding-model route
+ * computes: here "which is default" is a property of the provider, not of the
+ * model, so the flag would have nowhere honest to come from.
+ */
+export type LLMModel = { id: string; label: string };
+
+/** GET /llm/providers — the picker's whole vocabulary. */
+export type LLMProviderList = {
+  providers: LLMProvider[];
+  /** What a run gets when it sends no selection: the class routing's answer. */
+  routed: { provider: string; model: string };
 };
 
 export type EmailStatus = "sent" | "skipped" | "draft";
+
+/** What POST /maps/leadgen/export accepts: the same search, plus the file. */
+export type LeadgenExportRequest = LeadgenRequest & {
+  /** Open each company's website for a phone number and an email address. */
+  enrich?: boolean;
+  dir?: string;
+};
+
+/**
+ * One row of the lead ledger — every business a run has ever returned, kept
+ * across sessions (task-63). It is `LeadCompany` plus the two timestamps a
+ * record has and a run result does not, so one table renders both.
+ */
+export type SavedLead = LeadCompany & {
+  first_seen_at: number;
+  last_seen_at: number;
+};
+
+/** The category rail, counted by the daemon rather than by this client. */
+export type LeadCategoryCount = {
+  category: string;
+  company_count: number;
+  without_website: number;
+};
+
+/** One past lead-gen run. */
+export type LeadRun = {
+  id: string;
+  query: string;
+  region?: string;
+  source?: string;
+  company_count: number;
+  with_gaps?: boolean;
+  with_emails?: boolean;
+  ran_at: number;
+};
+
+/** What GET /maps/leads accepts. Every field is optional; the defaults are the
+ *  daemon's, not this client's. */
+export type LeadsQuery = {
+  category?: string;
+  run_id?: string;
+  q?: string;
+  without_website?: boolean;
+  limit?: number;
+  offset?: number;
+};
+
+/** The workbook that was written: one sheet per category, plus a summary. */
+export type LeadgenExportResult = {
+  path: string;
+  sheets: string[];
+  companies: number;
+  with_phone: number;
+  with_email: number;
+  with_website: number;
+  enriched: boolean;
+};
 
 // --- brain -------------------------------------------------------------------
 //
@@ -403,7 +543,18 @@ export type BrainScanStatus = {
 export type BrainScanEvent = {
   seq: number;
   at: string;
-  kind: "sweep" | "project" | "file" | "failed" | "unreadable" | "pass" | "control" | "backoff";
+  // "changed" is a file that was already known and moved — the one line that
+  // says the detection is working, so the console draws it apart from "file".
+  kind:
+    | "sweep"
+    | "project"
+    | "file"
+    | "changed"
+    | "failed"
+    | "unreadable"
+    | "pass"
+    | "control"
+    | "backoff";
   project?: string;
   text: string;
 };
@@ -465,8 +616,53 @@ export type BrainNodeDetail = {
   neighbors?: BrainNeighbor[];
 };
 
+/**
+ * One entry in a node's history (task-67): at this moment, at this content
+ * hash, this is what the source meant.
+ *
+ * There is no file content here and there never will be — the file is still on
+ * disk, and for anything under version control git already keeps the bytes.
+ * What this carries is the reading, which is the part nothing else has.
+ */
+export type BrainNodeVersion = {
+  content_hash: string;
+  seen_at: number;
+  size_bytes?: number;
+  modified_at?: number;
+  title?: string;
+  assessment?: string;
+  tags?: string[];
+  model?: string;
+};
+
+/**
+ * leadsQuery renders a ledger filter as a query string. Empty values are left
+ * out rather than sent blank, so the daemon applies its own defaults — the page
+ * bounds are the server's (SD-1), and a client that always sent `limit=` would
+ * quietly become the place they live.
+ */
+function leadsQuery(q?: LeadsQuery): string {
+  if (!q) return "";
+  const p = new URLSearchParams();
+  if (q.category) p.set("category", q.category);
+  if (q.run_id) p.set("run_id", q.run_id);
+  if (q.q) p.set("q", q.q);
+  if (q.without_website) p.set("without_website", "1");
+  if (q.limit) p.set("limit", String(q.limit));
+  if (q.offset) p.set("offset", String(q.offset));
+  const query = p.toString();
+  return query ? "?" + query : "";
+}
+
+/**
+ * One identity a terminal session can be opened as, mirroring
+ * ptyterm.Profile. `command` is the line typed at the operator's own prompt.
+ */
+export type TerminalProfile = { name: string; command: string };
+
 export const api = {
   health: () => request<Health>("/healthz"),
+  terminalProfiles: () => request<{ profiles: TerminalProfile[] }>("/terminals/profiles"),
   diagnostics: () => request<Diagnostics>("/diagnostics"),
   listProjects: () => request<{ projects: Project[] }>("/projects"),
   listAccounts: () => request<{ accounts: Account[] }>("/accounts"),
@@ -477,6 +673,15 @@ export const api = {
     request<Account>("/accounts", { method: "POST", body: { label, config_dir: configDir } }),
   deleteAccount: (id: string) =>
     request<void>(`/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  // Re-reads the accounts directory. The daemon already scans at startup, so
+  // this is for the moment right after a new slot is created and signed in.
+  scanAccounts: () => request<{ accounts: Account[] }>("/accounts/scan", { method: "POST" }),
+  // An empty id is a real answer — the CLI's own slot — not a missing one.
+  setBackgroundAccount: (id: string) =>
+    request<{ accounts: Account[] }>("/accounts/background", {
+      method: "POST",
+      body: { account_id: id },
+    }),
   accountStatus: (id: string) =>
     request<AccountStatus>(`/accounts/${encodeURIComponent(id)}/status`),
   registerProject: (path: string) =>
@@ -510,8 +715,29 @@ export const api = {
   // multi-project board calls this once per registered project.
   listCodingTasks: (projectID: string) =>
     request<{ runs: Run[] }>(`/coding-tasks?project_id=${encodeURIComponent(projectID)}`),
+  // The model picker's vocabulary, published by the daemon rather than
+  // mirrored here: a second copy would drift the first time a generation
+  // ships, and the daemon would reject a pair this app had just offered.
+  llmProviders: () => request<LLMProviderList>("/llm/providers"),
   runLeadgen: (body: LeadgenRequest) =>
     request<LeadgenReport>("/maps/leadgen", { method: "POST", body }),
+  // Runs the same search — the region cache means it does not re-search — and
+  // writes the workbook. Enrichment is one page fetch per company, so it is
+  // the caller's decision, not a default.
+  exportLeadgen: (body: LeadgenExportRequest) =>
+    request<LeadgenExportResult>("/maps/leadgen/export", { method: "POST", body }),
+  // The ledger: three reads that cost nothing. Separate routes from the run
+  // above because they are not a search — they are what earlier searches found,
+  // and they answer on a daemon with no region source at all.
+  listLeads: (q?: LeadsQuery) =>
+    request<{ companies: SavedLead[]; limit: number; offset: number }>(
+      "/maps/leads" + leadsQuery(q),
+    ),
+  // The rail is counted by the daemon: it spans the whole ledger, not the page
+  // the table happens to be showing.
+  leadCategories: (q?: LeadsQuery) =>
+    request<{ categories: LeadCategoryCount[] }>("/maps/leads/categories" + leadsQuery(q)),
+  leadRuns: () => request<{ runs: LeadRun[] }>("/maps/leads/runs"),
   // 204, no body — the caller updates its own row optimistically.
   setEmailStatus: (placeID: string, status: EmailStatus) =>
     request<void>("/maps/emails/status", {
@@ -542,8 +768,17 @@ export const api = {
     const query = q.toString();
     return request<BrainGraph>("/brain/graph" + (query ? "?" + query : ""));
   },
+  // History rides node detail: a node with one version is the common case, and
+  // a second call for every file on the machine would be a request that almost
+  // always answers "nothing to show".
   brainNode: (id: string) =>
-    request<{ node: BrainNodeDetail }>(`/brain/nodes/${encodeURIComponent(id)}`),
+    request<{ node: BrainNodeDetail; versions?: BrainNodeVersion[] }>(
+      `/brain/nodes/${encodeURIComponent(id)}`,
+    ),
+  brainNodeVersions: (id: string) =>
+    request<{ versions: BrainNodeVersion[] }>(
+      `/brain/nodes/${encodeURIComponent(id)}/versions`,
+    ),
 };
 
 /** Test seam: drops the cached endpoint so a test can hand over a new one. */

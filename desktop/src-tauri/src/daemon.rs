@@ -54,6 +54,64 @@ const PORT_ATTEMPTS: usize = 3;
 /// chatty or looping child cannot grow this without limit.
 const STDERR_KEEP_LINES: usize = 40;
 
+/// How long a plain daemon call may take before the shell gives up.
+///
+/// Two minutes, not the thirty seconds this used to be. The hop itself is
+/// loopback and cannot be slow — but the daemon answers most of these routes by
+/// going out to the network first (a search, a page fetch, a CLI subprocess
+/// riding an existing login), so the budget here is really the budget for
+/// *that*, and on a lossy link a TCP retransmit alone can eat the old ceiling.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The budget for routes that run a whole pipeline in one request.
+///
+/// A lead-gen run scrapes a region, classifies every company, then synthesizes
+/// one gap analysis per category — minutes of work by design, and the client
+/// holds the connection open for all of it. Cutting that off at the default
+/// produced `could not reach the daemon: timeout: global` on a run that was
+/// still going perfectly well on the other side, which is the worst kind of
+/// error: the work completes, the answer is thrown away, and the screen says
+/// the daemon is unreachable.
+///
+/// The ceiling still exists because a hung request must not become a spinner
+/// nobody can clear. It is aligned with `CodingRunTimeout`, the longest thing
+/// the daemon will do without streaming.
+const PIPELINE_REQUEST_TIMEOUT: Duration = Duration::from_secs(45 * 60);
+
+/// Connecting is a separate budget from answering, and it is short on purpose:
+/// the daemon is on loopback, so a connect that does not complete promptly
+/// means nothing is listening. Keeping this small is what lets the two budgets
+/// above be generous without making a genuinely dead daemon look slow.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Routes that run a pipeline rather than a query, matched by prefix.
+///
+/// A list rather than a heuristic: "slow" is a property of what the handler
+/// does, and the only honest source for that is the route table in
+/// `internal/api/api.go`. A path that is not here gets the default, which is
+/// the safe direction to be wrong in — a new slow route shows up as one
+/// timeout, not as an unbounded hang.
+const PIPELINE_ROUTES: &[&str] = &[
+    "/maps/leadgen",
+    "/brain/scan/now",
+    "/brain/ingest",
+    "/accounts/scan",
+    "/research",
+];
+
+/// The budget for `path`.
+fn request_timeout(path: &str) -> Duration {
+    let route = path.split('?').next().unwrap_or(path);
+    if PIPELINE_ROUTES
+        .iter()
+        .any(|p| route == *p || route.starts_with(&format!("{p}/")))
+    {
+        PIPELINE_REQUEST_TIMEOUT
+    } else {
+        DEFAULT_REQUEST_TIMEOUT
+    }
+}
+
 /// What the WebView is told. The token is a live credential for a process that
 /// runs coding sessions with file tools, so it travels over Tauri IPC and
 /// nowhere else — never a URL, never a log line, never a window title.
@@ -207,8 +265,10 @@ fn call_daemon(
     path: &str,
     body: Option<String>,
 ) -> Result<DaemonResponse, String> {
+    let budget = request_timeout(path);
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
+        .timeout_global(Some(budget))
+        .timeout_connect(Some(CONNECT_TIMEOUT))
         // A 4xx is an answer, not a transport failure: the daemon's error
         // envelope is the useful part and must reach the caller intact.
         .http_status_as_error(false)
@@ -242,6 +302,15 @@ fn call_daemon(
             });
             Ok(DaemonResponse { status, body })
         }
+        // `timeout: global` on its own says nothing an operator can act on —
+        // not which call gave up, not how long it waited, not whether the
+        // daemon was ever reached. Naming all three is the difference between
+        // "the app is broken" and "that run needs longer than 45 minutes".
+        Err(ureq::Error::Timeout(_)) => Err(format!(
+            "the daemon did not answer {method} {path} within {}s — it may still be working; \
+             give it a moment and look again before re-running",
+            budget.as_secs()
+        )),
         Err(err) => Err(format!("could not reach the daemon: {err}")),
     }
 }
@@ -785,6 +854,43 @@ mod tests {
         // Port 1 on loopback: nothing listens, and the poll must report that
         // rather than hang or panic.
         assert!(!health_ok("http://127.0.0.1:1", "token"));
+    }
+
+    #[test]
+    fn a_pipeline_route_gets_the_long_budget() {
+        // A lead-gen run scrapes, classifies and synthesizes in one request.
+        // Thirty seconds for that is what produced "timeout: global" against a
+        // daemon that was still working.
+        assert_eq!(request_timeout("/maps/leadgen"), PIPELINE_REQUEST_TIMEOUT);
+        assert_eq!(
+            request_timeout("/maps/leadgen/export"),
+            PIPELINE_REQUEST_TIMEOUT
+        );
+        assert_eq!(request_timeout("/brain/scan/now"), PIPELINE_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn everything_else_gets_the_default_budget() {
+        assert_eq!(request_timeout("/healthz"), DEFAULT_REQUEST_TIMEOUT);
+        assert_eq!(request_timeout("/maps/leads"), DEFAULT_REQUEST_TIMEOUT);
+        // A prefix match must be on a path segment, not on the string: the
+        // ledger reads are not the run route with a longer name.
+        assert_eq!(
+            request_timeout("/maps/leadgenerator"),
+            DEFAULT_REQUEST_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn a_query_string_does_not_hide_the_route() {
+        assert_eq!(
+            request_timeout("/brain/scan/now?force=1"),
+            PIPELINE_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            request_timeout("/maps/leads?limit=50"),
+            DEFAULT_REQUEST_TIMEOUT
+        );
     }
 
     #[test]

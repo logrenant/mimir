@@ -33,10 +33,18 @@ const (
 	SourceMimirRun SourceKind = "mimir_run"
 )
 
-// Field ceilings. An episode is an index entry, not a copy of the transcript:
-// everything here is a pointer back to work that is still on disk, and the
-// transcript itself remains the record. These bounds are what keep the store
-// small and the recap prompt cheap no matter how long a session ran.
+// Field ceilings.
+//
+// The two text bounds are the *episode row's*, not the parser's: an episode is
+// an index entry, and MaxPromptChars / MaxAssistantChars are what keep the
+// store small and the recap prompt cheap no matter how long a session ran. They
+// are applied by internal/memory when it builds a row, because since task-65
+// there is a second consumer — the chat archive — whose whole job is to keep
+// the text the memory does not. A parser that clipped would have made the
+// archive impossible to write without a second parse of the same file.
+//
+// The rest are accumulation bounds and stay here: they cap how much a builder
+// holds while reading, and no consumer can recover what was never gathered.
 const (
 	MaxPromptChars    = 600
 	MaxAssistantChars = 1200
@@ -45,6 +53,10 @@ const (
 	MaxCommands       = 20
 	MaxTargetChars    = 160
 )
+
+// Clip shortens s to max runes, marking that it was cut. Exported because the
+// two text ceilings above are applied by the consumer.
+func Clip(s string, max int) string { return truncate(s, max) }
 
 // ToolCall is one action an assistant took, reduced to what is worth
 // remembering: which tool, what it aimed at, and whether it worked.

@@ -236,3 +236,21 @@ manuals and nothing else.
 - **The subprocess is the untrusted-input boundary.** A timeout, an output
   ceiling, `cmd.Env = []string{}`, and a scratch working directory rather than a
   repository — the same posture `internal/llm` gives agy, for the same reason.
+
+## Version history (task-67)
+
+Detection was already there — `content_hash` and the resident sweep — and this
+adds the record of it.
+
+- **Nothing in this package writes a version.** `store.UpsertBrainNode` does, on
+  the hash it is handed, which is the same "one ingest path" rule stated from
+  the store's side. What this package added is two fields: `Input.SizeBytes` and
+  `Input.ModifiedAt`, taken from the `os.Stat` the scan already did.
+- **`Changed` is not `Scanned`.** A file seen for the first time and a file that
+  moved are both distilled, and until now the console could not tell them apart
+  — so nothing on screen ever said the detection works. `scan.go` counts them
+  separately and the supervisor emits `EventChanged` for the second kind.
+- **A failed distil still writes no version.** `Ingest` blanks `ContentHash` on
+  failure so the file comes back next pass, and the store's guard is on that
+  same field, so the two rules cannot drift apart.
+

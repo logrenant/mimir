@@ -101,9 +101,13 @@ type scanCursor struct {
 
 // Event kinds, as the console prints them.
 const (
-	EventSweep      = "sweep"
-	EventProject    = "project"
-	EventFile       = "file"
+	EventSweep   = "sweep"
+	EventProject = "project"
+	EventFile    = "file"
+	// EventChanged is a file that was already known and moved. Distinct from
+	// EventFile because it is the one line that says the detection is working:
+	// an operator who edits a document and sees it here knows Brain re-read it.
+	EventChanged    = "changed"
 	EventFailed     = "failed"
 	EventUnreadable = "unreadable"
 	EventPass       = "pass"
@@ -335,7 +339,15 @@ func (s *Supervisor) report(project string, res ScanResult, err error, took time
 		}
 		return
 	}
+	changed := make(map[string]struct{}, len(res.ChangedFiles))
+	for _, f := range res.ChangedFiles {
+		changed[f] = struct{}{}
+	}
 	for _, f := range res.Files {
+		if _, ok := changed[f]; ok {
+			s.emit(EventChanged, project, f+" — değişmiş, yeniden okundu")
+			continue
+		}
 		s.emit(EventFile, project, f)
 	}
 	for _, f := range res.FailedFiles {
@@ -345,8 +357,8 @@ func (s *Supervisor) report(project string, res ScanResult, err error, took time
 		s.emit(EventUnreadable, project, fmt.Sprintf("%d dosya okunamadı (metin katmanı yok ya da çıkarıcı kurulu değil)", res.Unreadable))
 	}
 	if res.Scanned > 0 || res.Failed > 0 {
-		s.emit(EventPass, project, fmt.Sprintf("%d damıtıldı · %d başarısız · %d kaldı · %s",
-			res.Scanned, res.Failed, res.Remaining, took.Round(time.Second)))
+		s.emit(EventPass, project, fmt.Sprintf("%d damıtıldı (%d değişmiş) · %d başarısız · %d kaldı · %s",
+			res.Scanned, res.Changed, res.Failed, res.Remaining, took.Round(time.Second)))
 	}
 }
 

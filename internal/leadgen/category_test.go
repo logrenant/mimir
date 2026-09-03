@@ -88,3 +88,32 @@ func TestValid(t *testing.T) {
 		t.Error("empty must not validate")
 	}
 }
+
+func TestCategoryForName(t *testing.T) {
+	cases := []struct {
+		name string
+		want Category
+		ok   bool
+	}{
+		// The scraped Denizli rows that used to fall through to the model.
+		{"Bil-san Yazılım Sistemleri (Dolphin Software)", CategoryProfessionalServices, true},
+		{"YAZILIM TEKNOLOJİ BİLİŞİM HİZMETLERİ LTD ŞTİ", CategoryProfessionalServices, true},
+		{"Blue Medya Denizli | Reklam ve Yazılım Ajansı", CategoryProfessionalServices, true},
+		{"Venti Dijital Ajans", CategoryProfessionalServices, true},
+
+		// Whole-word matching: "oto" inside "fotoğraf" must not read as a garage.
+		{"Fotoğraf Stüdyosu", CategoryUnknown, false},
+		{"Yılmaz Oto Servis", CategoryAutomotive, true},
+
+		// A name that names no trade stays for the model to answer.
+		{"Kardelen Ltd. Şti.", CategoryUnknown, false},
+		{"", CategoryUnknown, false},
+	}
+
+	for _, tc := range cases {
+		got, ok := CategoryForName(tc.name)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("CategoryForName(%q) = %q,%v; want %q,%v", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}

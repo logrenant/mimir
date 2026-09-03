@@ -3,8 +3,12 @@ package refine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+
+	"github.com/logrenant/mimir/internal/llm"
 )
 
 // Field clamps for one classified item. A business controls its own name and
@@ -31,6 +35,11 @@ type ClassifyInput struct {
 	Items      []ClassifyItem
 	Categories []string
 	MaxTokens  int
+
+	// Selection overrides which provider and model answer this batch. The
+	// zero value routes by class, which is what every caller without an
+	// operator behind it passes.
+	Selection llm.Selection
 }
 
 // ClassifyOutput maps item ID to a category, and only ever to a category that
@@ -61,12 +70,41 @@ func (c *Client) Classify(ctx context.Context, in ClassifyInput) (ClassifyOutput
 
 	systemPrompt, userContent := buildClassifyPrompt(in)
 
-	result, err := c.run(ctx, systemPrompt, userContent)
+	result, err := c.runClassify(ctx, in.Selection, systemPrompt, userContent)
 	if err != nil {
 		return ClassifyOutput{}, err
 	}
 
 	return parseClassifyResult(result, in)
+}
+
+// runClassify is the one profile with a fallback of its own.
+//
+// Since task-51 the distil class has none: a machine-wide scan quietly moving
+// to a billed provider is a bill nobody chose, at a moment nobody is watching.
+// Classification is the opposite shape of work — twenty companies per batch, a
+// few hundred tokens, and only inside a lead-gen run an operator started — and
+// without it every scraped company is "unknown", which is the one thing that
+// makes the whole categorized view worthless. So this profile, and only this
+// profile, falls back to the reason tier.
+//
+// A cancelled caller never falls back: the second provider would be work
+// nobody is waiting for.
+func (c *Client) runClassify(ctx context.Context, sel llm.Selection, systemPrompt, userContent string) (string, error) {
+	result, err := c.runClass(ctx, llm.Distill, sel, systemPrompt, userContent)
+	if err == nil {
+		return result, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", err
+	}
+	if !errors.Is(err, ErrClaudeUnavailable) && !errors.Is(err, llm.ErrProviderUnavailable) {
+		// The provider answered and the answer was bad. Asking a second one is
+		// a retry, not availability, and this package does not retry.
+		return "", err
+	}
+	slog.Info("classify: the distil tier is unavailable, falling back to the reason tier")
+	return c.runClass(ctx, llm.Reason, sel, systemPrompt, userContent)
 }
 
 // buildClassifyPrompt returns the trusted system prompt and the untrusted user

@@ -85,7 +85,7 @@ func (c *Client) Distil(ctx context.Context, in Input) (Output, error) {
 
 	systemPrompt, userContent := buildPrompt(in)
 
-	result, err := c.run(ctx, systemPrompt, userContent)
+	result, err := c.run(ctx, llm.Selection{}, systemPrompt, userContent)
 	if err != nil {
 		return Output{}, err
 	}
@@ -110,8 +110,8 @@ func (c *Client) Distil(ctx context.Context, in Input) (Output, error) {
 // It returns the model's raw text. Deciding whether that text is acceptable
 // belongs to the caller's profile — prose is clamped and validated, JSON is
 // parsed against a closed set — which is why nothing is checked here.
-func (c *Client) run(ctx context.Context, systemPrompt, userContent string) (string, error) {
-	return c.runClass(ctx, llm.Distill, systemPrompt, userContent)
+func (c *Client) run(ctx context.Context, sel llm.Selection, systemPrompt, userContent string) (string, error) {
+	return c.runClass(ctx, llm.Distill, sel, systemPrompt, userContent)
 }
 
 // runClass is the one place a prompt profile becomes a model call.
@@ -120,8 +120,13 @@ func (c *Client) run(ctx context.Context, systemPrompt, userContent string) (str
 // or one episode is distil work and goes to the cheap tier, while synthesis
 // across sources is not (ROADMAP §B.1). Deciding it here rather than in each
 // profile is what keeps that mapping legible in one screen.
-func (c *Client) runClass(ctx context.Context, class llm.Class, systemPrompt, userContent string) (string, error) {
-	resp, err := c.router.Complete(ctx, class, llm.Request{
+//
+// sel is the one thing that can overrule that mapping, and it arrives from the
+// profile's own Input rather than from the Client, because it is a property of
+// one request: the daemon's background passes and an operator's lead-gen run
+// share this client, and only the second of the two has an opinion.
+func (c *Client) runClass(ctx context.Context, class llm.Class, sel llm.Selection, systemPrompt, userContent string) (string, error) {
+	resp, err := c.router.CompleteWith(ctx, class, sel, llm.Request{
 		System: systemPrompt,
 		User:   userContent,
 	})

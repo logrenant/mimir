@@ -38,6 +38,10 @@ type GapInput struct {
 	Category  string
 	Companies []GapCompany
 	MaxTokens int
+
+	// Selection overrides which provider and model answer. Zero routes by
+	// class.
+	Selection llm.Selection
 }
 
 // AnalyzeGaps asks the refiner to synthesize the gaps, weaknesses and unmet
@@ -61,7 +65,7 @@ func (c *Client) AnalyzeGaps(ctx context.Context, in GapInput) (Output, error) {
 	// The one profile that is not distil work: this reads several classified
 	// companies at once and argues about what is missing between them, which is
 	// the synthesis tier's job (ROADMAP §B.1).
-	result, err := c.runClass(ctx, llm.Reason, system, user)
+	result, err := c.runClass(ctx, llm.Reason, in.Selection, system, user)
 	if err != nil {
 		return Output{}, err
 	}

@@ -18,9 +18,19 @@ const tones: Record<Tone, string> = {
   accent: "border-electric/60 text-electric",
 };
 
-export function Badge({ tone = "muted", children }: { tone?: Tone; children: ReactNode }) {
+export function Badge({
+  tone = "muted",
+  title,
+  children,
+}: {
+  tone?: Tone;
+  /** Native tooltip. A badge is two words; the sentence behind them goes here. */
+  title?: string;
+  children: ReactNode;
+}) {
   return (
     <span
+      title={title}
       className={cn(
         "label inline-flex items-center rounded-sm border px-2 py-1 leading-none",
         tones[tone],

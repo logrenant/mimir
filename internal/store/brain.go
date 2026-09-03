@@ -39,8 +39,34 @@ type BrainNodeRow struct {
 	// source", which is the normal case for a session or a commit.
 	ContentHash string
 
+	// SizeBytes and ModifiedAt describe the source as the scanner found it.
+	// They are carried on the version row, not on the node: what a file weighs
+	// now is a fact about the file, and what it weighed then is history.
+	SizeBytes  int64
+	ModifiedAt time.Time
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// BrainNodeVersion is one entry in a node's history: at this moment, at this
+// content hash, this is what the source meant.
+//
+// It holds no file content. The file is still on disk, and for anything under
+// version control git already keeps the bytes; what git does not keep is the
+// assessment, which is exactly what this row is for.
+type BrainNodeVersion struct {
+	NodeID        string
+	ContentHash   string
+	SeenAt        time.Time
+	SizeBytes     int64
+	ModifiedAt    time.Time
+	Title         string
+	Assessment    string
+	Tags          []string
+	Provider      string
+	Model         string
+	PromptVersion string
 }
 
 // BrainEdgeRow is one link. Edges are stored in one direction and read in both.
@@ -51,11 +77,21 @@ type BrainEdgeRow struct {
 	Weight float64
 }
 
-// UpsertBrainNode writes a node, replacing the row that shares its identity.
+// UpsertBrainNode writes a node, replacing the row that shares its identity,
+// and appends a version row when the content it was derived from has changed.
 //
 // created_at is preserved across an update on purpose: a node re-ingested a
 // month later is the same node, and losing when it was first seen would make
 // "most recent work" mean "most recently re-scanned".
+//
+// The version is appended here rather than by a caller for two reasons. The old
+// hash is only visible at the upsert — a caller would have to read the row
+// first and race itself — and every ingest path (the resident scan, mimir-scan,
+// brain_scan_repo, the capture loop) then gets history without a second writer
+// existing, which is internal/brain/AGENTS.md's "one ingest path" rule applied
+// to the store side.
+//
+// How much history to keep is config.BrainVersionsPerNode, read once at Open.
 func (s *Store) UpsertBrainNode(ctx context.Context, n BrainNodeRow) error {
 	if s == nil || s.db == nil {
 		return unavailable(errors.New("store is not open"))
@@ -81,7 +117,25 @@ func (s *Store) UpsertBrainNode(ctx context.Context, n BrainNodeRow) error {
 		n.UpdatedAt = now
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return unavailable(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Read before writing: after the upsert the old hash is gone, and whether
+	// this is a change or a first sighting is the only question history asks.
+	var previousHash string
+	err = tx.QueryRowContext(ctx, `SELECT content_hash FROM brain_nodes WHERE id = ?`, n.ID).
+		Scan(&previousHash)
+	seenBefore := true
+	if errors.Is(err, sql.ErrNoRows) {
+		seenBefore = false
+	} else if err != nil {
+		return unavailable(err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO brain_nodes (
 			id, project_path, kind, source_key, title, assessment, body,
 			tags_json, aliases_json, tags_text, aliases_text,
@@ -108,7 +162,90 @@ func (s *Store) UpsertBrainNode(ctx context.Context, n BrainNodeRow) error {
 	if err != nil {
 		return unavailable(err)
 	}
+
+	// A node with no comparable source has no history to keep, and a failed
+	// distil deliberately arrives with an empty hash so the file is offered
+	// again next pass — recording that as a version would write a row saying
+	// the file became unreadable.
+	if s.brainVersionsPerNode > 0 && n.ContentHash != "" && (!seenBefore || previousHash != n.ContentHash) {
+		if err := appendBrainVersion(ctx, tx, n, string(tagsJSON), s.brainVersionsPerNode); err != nil {
+			return err
+		}
+	}
+
+	return unavailableOrNil(tx.Commit())
+}
+
+// appendBrainVersion records one entry and prunes the node's oldest.
+func appendBrainVersion(ctx context.Context, tx *sql.Tx, n BrainNodeRow, tagsJSON string, keep int) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO brain_node_versions
+			(node_id, content_hash, seen_at, size_bytes, modified_at,
+			 title, assessment, tags_json, provider, model, prompt_version)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		n.ID, n.ContentHash, n.UpdatedAt.Unix(), n.SizeBytes,
+		unixOrZero(n.ModifiedAt), n.Title, n.Assessment, tagsJSON,
+		n.Provider, n.Model, n.PromptVersion,
+	); err != nil {
+		return unavailable(err)
+	}
+
+	// A file edited every minute for a year must not become the largest table
+	// here. Pruned on insert rather than by a sweeper: this package has no
+	// background goroutines, and the writer already holds the transaction.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM brain_node_versions
+		WHERE rowid IN (
+			SELECT rowid FROM brain_node_versions
+			WHERE node_id = ?
+			ORDER BY seen_at DESC, rowid DESC
+			LIMIT -1 OFFSET ?
+		)`, n.ID, keep); err != nil {
+		return unavailable(err)
+	}
 	return nil
+}
+
+// BrainNodeVersions reads a node's history, newest first.
+func (s *Store) BrainNodeVersions(ctx context.Context, nodeID string, limit int) ([]BrainNodeVersion, error) {
+	if s == nil || s.db == nil || nodeID == "" || limit <= 0 {
+		return nil, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT node_id, content_hash, seen_at, size_bytes, modified_at,
+		       title, assessment, tags_json, provider, model, prompt_version
+		FROM brain_node_versions
+		WHERE node_id = ?
+		ORDER BY seen_at DESC, rowid DESC
+		LIMIT ?`, nodeID, limit)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []BrainNodeVersion
+	for rows.Next() {
+		var (
+			v                BrainNodeVersion
+			seenAt, modified int64
+			tagsJSON         string
+		)
+		if err := rows.Scan(&v.NodeID, &v.ContentHash, &seenAt, &v.SizeBytes,
+			&modified, &v.Title, &v.Assessment, &tagsJSON, &v.Provider,
+			&v.Model, &v.PromptVersion); err != nil {
+			return nil, unavailable(err)
+		}
+		v.SeenAt = time.Unix(seenAt, 0).UTC()
+		if modified > 0 {
+			v.ModifiedAt = time.Unix(modified, 0).UTC()
+		}
+		// A row written by a future writer with unparseable tags is still a
+		// usable version: it loses its vocabulary, not its assessment.
+		_ = json.Unmarshal([]byte(tagsJSON), &v.Tags)
+		out = append(out, v)
+	}
+	return out, unavailableOrNil(rows.Err())
 }
 
 // BrainNode reads one node by id.

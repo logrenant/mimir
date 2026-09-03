@@ -7,10 +7,12 @@ import (
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/crawl"
 	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/mapscrape"
 	"github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/memory"
 	"github.com/logrenant/mimir/internal/pipeline"
 	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/regionsearch"
 	"github.com/logrenant/mimir/internal/search"
 )
 
@@ -23,11 +25,12 @@ type Deps struct {
 	Refine   *refine.Client
 	Pipeline *pipeline.Pipeline
 
-	// Maps is optional. cmd/mimir-daemon builds one Places client and shares it
-	// with the lead-gen pipeline, so it passes it here rather than have
-	// RegisterAll build a second. cmd/mimir-mcp leaves it nil and RegisterAll
-	// builds its own from the credential, exactly as before.
-	Maps *maps.Client
+	// Regions is optional. cmd/mimir-daemon builds one region-search router and
+	// shares it with the lead-gen pipeline, so it passes it here rather than
+	// have RegisterAll build a second. cmd/mimir-mcp leaves it nil and
+	// RegisterAll builds its own — which, unlike before, is not conditional on
+	// a credential: the free scrape provider needs none.
+	Regions RegionSearcher
 
 	// Memory is optional and is nil whenever the local store could not be
 	// opened, because a memory with nowhere to remember is not a degraded
@@ -103,14 +106,26 @@ func RegisterAll(reg *mcp.Registry, cfg config.Config, d Deps) error {
 		)
 	}
 
-	if mapsClient := d.Maps; mapsClient != nil {
-		toolSet = append(toolSet, NewMapsSearch(cfg, mapsClient))
-	} else if cfg.PlacesAPIKey != "" {
-		mapsClient, err := maps.New(cfg, maps.Options{APIKey: cfg.PlacesAPIKey})
-		if err != nil {
-			return fmt.Errorf("building the places client: %w", err)
+	// Region search. Availability no longer follows the Places credential: the
+	// free scrape provider needs none, so the tool is registered on every
+	// machine and its description names whichever source will actually answer.
+	regions := d.Regions
+	if regions == nil {
+		sources := regionsearch.Sources{Sidecar: mapscrape.New(cfg)}
+		if cfg.PlacesAPIKey != "" {
+			mapsClient, err := maps.New(cfg, maps.Options{APIKey: cfg.PlacesAPIKey})
+			if err != nil {
+				return fmt.Errorf("building the places client: %w", err)
+			}
+			sources.Places = mapsClient
 		}
-		toolSet = append(toolSet, NewMapsSearch(cfg, mapsClient))
+		// No model provider here. cmd/mimir-mcp reaches this branch, and it
+		// has no refine client to hand over; the daemon builds the full order
+		// and passes it in through Deps.
+		regions = regionsearch.Standard(sources)
+	}
+	if regions.Available() {
+		toolSet = append(toolSet, NewMapsSearch(cfg, regions))
 	}
 
 	for _, t := range toolSet {

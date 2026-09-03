@@ -68,6 +68,19 @@ cp "$REPO_ROOT/bin/mimir-daemon" "$BIN_DIR/mimir-daemon.new"
 chmod 0755 "$BIN_DIR/mimir-daemon.new"
 mv "$BIN_DIR/mimir-daemon.new" "$BIN_DIR/mimir-daemon"
 
+# The Maps sidecar's deploy assets travel with the daemon.
+#
+# Region search is the one capability that needs no credential, and the daemon
+# starts the Playwright container itself when a search finds it down. Started
+# by launchd, it has no idea where this repository is — so the compose file and
+# its Dockerfile are copied next to the binary, which is where
+# config.defaultMapScrapeComposeFile looks first.
+mkdir -p "$SUPPORT_DIR/deploy"
+rm -rf "$SUPPORT_DIR/deploy/playwright-maps.new"
+cp -R "$REPO_ROOT/deploy/playwright-maps" "$SUPPORT_DIR/deploy/playwright-maps.new"
+rm -rf "$SUPPORT_DIR/deploy/playwright-maps"
+mv "$SUPPORT_DIR/deploy/playwright-maps.new" "$SUPPORT_DIR/deploy/playwright-maps"
+
 # --- 1b. carry the old store forward ---------------------------------------
 #
 # The rebrand moved the store: ~/Library/Application Support/goat-mcp/goat.db is

@@ -56,7 +56,8 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
 	case errors.Is(err, account.ErrAccountNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
-	case errors.Is(err, account.ErrAccountInUse):
+	case errors.Is(err, account.ErrAccountInUse),
+		errors.Is(err, account.ErrAccountDiscovered):
 		writeError(w, http.StatusConflict, codeConflict, err.Error())
 	case errors.Is(err, coderunner.ErrRunNotFound),
 		errors.Is(err, coderunner.ErrAttachmentNotFound):

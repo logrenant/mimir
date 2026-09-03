@@ -12,27 +12,31 @@ import (
 	"github.com/logrenant/mimir/internal/mcp"
 )
 
-// RegionSearcher is the internal/maps seam. An interface rather than the
-// concrete client so this tool's tests need neither a Places key nor a
-// network — the same shape every other tool here uses.
+// RegionSearcher is the region-search seam. *regionsearch.Router satisfies it.
+// An interface rather than the concrete router so this tool's tests need
+// neither a sidecar, a Places key nor a network — the same shape every other
+// tool here uses.
 type RegionSearcher interface {
-	SearchText(ctx context.Context, q maps.Query) ([]maps.Company, error)
+	Search(ctx context.Context, q maps.Query) ([]maps.Company, string, []string, error)
+	Available() bool
+	Free() bool
 }
 
-// MapsSearchTool answers "which companies exist in this region?" from the
-// Google Places API.
+// MapsSearchTool answers "which companies exist in this region?".
 //
-// It is the only tool in the repo that spends the operator's money: Places
-// bills per request by field-mask tier. Two consequences are deliberate and
-// visible rather than clever — it is registered only when a key is present
-// (see RegisterAll), and it does not consult the region cache, because
-// internal/leadgen (M5) is the orchestrator that owns that decision, exactly
-// as internal/pipeline — not internal/crawl — owns the page cache.
+// It asks internal/regionsearch, which tries the free local scrape before the
+// billed Places API. That order is why this is no longer registered only when
+// a key is present: a machine with no Google credential at all can still
+// enumerate a region, and the description below says which source will
+// actually answer rather than assuming the expensive one.
 //
-// No refine call: Places returns structured business facts and maps.FieldMask
-// requests no free-text field, so there is nothing here for the
-// context-isolation firewall to distil (the same reasoning the Stage F
-// scrapers use).
+// It does not consult the region cache: internal/leadgen (M5) is the
+// orchestrator that owns that decision, exactly as internal/pipeline — not
+// internal/crawl — owns the page cache.
+//
+// No refine call: both sources return structured business facts and no
+// free-text field, so there is nothing here for the context-isolation firewall
+// to distil (the same reasoning the Stage F scrapers use).
 type MapsSearchTool struct {
 	searcher RegionSearcher
 	cfg      config.Config
@@ -45,8 +49,15 @@ func NewMapsSearch(cfg config.Config, searcher RegionSearcher) *MapsSearchTool {
 
 func (t *MapsSearchTool) Name() string { return "maps_search" }
 
+// Description names the source that will actually answer. A tool that claimed
+// to bill when it does not — or the reverse — would be steering the caller with
+// a wrong price.
 func (t *MapsSearchTool) Description() string {
-	return "Find companies in a region via the Google Places API — name, address, coordinates, rating, review count, website, phone. Structured facts only, no page text. Costs money: each call is a billed Places request and results are not cached yet, so do not repeat a search you already ran."
+	const shape = "Find companies in a region — name, address, coordinates, rating, review count, and where available website and phone. Structured facts only, no page text. Results are not cached, so do not repeat a search you already ran."
+	if t.searcher != nil && t.searcher.Free() {
+		return shape + " Answered by a local Google Maps scrape (a Playwright container this daemon starts itself), which spends nothing; it falls back to the billed Places API only if that fails."
+	}
+	return shape + " Answered by the Google Places API: each call is a billed request."
 }
 
 func (t *MapsSearchTool) InputSchema() json.RawMessage {
@@ -109,6 +120,14 @@ type mapsCompany struct {
 
 type mapsSearchResponse struct {
 	Query string `json:"query"`
+	// Source is which provider answered — "mapscrape" or "places_api". The
+	// two differ in field coverage (no phone, no types[] from a scrape), so a
+	// caller reading an empty phone needs to know which it is looking at.
+	Source string `json:"source,omitempty"`
+	// Notes carry a provider that was tried and could not answer. A failed
+	// free source followed by a billed one is exactly the thing an operator
+	// should be able to see afterwards.
+	Notes []string `json:"notes,omitempty"`
 	// Returned is how many companies this response carries; TotalFound is how
 	// many Places returned. They differ when the budget forced a trim.
 	Returned   int           `json:"returned"`
@@ -152,7 +171,7 @@ func (t *MapsSearchTool) Handle(ctx context.Context, args json.RawMessage) (any,
 		}
 	}
 
-	found, err := t.searcher.SearchText(ctx, q)
+	found, source, notes, err := t.searcher.Search(ctx, q)
 	if err != nil {
 		return nil, mapsToolError(err)
 	}
@@ -176,6 +195,8 @@ func (t *MapsSearchTool) Handle(ctx context.Context, args json.RawMessage) (any,
 
 	resp := mapsSearchResponse{
 		Query:      query,
+		Source:     source,
+		Notes:      notes,
 		TotalFound: len(companies),
 		Companies:  companies,
 		budget:     t.cfg.MapsSearchMaxTokens,

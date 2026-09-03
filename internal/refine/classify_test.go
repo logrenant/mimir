@@ -178,6 +178,45 @@ func TestClassify_CLIFailureIsTyped(t *testing.T) {
 	}
 }
 
+// Classification is the one profile with a fallback of its own.
+//
+// Without it, a machine whose distil tier is signed out categorises every
+// scraped company as "unknown" — which makes the categorized view, and the
+// per-category export, worthless. The work is bounded (a batch of twenty, a few
+// hundred tokens, inside a run an operator started), which is what makes it a
+// different decision from the machine-wide scan task-51 protected.
+func TestClassify_FallsBackToTheReasonTierWhenDistilIsDown(t *testing.T) {
+	answer := `echo '{"result":"{\"assignments\":[{\"id\":\"place-1\",\"category\":\"health\"}]}","is_error":false}'`
+
+	cfg := classifyTestConfig(writeFakeClaude(t, false, answer))
+	cfg.DistillProvider = "agy"
+	cfg.ReasonProvider = "claude"
+	cfg.AgyCLIPath = writeFakeAgy(t, "exit 1")
+	cfg.AgyPrintTimeout = 5 * time.Second
+
+	out, err := New(cfg).Classify(context.Background(), sampleClassifyInput())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if out.Assignments["place-1"] != "health" {
+		t.Errorf("the fallback did not answer: %+v", out.Assignments)
+	}
+}
+
+// A provider that answered badly is not retried elsewhere: that would be a
+// second opinion, not availability.
+func TestClassify_DoesNotFallBackOnABadAnswer(t *testing.T) {
+	prose := `echo '{"result":"I think these are dentists.","is_error":false}'`
+
+	cfg := classifyTestConfig(writeFakeClaude(t, false, prose))
+	cfg.DistillProvider = "claude"
+	cfg.ReasonProvider = "claude"
+
+	if _, err := New(cfg).Classify(context.Background(), sampleClassifyInput()); !errors.Is(err, ErrRefineRejected) {
+		t.Fatalf("err = %v, want ErrRefineRejected", err)
+	}
+}
+
 // No items means no subprocess: the cheapest classify call is the one that
 // never spawns anything.
 func TestClassify_EmptyBatchSpawnsNothing(t *testing.T) {

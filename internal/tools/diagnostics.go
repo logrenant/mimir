@@ -202,9 +202,10 @@ func (t *diagnosticsTool) Handle(ctx context.Context, _ json.RawMessage) (any, e
 	})
 
 	g.Go(func() error {
-		// Down is a normal state for this one — it is the Places fallback, not
-		// a hard dependency — so it is reported, with the message that names
-		// `make maps-up`, and marked optional rather than presented as a break.
+		// Down is a normal state for this one: it is the *primary* region-search
+		// source now, but the daemon starts it on demand, so "not running" is a
+		// container that has not been needed yet rather than a break. Reported
+		// with the message that says who starts it, and marked optional.
 		ok, err := t.mapsScraper.Health(ctxGroup)
 		res.MapsScraper = diagDependency{Ok: ok, Optional: true}
 		if err != nil {

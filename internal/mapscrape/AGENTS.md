@@ -1,11 +1,35 @@
 # AGENTS.md — internal/mapscrape
 
-The Places-API **fallback** for Maps region search. Same question as
-`internal/maps`, same `maps.Query` in and `[]maps.Company` out, different
-provider: the public results feed, rendered by `deploy/playwright-maps`.
+The **primary** provider for Maps region search since task-55, and the only one
+that needs no credential. Same question as `internal/maps`, same `maps.Query` in
+and `[]maps.Company` out, different provider: the public results feed, rendered
+by `deploy/playwright-maps`.
+
+It was written as the Places fallback and the order is now the other way round
+(`internal/regionsearch` owns that decision): free first, billed behind it. What
+that changes here is the standard this package is held to — a break is no longer
+a degraded second option, it is region search being down on a machine that has
+no other source.
 
 ## Rules for this directory
 
+- **A feed the selectors could not read goes to the model, once.** `ParseFeed`
+  returning nothing is the failure this package was always expected to have —
+  Google owns that markup — and the page is still in hand when it happens. The
+  `FeedExtractor` seam is what re-reads it (`internal/mapsllm` implements it,
+  `internal/refine`'s ExtractFeed profile does the reading). Two rules hold it
+  in place: a feed that parsed *anything* never reaches the model, because the
+  selector path reads ids and coordinates out of URL grammar that a model
+  reading rendered text cannot match; and every recovered row still carries
+  `PlaceIDPrefix`, so it can never overwrite a billed one.
+- **The daemon starts the container, the operator does not.** `EnsureRunning`
+  runs `docker compose up -d` against `cfg.MapScrapeComposeFile` and waits for
+  `/health`; `Search` calls it once, only after a refused connection, and
+  retries the request once. A key-free capability that begins with "first, run
+  this in a terminal" is not key-free in any way the operator cares about.
+  The compose file is copied next to the installed binary by
+  `scripts/install-agent.sh` — a launchd-started daemon has no repository to
+  find it in.
 - **Same types as the primary, or this is not a fallback.** `Search` takes
   `maps.Query` and returns `[]maps.Company` so a caller can swap providers
   without reshaping anything, and so both share `Query.Key()` as a cache key. A

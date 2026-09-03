@@ -74,6 +74,33 @@ daemon.
   emails" is checked. Marking an email `sent`/`skipped` is optimistic: the row
   updates locally after `POST /maps/emails/status` returns, and the server owns
   the prompt version — the screen never sends one.
+- **The model picker is a view of `GET /llm/providers`, never a second copy of
+  it.** The daemon owns the provider/model allow-list and rejects a pair that is
+  not in it, so a list hard-coded here would drift the first time a generation
+  ships and start offering combinations the run route then refuses. If the route
+  does not answer, the picker is not rendered at all — an empty dropdown would
+  suggest there is nothing to choose, while its absence correctly says the
+  choice is not on offer and the run still works. Two controls rather than one
+  flat list of pairs, because the provider is the decision that matters (free
+  tier or your Claude quota) and burying it makes the expensive choice as easy
+  to make by accident as the free one. Switching provider sets the model to that
+  provider's `default_model` explicitly: the model control has no empty option,
+  so a cleared value would display whichever model is listed first while the run
+  spent a different one.
+- **The lead-gen screen opens on the ledger, not on a run (task-64).** A run
+  lives for as long as the tab does; the ledger is what every earlier run left
+  behind, so with nothing in state the screen reads `/maps/leads` rather than
+  drawing an empty panel. Its filtering happens on the daemon, not in the
+  browser: the ledger is bigger than a page, and filtering the rendered page
+  would quietly mean "search the two hundred rows you happen to be looking at".
+  The category rail is counted by the daemon for the same reason — a rail
+  derived from the page would describe the page.
+- **A node's history rides its detail (task-68).** `GET /brain/nodes/{id}`
+  carries a bounded `versions` array, so the panel does not fetch a list that is
+  empty for most files on the machine. The timeline is hidden below two entries:
+  a file read once has a history of exactly what is already on screen above it.
+  There is no diff — no file content is stored, and inventing one from two
+  assessments would be a picture of something that never happened.
 - **Versions are pinned exactly** in `package.json` and `Cargo.toml` — no `^`,
   no `~` (SD-5). The Tauri image and library versions must match each other.
 - **`make check` stays Go-only.** The desktop gate is `make desktop-check`

@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod daemon;
+mod exports;
 mod quick;
 mod tray;
 
@@ -29,7 +30,8 @@ fn main() {
             daemon::daemon_request,
             daemon::restart_daemon,
             quick::hide_quick,
-            quick::open_main
+            quick::open_main,
+            exports::reveal_export
         ])
         .setup(|app| {
             // No Dock icon: Mimir is a menu-bar app. The daemon outlives every

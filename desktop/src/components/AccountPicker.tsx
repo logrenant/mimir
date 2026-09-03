@@ -111,6 +111,20 @@ export function AccountManager({
     }
   };
 
+  // The slot the daemon's own model calls spend — refine, distil, recap. Those
+  // are not coding runs: nothing dispatched them, so until one is marked they
+  // go to whichever identity the daemon inherited. Clicking the marked one
+  // again clears it, which means the CLI's own slot.
+  const markBackground = async (id: string) => {
+    setError(null);
+    try {
+      await api.setBackgroundAccount(id);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof DaemonError ? err.message : String(err));
+    }
+  };
+
   const forget = async (id: string) => {
     setError(null);
     try {
@@ -132,8 +146,9 @@ export function AccountManager({
     <div className="space-y-3">
       {accounts !== null && accounts.length === 0 && (
         <p className="text-sm text-muted">
-          Kayıtlı hesap yok — çalıştırmalar CLI'ın varsayılan oturumunu kullanıyor ve aynı anda
-          yalnız biri çalışabiliyor. İkinci bir hesap eklemek iki işi paralel yürütür.
+          Hesap yok — <code className="text-mist">~/.claude-accounts</code> taraması boş döndü ve
+          çalıştırmalar CLI'ın varsayılan oturumunu kullanıyor, aynı anda yalnız biri
+          çalışabiliyor. İkinci bir hesap eklemek iki işi paralel yürütür.
         </p>
       )}
 
@@ -168,11 +183,32 @@ export function AccountManager({
               </span>
               <button
                 type="button"
-                onClick={() => void forget(account.id)}
-                className="cursor-pointer border-none bg-transparent text-xs text-muted hover:text-mist"
+                onClick={() => void markBackground(account.is_background ? "" : account.id)}
+                title="Daemon'un kendi model çağrıları (refine, distill, recap) bu hesabı harcasın"
+                className={
+                  account.is_background
+                    ? "cursor-pointer rounded border border-edge bg-transparent px-2 py-0.5 text-xs text-mist"
+                    : "cursor-pointer border-none bg-transparent text-xs text-muted hover:text-mist"
+                }
               >
-                unut
+                arka plan
               </button>
+              {/* A discovered slot belongs to the accounts directory, not to
+                  this screen: forgetting it here would be undone by the next
+                  scan, so the honest control is the directory itself. */}
+              {account.discovered ? (
+                <span className="text-xs text-muted" title="~/.claude-accounts taramasından geldi">
+                  taramadan
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void forget(account.id)}
+                  className="cursor-pointer border-none bg-transparent text-xs text-muted hover:text-mist"
+                >
+                  unut
+                </button>
+              )}
             </div>
           );
         })}
@@ -213,9 +249,12 @@ export function AccountManager({
 
       <p className="text-xs text-muted">
         Bir hesap = bir dizin. CLI o yolu hash'leyip macOS Keychain'de ayrı bir kimlik yuvası
-        kullanıyor; giriş bilgisi Keychain'de kalır, Mimir görmez. Yeni bir yuvaya giriş yapmak
-        için:{" "}
+        kullanıyor; giriş bilgisi Keychain'de kalır, Mimir görmez.{" "}
+        <code className="text-mist">~/.claude-accounts</code> altındaki her dizin açılışta
+        taranıp buraya düşer — terminaldeki <code className="text-mist">claude-acct</code> ile aynı
+        yuvalar. Yeni bir yuva: dizini oluşturup{" "}
         <code className="text-mist">CLAUDE_SECURESTORAGE_CONFIG_DIR=&lt;dizin&gt; claude auth login</code>
+        , sonra yenile.
       </p>
     </div>
   );
