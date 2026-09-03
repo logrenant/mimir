@@ -217,6 +217,7 @@ func TestMaps_RoutesRequireToken(t *testing.T) {
 // --- the ledger routes -----------------------------------------------------
 
 type fakeLedger struct {
+	regions []store.LeadRegion
 	rows    []store.LeadRow
 	filter  store.LeadFilter
 	counts  []store.CategoryCount
@@ -237,6 +238,10 @@ func (f *fakeLedger) LeadCategoryCounts(_ context.Context, filter store.LeadFilt
 
 func (f *fakeLedger) ListLeadRuns(_ context.Context, _ int) ([]store.LeadRun, error) {
 	return f.runs, nil
+}
+
+func (f *fakeLedger) ListLeadRegions(_ context.Context) ([]store.LeadRegion, error) {
+	return f.regions, nil
 }
 
 func (f *fakeLedger) OutreachEmailsFor(_ context.Context, _ []string, _ string) (map[string]store.OutreachEmail, error) {

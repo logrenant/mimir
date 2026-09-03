@@ -4,6 +4,35 @@ Bu dosya [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) biçimini,
 sürüm numaraları [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 kuralını izler.
 
+## [2.11.0] — 2026-09-03
+
+**Bir lead artık aranabilir bir şey: telefonlar defterde, ve bir bölge tek bir
+bölge.**
+
+### Eklendi
+
+- **İletişim zenginleştirme artık koşunun bir aşaması** (stage 1b). Daha önce
+  yalnızca Export'ta çalışıyor ve cevabı hiçbir yere yazılmıyordu — yetmiş
+  şirketlik bir defterde sıfır telefon olmasının sebebi buydu. Artık her koşuda
+  çalışıyor ve `leads`'e yazılıyor, yani getirme şirket başına bir kez ödeniyor.
+  Ölçülen: 0 → 40 telefon.
+- **Web sitesi olmayanlar için DuckDuckGo araması.** Listede site yoksa enricher
+  şirketin sitesini arayıp buluyor; dizin siteleri (Google, Facebook, firma
+  rehberleri) eleniyor, çünkü küçük bir işletmeyi kendi adında geçen bu siteler
+  onu geçiyor ve birini "web sitesi" diye kaydetmek hiç bulmamaktan kötü.
+- **Bölge toplaması** (`GET /maps/leads/regions`). Seçici artık koşuları değil
+  yerleri listeliyor: yirmi bir kez aranmış bir bölge tek bir "Denizli", yirmi
+  bir satır değil. `GET /maps/leads?region=` ile filtreleniyor, büyük/küçük harf
+  duyarsız — "denizli" ile "Denizli" iki ayrı yer değil.
+
+### Değiştirildi
+
+- **Ulaşılamayan şirketler `unknown` kategorisinde.** Ne telefonu ne sitesi olan
+  bir şirket aranamaz, ve bir outreach listesi arayabildiklerinin listesidir;
+  ticaretinin adı altında dosyalamak operatörü çıkmaz bir satıra götürürdü.
+  `category_method` bunu `unreachable` olarak kaydediyor — sınıflandırma
+  başarısızlığı değil, ulaşılamazlık.
+
 ## [2.10.0] — 2026-09-03
 
 **Uygulamanın içindeki terminal artık gerçek bir terminal, ve bir modelin kotası

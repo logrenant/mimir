@@ -110,6 +110,7 @@ type Report struct {
 	// empty phone column needs to know which it is looking at.
 	Source         string           `json:"source,omitempty"`
 	FromCache      bool             `json:"from_cache"`
+	RanContacts    bool             `json:"ran_contacts"`
 	RanCategorize  bool             `json:"ran_categorize"`
 	RanGapAnalysis bool             `json:"ran_gap_analysis"`
 	RanEmails      bool             `json:"ran_emails"`
@@ -125,6 +126,10 @@ type RunRequest struct {
 	// Region is the human label for the area, used as the gap-analysis and
 	// email cache-key region. Empty falls back to Query.Text.
 	Region string
+	// WithContacts runs stage 1b: open each company's site (and, when it has
+	// none, go and find one) for a phone number and an email address. On by
+	// default at the API edge, because a lead nobody can ring is not a lead.
+	WithContacts bool
 	// WithGapAnalysis runs stage 3. WithEmails implies it.
 	WithGapAnalysis bool
 	// WithEmails runs stage 4.
@@ -225,6 +230,46 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 		leads[i] = leadFrom(c)
 	}
 
+	// Stage 1b — contacts. Before categorize, because the reachability rule
+	// below needs to know whether a company can be contacted at all, and that
+	// is only settled once the enricher has looked.
+	//
+	// This used to run only in Export, and its answers were never written to
+	// the ledger — which is why a ledger of seventy companies held zero phone
+	// numbers. A lead nobody can ring is not a lead, so finding the number is
+	// part of building the list, not part of formatting it.
+	if p.contacts != nil && req.WithContacts {
+		found := p.contacts.Enrich(ctx, companies)
+		filled, withSite := 0, 0
+		for i := range leads {
+			e, ok := found[leads[i].PlaceID]
+			if !ok {
+				continue
+			}
+			if e.Phone != "" {
+				leads[i].Phone = e.Phone
+				filled++
+			}
+			if e.Email != "" {
+				leads[i].Email = e.Email
+			}
+			// A site the enricher had to go and find is still the company's
+			// site, and both the categorizer and the reachability rule below
+			// should see it.
+			if leads[i].Website == "" && e.Website != "" {
+				leads[i].Website = e.Website
+				companies[i].Website = e.Website
+				withSite++
+			}
+			if leads[i].Address == "" && e.Address != "" {
+				leads[i].Address = e.Address
+			}
+		}
+		rep.RanContacts = true
+		rep.Notes = append(rep.Notes,
+			fmt.Sprintf("contacts: %d phone numbers, %d websites recovered", filled, withSite))
+	}
+
 	// Stage 2 — categorize. Near-zero-token; always runs when wired.
 	if categorizer != nil {
 		results, catGaps, err := categorizer.Categorize(ctx, companies)
@@ -238,6 +283,18 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 				leads[i].Category = results[i].Category
 				leads[i].CategoryMethod = results[i].Method
 			}
+		}
+	}
+
+	// A company with neither a phone number nor a website cannot be contacted,
+	// and an outreach list is a list of companies you can reach. Filing it
+	// under its trade would put it in a sheet an operator works through and
+	// then discovers is a dead end, so it is filed as unknown — the same word
+	// the categorizer uses for "no answer", because that is what this is.
+	for i := range leads {
+		if leads[i].Phone == "" && leads[i].Website == "" {
+			leads[i].Category = CategoryUnknown
+			leads[i].CategoryMethod = MethodUnreachable
 		}
 	}
 

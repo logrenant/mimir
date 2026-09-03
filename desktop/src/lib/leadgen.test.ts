@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   ALL_CATEGORIES,
-  ALL_RUNS,
+  ALL_REGIONS,
   bucketByCategory,
   contactLines,
   describeRun,
@@ -207,13 +207,13 @@ describe("the ledger query", () => {
     expect(
       leadsQueryFrom({
         category: ALL_CATEGORIES,
-        runID: ALL_RUNS,
+        region: ALL_REGIONS,
         text: "",
         onlyWithoutWebsite: false,
       }),
     ).toEqual({
       category: undefined,
-      run_id: undefined,
+      region: undefined,
       q: undefined,
       without_website: undefined,
     });
@@ -223,13 +223,13 @@ describe("the ledger query", () => {
     expect(
       leadsQueryFrom({
         category: "health",
-        runID: "run-1",
+        region: "Denizli",
         text: "  kadıköy  ",
         onlyWithoutWebsite: true,
       }),
     ).toEqual({
       category: "health",
-      run_id: "run-1",
+      region: "Denizli",
       q: "kadıköy",
       without_website: true,
     });
@@ -240,7 +240,7 @@ describe("the ledger query", () => {
   test("sends no page bound of its own", () => {
     const q = leadsQueryFrom({
       category: ALL_CATEGORIES,
-      runID: ALL_RUNS,
+      region: ALL_REGIONS,
       text: "",
       onlyWithoutWebsite: false,
     });

@@ -35,6 +35,7 @@ import (
 	"github.com/logrenant/mimir/internal/extract"
 	"github.com/logrenant/mimir/internal/maps"
 	"github.com/logrenant/mimir/internal/refine"
+	"github.com/logrenant/mimir/internal/search"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -53,6 +54,10 @@ type Enriched struct {
 	PlaceID string
 	Phone   string
 	Email   string
+	// Website is only filled when the company arrived without one and a search
+	// found its site. Recorded so the caller can persist it: a site found once
+	// should not have to be found again on the next run.
+	Website string
 	// Address is only filled when the company had none already: a Maps address
 	// is better evidence about where a business is than its own footer.
 	Address string
@@ -67,12 +72,21 @@ type Extractor interface {
 }
 
 // Fetcher is internal/crawl's client.
+// Searcher finds a company's site when its listing did not carry one.
+// *search.Client satisfies it. Nil disables the lookup, which is the honest
+// state for a binary with no search configured — the company is then reported
+// as MethodNoSite exactly as before.
+type Searcher interface {
+	Search(ctx context.Context, query string, count int) ([]search.Result, error)
+}
+
 type Fetcher interface {
 	Markdown(ctx context.Context, targetURL string) (crawl.Page, error)
 }
 
 // Enricher opens company websites and reads contact details off them.
 type Enricher struct {
+	searcher  Searcher
 	cfg       config.Config
 	fetcher   Fetcher
 	extractor Extractor
@@ -80,6 +94,81 @@ type Enricher struct {
 
 func New(cfg config.Config, fetcher Fetcher, extractor Extractor) *Enricher {
 	return &Enricher{cfg: cfg, fetcher: fetcher, extractor: extractor}
+}
+
+// UseSearcher installs the search client used to find a missing website.
+//
+// Set after construction rather than passed to New because it is optional: the
+// enricher is complete without it, and a caller that has no search client
+// still gets tiers 1 and 2 on the companies that did list a site.
+func (e *Enricher) UseSearcher(s Searcher) { e.searcher = s }
+
+// findSite looks for a company's own website.
+//
+// Only reached when the listing carried none. The query is the name plus the
+// town because a company name alone is rarely unique, and the first result that
+// is not a directory is taken: aggregators outrank small businesses for their
+// own names, so accepting result one unfiltered would file yelp.com as half the
+// region's website. Nothing here is inferred — an unusable result set leaves
+// the field empty, which is what MethodNoSite already means.
+func (e *Enricher) findSite(ctx context.Context, c maps.Company) string {
+	if e.searcher == nil || strings.TrimSpace(c.Name) == "" {
+		return ""
+	}
+	query := c.Name
+	if town := townOf(c.FormattedAddress); town != "" {
+		query += " " + town
+	}
+
+	results, err := e.searcher.Search(ctx, query, 5)
+	if err != nil {
+		slog.Debug("contacts: site lookup failed", "company", c.Name, "error", err)
+		return ""
+	}
+	for _, r := range results {
+		if isDirectory(r.URL) {
+			continue
+		}
+		if u, err := url.Parse(r.URL); err == nil && u.Host != "" {
+			return u.Scheme + "://" + u.Host
+		}
+	}
+	return ""
+}
+
+// directoryHosts are the aggregators that outrank a small business for its own
+// name. Filing one of these as a company's website would be worse than finding
+// nothing: an operator would ring the directory instead of the company.
+var directoryHosts = []string{
+	"google.", "facebook.", "instagram.", "linkedin.", "twitter.", "x.com",
+	"youtube.", "yelp.", "tripadvisor.", "foursquare.", "yellowpages.",
+	"sahibinden.", "hepsiburada.", "n11.", "trendyol.", "gittigidiyor.",
+	"wikipedia.", "maps.apple.", "bing.", "pinterest.", "tiktok.",
+	"firmarehberi", "rehberim", "bulurum", "sayfa", "kolayadres",
+}
+
+func isDirectory(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return true
+	}
+	host := strings.ToLower(u.Host)
+	for _, d := range directoryHosts {
+		if strings.Contains(host, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// townOf pulls the town out of a formatted address, to disambiguate a name.
+// Turkish Maps addresses end "... , 20100 Merkezefendi/Denizli"; the segment
+// after the last slash is the province, which is the useful half.
+func townOf(address string) string {
+	if i := strings.LastIndex(address, "/"); i >= 0 && i+1 < len(address) {
+		return strings.TrimSpace(address[i+1:])
+	}
+	return ""
 }
 
 var (
@@ -155,9 +244,15 @@ func (e *Enricher) enrichOne(ctx context.Context, c maps.Company) Enriched {
 
 	site := strings.TrimSpace(c.Website)
 	if site == "" {
-		en.Method = MethodNoSite
-		en.Note = "no website on the listing"
-		return en
+		// The listing had none, so go and look for one before giving up.
+		if found := e.findSite(ctx, c); found != "" {
+			site = found
+			en.Website = found
+		} else {
+			en.Method = MethodNoSite
+			en.Note = "no website on the listing, and none found by search"
+			return en
+		}
 	}
 	if !strings.HasPrefix(site, "http://") && !strings.HasPrefix(site, "https://") {
 		site = "https://" + site
