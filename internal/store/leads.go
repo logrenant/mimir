@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -50,8 +51,14 @@ type LeadRun struct {
 // LeadFilter narrows a ledger read. A zero filter is "everything, newest
 // first", bounded by Limit.
 type LeadFilter struct {
-	Category       string
-	RunID          string
+	Category string
+	RunID    string
+	// Region rolls every crawl of one place together. The run picker used to
+	// list runs, so a region searched seventeen times appeared as seventeen
+	// near-identical rows; a region is the thing an operator actually means by
+	// "my Denizli leads". Matched case-insensitively because the label is typed
+	// by hand, and "denizli" and "Denizli" are not two places.
+	Region         string
 	Text           string
 	WithoutWebsite bool
 	Limit          int
@@ -173,6 +180,13 @@ func leadWhere(f LeadFilter) (string, []any) {
 		clauses = append(clauses,
 			"l.place_id IN (SELECT place_id FROM lead_run_members WHERE run_id = ?)")
 		args = append(args, f.RunID)
+	}
+	if region := strings.TrimSpace(f.Region); region != "" {
+		clauses = append(clauses,
+			`l.place_id IN (SELECT m.place_id FROM lead_run_members m
+			   JOIN lead_runs r ON r.id = m.run_id
+			  WHERE lower(r.region_label) = lower(?))`)
+		args = append(args, region)
 	}
 	if t := strings.TrimSpace(f.Text); t != "" {
 		// LIKE rather than FTS: the ledger's searchable text is a name and an
@@ -376,4 +390,60 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// LeadRegion is one place the ledger holds leads for, with how much of it has
+// been found. It is the run picker's unit: a region searched seventeen times is
+// one region, not seventeen rows.
+type LeadRegion struct {
+	Region    string
+	Companies int
+	Runs      int
+	WithPhone int
+	WithSite  int
+	LastRanAt time.Time
+}
+
+// ListLeadRegions rolls every run up by the place it searched.
+//
+// Grouped on the lowercased label because the label is typed by hand and
+// "denizli" and "Denizli" are the same place; the displayed spelling is the
+// longest one seen, which is the one most likely to carry its capital letter.
+func (s *Store) ListLeadRegions(ctx context.Context) ([]LeadRegion, error) {
+	const q = `
+		SELECT
+		  (SELECT r2.region_label
+		     FROM lead_runs r2
+		    WHERE lower(r2.region_label) = lower(r.region_label)
+		    ORDER BY length(r2.region_label) DESC, r2.ran_at DESC LIMIT 1) AS label,
+		  COUNT(DISTINCT m.place_id),
+		  COUNT(DISTINCT r.id),
+		  COUNT(DISTINCT CASE WHEN l.phone   <> '' THEN m.place_id END),
+		  COUNT(DISTINCT CASE WHEN l.website <> '' THEN m.place_id END),
+		  MAX(r.ran_at)
+		FROM lead_runs r
+		JOIN lead_run_members m ON m.run_id = r.id
+		JOIN leads l            ON l.place_id = m.place_id
+		WHERE TRIM(r.region_label) <> ''
+		GROUP BY lower(r.region_label)
+		ORDER BY MAX(r.ran_at) DESC`
+
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing lead regions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []LeadRegion
+	for rows.Next() {
+		var r LeadRegion
+		var ranAt int64
+		if err := rows.Scan(&r.Region, &r.Companies, &r.Runs,
+			&r.WithPhone, &r.WithSite, &ranAt); err != nil {
+			return nil, fmt.Errorf("store: scanning lead region: %w", err)
+		}
+		r.LastRanAt = time.Unix(ranAt, 0).UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

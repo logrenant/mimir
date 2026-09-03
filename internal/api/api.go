@@ -124,6 +124,7 @@ type LeadLedger interface {
 	ListLeads(ctx context.Context, f store.LeadFilter) ([]store.LeadRow, error)
 	LeadCategoryCounts(ctx context.Context, f store.LeadFilter) ([]store.CategoryCount, error)
 	ListLeadRuns(ctx context.Context, limit int) ([]store.LeadRun, error)
+	ListLeadRegions(ctx context.Context) ([]store.LeadRegion, error)
 	OutreachEmailsFor(ctx context.Context, placeIDs []string, promptVersion string) (map[string]store.OutreachEmail, error)
 }
 
@@ -266,6 +267,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /maps/leads", s.handleListLeads)
 		mux.HandleFunc("GET /maps/leads/categories", s.handleLeadCategories)
 		mux.HandleFunc("GET /maps/leads/runs", s.handleListLeadRuns)
+		mux.HandleFunc("GET /maps/leads/regions", s.handleListLeadRegions)
 	}
 
 	// The chat archive. Read-only: what a conversation said is not a decision

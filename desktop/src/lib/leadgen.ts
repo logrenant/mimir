@@ -1,6 +1,7 @@
 import type {
   LeadCategoryCount,
   LeadCompany,
+  LeadRegion,
   LeadRun,
   LeadgenReport,
   LeadsQuery,
@@ -114,10 +115,15 @@ export type LedgerFilter = {
   category: string;
   text: string;
   onlyWithoutWebsite: boolean;
-  runID: string;
+  /**
+   * The place, not the crawl. Every search of one region rolls into a single
+   * row: a region searched seventeen times is one Denizli, and listing runs
+   * put seventeen near-identical rows in front of an operator who has one.
+   */
+  region: string;
 };
 
-export const ALL_RUNS = "__all_runs__";
+export const ALL_REGIONS = "__all_regions__";
 
 /**
  * Turn the screen's filter into the daemon's query.
@@ -129,7 +135,7 @@ export const ALL_RUNS = "__all_runs__";
 export function leadsQueryFrom(filter: LedgerFilter): LeadsQuery {
   return {
     category: filter.category === ALL_CATEGORIES ? undefined : filter.category,
-    run_id: filter.runID === ALL_RUNS ? undefined : filter.runID,
+    region: filter.region === ALL_REGIONS ? undefined : filter.region,
     q: filter.text.trim() || undefined,
     without_website: filter.onlyWithoutWebsite || undefined,
   };
@@ -142,6 +148,18 @@ export function describeRun(run: LeadRun): string {
     month: "short",
   });
   return `${run.region || run.query} · ${run.company_count} · ${when}`;
+}
+
+/**
+ * How a place reads in the picker.
+ *
+ * The phone count is shown because it is the number that decides whether the
+ * list is workable: a region of seventy companies with four phone numbers is
+ * seventy rows and four leads, and an operator should see that before opening
+ * it rather than after scrolling it.
+ */
+export function describeRegion(region: LeadRegion): string {
+  return `${region.region} · ${region.companies} şirket · ${region.with_phone} tel`;
 }
 
 export type CompanyFilter = {

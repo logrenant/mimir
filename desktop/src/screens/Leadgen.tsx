@@ -9,7 +9,7 @@ import {
   type EmailStatus,
   type LeadCategoryCount,
   type LeadCompany,
-  type LeadRun,
+  type LeadRegion,
   type LeadgenExportResult,
   type LeadgenReport,
   type LLMProvider,
@@ -18,12 +18,12 @@ import {
 } from "../lib/daemon";
 import {
   ALL_CATEGORIES,
-  ALL_RUNS,
+  ALL_REGIONS,
   bucketByCategory,
   type CategoryBucket,
   classifyNote,
   contactLines,
-  describeRun,
+  describeRegion,
   draftQueue,
   filterCompanies,
   leadsQueryFrom,
@@ -540,12 +540,12 @@ function Ledger() {
   const [category, setCategory] = useState(ALL_CATEGORIES);
   const [text, setText] = useState("");
   const [onlyWithoutWebsite, setOnlyWithoutWebsite] = useState(false);
-  const [runID, setRunID] = useState(ALL_RUNS);
+  const [region, setRegion] = useState(ALL_REGIONS);
   const [sort, setSort] = useState<SortKey>("rating");
 
   const [rows, setRows] = useState<SavedLead[]>([]);
   const [counts, setCounts] = useState<LeadCategoryCount[]>([]);
-  const [runs, setRuns] = useState<LeadRun[]>([]);
+  const [regions, setRegions] = useState<LeadRegion[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -553,12 +553,12 @@ function Ledger() {
   useEffect(() => {
     let cancelled = false;
     api
-      .leadRuns()
+      .leadRegions()
       .then((r) => {
-        if (!cancelled) setRuns(r.runs ?? []);
+        if (!cancelled) setRegions(r.regions ?? []);
       })
       .catch(() => {
-        // The run picker is a convenience. A daemon that cannot list runs still
+        // The picker is a convenience. A daemon that cannot list regions still
         // has a ledger, and refusing to render it would be the wrong trade.
       });
     return () => {
@@ -566,7 +566,7 @@ function Ledger() {
     };
   }, []);
 
-  const filter = { category, text, onlyWithoutWebsite, runID };
+  const filter = { category, text, onlyWithoutWebsite, region };
 
   useEffect(() => {
     let cancelled = false;
@@ -595,7 +595,7 @@ function Ledger() {
       clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [category, text, onlyWithoutWebsite, runID]);
+  }, [category, text, onlyWithoutWebsite, region]);
 
   const buckets = useMemo(() => railFromCounts(counts), [counts]);
   const sums = useMemo(() => ledgerTotals(counts), [counts]);
@@ -632,17 +632,17 @@ function Ledger() {
             {error && <span className="text-xs text-bad">{error}</span>}
             {loading && <span className="label text-muted">yükleniyor…</span>}
             <select
-              value={runID}
+              value={region}
               onChange={(e) => {
-                setRunID(e.target.value);
+                setRegion(e.target.value);
                 setSelected(null);
               }}
               className="max-w-56 rounded-sm border border-edge bg-ground px-2 py-1.5 text-xs text-text outline-none"
             >
-              <option value={ALL_RUNS}>tüm aramalar</option>
-              {runs.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {describeRun(r)}
+              <option value={ALL_REGIONS}>tüm bölgeler</option>
+              {regions.map((r) => (
+                <option key={r.region} value={r.region}>
+                  {describeRegion(r)}
                 </option>
               ))}
             </select>

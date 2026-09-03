@@ -484,10 +484,26 @@ export type LeadRun = {
 export type LeadsQuery = {
   category?: string;
   run_id?: string;
+  region?: string;
   q?: string;
   without_website?: boolean;
   limit?: number;
   offset?: number;
+};
+
+/**
+ * One place the ledger holds leads for, mirroring api.leadRegionView.
+ *
+ * The picker's unit. A region searched seventeen times is one region, not
+ * seventeen rows — which is what listing runs used to show.
+ */
+export type LeadRegion = {
+  region: string;
+  companies: number;
+  runs: number;
+  with_phone: number;
+  with_site: number;
+  last_ran_at?: string;
 };
 
 /** The workbook that was written: one sheet per category, plus a summary. */
@@ -646,6 +662,7 @@ function leadsQuery(q?: LeadsQuery): string {
   const p = new URLSearchParams();
   if (q.category) p.set("category", q.category);
   if (q.run_id) p.set("run_id", q.run_id);
+  if (q.region) p.set("region", q.region);
   if (q.q) p.set("q", q.q);
   if (q.without_website) p.set("without_website", "1");
   if (q.limit) p.set("limit", String(q.limit));
@@ -738,6 +755,8 @@ export const api = {
   leadCategories: (q?: LeadsQuery) =>
     request<{ categories: LeadCategoryCount[] }>("/maps/leads/categories" + leadsQuery(q)),
   leadRuns: () => request<{ runs: LeadRun[] }>("/maps/leads/runs"),
+  // Regions, not runs, are what the picker offers: one row per place.
+  leadRegions: () => request<{ regions: LeadRegion[] }>("/maps/leads/regions"),
   // 204, no body — the caller updates its own row optimistically.
   setEmailStatus: (placeID: string, status: EmailStatus) =>
     request<void>("/maps/emails/status", {

@@ -21,6 +21,10 @@ const (
 	MethodRule       = "rule"
 	MethodModel      = "model"
 	MethodUnresolved = "unresolved"
+	// MethodUnreachable is not a classification failure: the trade may well be
+	// known. It records that the company has no phone number and no website,
+	// so it was filed as unknown because nobody can contact it.
+	MethodUnreachable = "unreachable"
 )
 
 // Result is one company's category and where it came from.

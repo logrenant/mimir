@@ -139,9 +139,17 @@ func run() error {
 	gapRunner := leadgen.NewGapAnalyzer(cfg, refineClient, db)
 	emailRunner := leadgen.NewEmailRunner(cfg, refineClient, db)
 	leadgenPipe := leadgen.NewPipeline(cfg, regions, db, categorizer, gapRunner, emailRunner)
-	// Contact enrichment is the export's, not the run's: a lead-gen run nobody
-	// exports must not fetch sixty websites.
-	leadgenPipe.UseContacts(contacts.New(cfg, crawlClient, refineClient))
+	// Contact enrichment is a stage of the run, not just of the export.
+	//
+	// It used to be the export's alone, on the reasoning that a run nobody
+	// exports must not fetch sixty websites. The ledger made that the wrong
+	// trade: a run's findings are now kept, so the fetch is paid once and every
+	// later read has the number, where before a ledger of seventy companies
+	// held zero. The searcher is what lets it help the companies whose listing
+	// carried no site at all.
+	enricher := contacts.New(cfg, crawlClient, refineClient)
+	enricher.UseSearcher(searchClient)
+	leadgenPipe.UseContacts(enricher)
 	// The ledger is what makes a run outlive its response. Installed like the
 	// enricher: something a finished run feeds, not a stage of it.
 	leadgenPipe.UseLedger(db)

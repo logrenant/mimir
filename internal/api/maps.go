@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/leadgen"
@@ -30,6 +31,11 @@ type leadgenRequest struct {
 	Near         *nearArg `json:"near"`
 	GapAnalysis  bool     `json:"gap_analysis"`
 	Emails       bool     `json:"emails"`
+	// SkipContacts turns stage 1b off. Phrased as an opt-*out* because the
+	// useful default is on: a lead nobody can ring is not a lead, and the
+	// enricher's answers are now kept in the ledger, so the fetch is paid once
+	// per company rather than once per run.
+	SkipContacts bool `json:"skip_contacts"`
 
 	// Provider and Model route this run's model stages by hand. Both are
 	// optional and both are checked against cfg.LLMProviders before they go
@@ -82,6 +88,7 @@ func (s *Server) handleLeadgenExport(w http.ResponseWriter, r *http.Request) {
 	report, err := s.deps.LeadGen.Run(r.Context(), leadgen.RunRequest{
 		Query:           q,
 		Region:          strings.TrimSpace(req.Region),
+		WithContacts:    !req.SkipContacts,
 		WithGapAnalysis: req.GapAnalysis,
 		WithEmails:      req.Emails,
 		Selection:       sel,
@@ -213,6 +220,7 @@ func (s *Server) handleLeadgen(w http.ResponseWriter, r *http.Request) {
 	report, err := s.deps.LeadGen.Run(r.Context(), leadgen.RunRequest{
 		Query:           q,
 		Region:          strings.TrimSpace(req.Region),
+		WithContacts:    !req.SkipContacts,
 		WithGapAnalysis: req.GapAnalysis,
 		WithEmails:      req.Emails,
 		Selection:       sel,
@@ -341,6 +349,7 @@ func (s *Server) leadFilter(r *http.Request) (store.LeadFilter, error) {
 	return store.LeadFilter{
 		Category:       strings.TrimSpace(q.Get("category")),
 		RunID:          strings.TrimSpace(q.Get("run_id")),
+		Region:         strings.TrimSpace(q.Get("region")),
 		Text:           strings.TrimSpace(q.Get("q")),
 		WithoutWebsite: q.Get("without_website") == "1" || q.Get("without_website") == "true",
 		Limit:          limit,
@@ -439,6 +448,45 @@ func (s *Server) handleLeadCategories(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"categories": out})
+}
+
+// leadRegionView is one place the ledger holds leads for.
+type leadRegionView struct {
+	Region    string `json:"region"`
+	Companies int    `json:"companies"`
+	Runs      int    `json:"runs"`
+	WithPhone int    `json:"with_phone"`
+	WithSite  int    `json:"with_site"`
+	LastRanAt string `json:"last_ran_at,omitempty"`
+}
+
+// handleListLeadRegions rolls the run history up by place.
+//
+// The picker's unit, and the reason it exists: a region searched seventeen
+// times is one region. Listing runs put seventeen near-identical "Denizli" rows
+// in front of an operator who has exactly one Denizli.
+func (s *Server) handleListLeadRegions(w http.ResponseWriter, r *http.Request) {
+	regions, err := s.deps.Leads.ListLeadRegions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, err.Error())
+		return
+	}
+
+	out := make([]leadRegionView, 0, len(regions))
+	for _, g := range regions {
+		view := leadRegionView{
+			Region:    g.Region,
+			Companies: g.Companies,
+			Runs:      g.Runs,
+			WithPhone: g.WithPhone,
+			WithSite:  g.WithSite,
+		}
+		if !g.LastRanAt.IsZero() {
+			view.LastRanAt = g.LastRanAt.Format(time.RFC3339)
+		}
+		out = append(out, view)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"regions": out})
 }
 
 // handleListLeadRuns is the run history: which search found what, and when.
