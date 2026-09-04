@@ -116,9 +116,38 @@ func (t *diagnosticsTool) InputSchema() json.RawMessage {
 	}`)
 }
 
+// probeGrace is the headroom the overall deadline keeps above the widest probe
+// budget, so a probe that times out reports its own fault rather than being
+// cancelled a moment earlier by the deadline wrapping it.
+const probeGrace = 15 * time.Second
+
+// deadline is how long the whole call may take. Config.Load always fills
+// DiagnosticsTimeout in and Validate enforces its ordering, so the fallback is
+// only for a Config built by hand: deriving the ceiling from the probe budgets
+// that Config does carry keeps the same invariant, where taking the zero value
+// literally would cancel every probe before it started.
+func (t *diagnosticsTool) deadline() time.Duration {
+	if t.cfg.DiagnosticsTimeout > 0 {
+		return t.cfg.DiagnosticsTimeout
+	}
+
+	widest := t.cfg.SearchTimeout
+	// refine.Health probes a fallback provider after the primary fails.
+	if probe := 2 * t.cfg.LLMHealthTimeout; probe > widest {
+		widest = probe
+	}
+	if t.cfg.RefineTimeout > widest {
+		widest = t.cfg.RefineTimeout
+	}
+	return widest + probeGrace
+}
+
 func (t *diagnosticsTool) Handle(ctx context.Context, _ json.RawMessage) (any, error) {
-	// SD-3: Overall deadline for diagnostics.
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// SD-3: Overall deadline for diagnostics. It comes from config rather than
+	// being a literal here (SD-1), and it is validated to sit above every
+	// probe's own budget: a shared deadline shorter than the probe it wraps
+	// reports a healthy dependency as a dead one.
+	ctx, cancel := context.WithTimeout(ctx, t.deadline())
 	defer cancel()
 
 	g, ctxGroup := errgroup.WithContext(ctx)

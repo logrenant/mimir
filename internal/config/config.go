@@ -199,6 +199,21 @@ type Config struct {
 	ResearchTimeout  time.Duration
 	LLMHealthTimeout time.Duration
 
+	// DiagnosticsTimeout is the ceiling on a whole /diagnostics call. It has
+	// to sit above every probe's own budget, or the shared deadline expires
+	// first and kills a probe that was still within its allowance — which is
+	// how a healthy agy CLI came back as "signal: killed" and a reachable
+	// DuckDuckGo as "context deadline exceeded" (SD-6: the message has to name
+	// the real fault, and "killed" named the deadline, not the dependency).
+	//
+	// The widest probe is not SearchTimeout but the refine one: refine.Health
+	// falls back to a second provider when the first fails, so its worst case
+	// is two LLM health probes end to end. The probes themselves run
+	// concurrently, so a healthy machine still answers in a few seconds — this
+	// is only the ceiling, and it is reached only when a dependency is
+	// genuinely hanging.
+	DiagnosticsTimeout time.Duration
+
 	// Concurrency
 	MaxConcurrentCrawls  int
 	MaxConcurrentRefines int
@@ -638,6 +653,7 @@ func Load() Config {
 		RefineTimeout:          180 * time.Second,
 		ResearchTimeout:        360 * time.Second,
 		LLMHealthTimeout:       20 * time.Second,
+		DiagnosticsTimeout:     60 * time.Second,
 		MaxConcurrentCrawls:    4,
 		MaxConcurrentRefines:   2,
 		GlobalCrawlSlots:       6,
@@ -1025,6 +1041,15 @@ func (c Config) Validate() error {
 
 	if c.SearchTimeout <= 0 || c.CrawlTimeout <= 0 || c.RefineTimeout <= 0 || c.ResearchTimeout <= 0 || c.LLMHealthTimeout <= 0 {
 		return errors.New("timeout fields must be > 0")
+	}
+
+	// A diagnostics deadline below a probe's own budget cancels that probe
+	// mid-flight and reports a working dependency as broken, so the ordering
+	// is a validated invariant rather than a comment.
+	// 2x LLMHealthTimeout because refine.Health probes a fallback provider
+	// after the primary one fails, back to back, inside this same budget.
+	if c.DiagnosticsTimeout <= c.SearchTimeout || c.DiagnosticsTimeout <= 2*c.LLMHealthTimeout {
+		return errors.New("DiagnosticsTimeout must exceed SearchTimeout and 2x LLMHealthTimeout")
 	}
 
 	if c.MaxConcurrentCrawls <= 0 || c.MaxConcurrentRefines <= 0 || c.GlobalCrawlSlots <= 0 || c.GlobalRefineSlots <= 0 {

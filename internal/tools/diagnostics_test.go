@@ -119,11 +119,12 @@ func TestDiagnostics_Timeout(t *testing.T) {
 	defer mockBlock.Close()
 
 	cfg := config.Config{
-		Crawl4AIBaseURL:   mockBlock.URL,
-		ClaudeCLIPath:     writeFakeClaude(t, 0, 10*time.Second),
-		ClaudeModel:       "claude-haiku-4-5-20251001",
-		DuckDuckGoLiteURL: mockBlock.URL,
-		RefineTimeout:     10 * time.Second,
+		Crawl4AIBaseURL:    mockBlock.URL,
+		ClaudeCLIPath:      writeFakeClaude(t, 0, 10*time.Second),
+		ClaudeModel:        "claude-haiku-4-5-20251001",
+		DuckDuckGoLiteURL:  mockBlock.URL,
+		RefineTimeout:      10 * time.Second,
+		DiagnosticsTimeout: 2 * time.Second,
 	}
 
 	tool := NewDiagnostics(cfg, crawl.New(cfg), refine.New(cfg), search.New(cfg), nil)
@@ -135,14 +136,58 @@ func TestDiagnostics_Timeout(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	// Context should cancel inside Handle within 5 seconds.
-	if elapsed > 6*time.Second {
-		t.Errorf("expected diagnostics to bound itself to ~5s, took %v", elapsed)
+	// The bound is DiagnosticsTimeout, not a literal in the handler: a hung
+	// dependency must not hold the call open past the configured ceiling.
+	if elapsed > cfg.DiagnosticsTimeout+time.Second {
+		t.Errorf("expected diagnostics to bound itself to ~%v, took %v", cfg.DiagnosticsTimeout, elapsed)
 	}
 
 	res := resAny.(diagnosticsResponse)
 	if res.Crawl4AI.Ok || res.Claude.Ok || res.DuckDuckGo.Ok {
 		t.Errorf("expected all dependencies to fail, got: %+v", res)
+	}
+}
+
+// TestDiagnostics_SlowProbeWithinBudget covers the regression that made a
+// healthy machine look broken: the overall deadline used to be a flat 5s, below
+// the budget of the probes it wrapped, so a dependency that answered in six
+// seconds — well inside its own allowance — was cancelled and reported as
+// "signal: killed" or "context deadline exceeded". The deadline must outlast
+// the probes, not race them.
+func TestDiagnostics_SlowProbeWithinBudget(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(6 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slow.Close()
+
+	cfg := config.Config{
+		Crawl4AIBaseURL:    slow.URL,
+		ClaudeCLIPath:      writeFakeClaude(t, 0, 6*time.Second),
+		ClaudeModel:        "claude-haiku-4-5-20251001",
+		DuckDuckGoLiteURL:  slow.URL,
+		CrawlTimeout:       20 * time.Second,
+		RefineTimeout:      20 * time.Second,
+		SearchTimeout:      20 * time.Second,
+		LLMHealthTimeout:   20 * time.Second,
+		DiagnosticsTimeout: 30 * time.Second,
+	}
+
+	tool := NewDiagnostics(cfg, crawl.New(cfg), refine.New(cfg), search.New(cfg), nil)
+	resAny, err := tool.Handle(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	res := resAny.(diagnosticsResponse)
+	if !res.Crawl4AI.Ok {
+		t.Errorf("slow but healthy Crawl4AI reported as broken: %q", res.Crawl4AI.Detail)
+	}
+	if !res.DuckDuckGo.Ok {
+		t.Errorf("slow but healthy DuckDuckGo reported as broken: %q", res.DuckDuckGo.Detail)
+	}
+	if !res.Claude.Ok {
+		t.Errorf("slow but healthy refine provider reported as broken: %q", res.Claude.Detail)
 	}
 }
 

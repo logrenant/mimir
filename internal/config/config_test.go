@@ -131,6 +131,13 @@ func TestConfigValidateZero(t *testing.T) {
 // --- daemon plumbing (task-22) ---------------------------------------------
 
 func TestDaemonDefaults(t *testing.T) {
+	// The daemon's own launchd environment leaks into the shells this is run
+	// from, so an assertion about the *unset* default has to unset it itself or
+	// it ends up testing the machine rather than Load. Empty reads as absent
+	// (Load only takes the value when it is non-empty), which is the same
+	// discipline the CLI-path and token cases above use.
+	t.Setenv("MIMIR_DAEMON_PORT", "")
+
 	c := config.Load()
 
 	// Loopback is a security property of the daemon, not a preference, so it
