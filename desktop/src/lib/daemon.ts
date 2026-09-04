@@ -226,8 +226,6 @@ export type Account = {
    * removing its directory, so the app does not offer to forget them.
    */
   discovered?: boolean;
-  /** The slot the daemon's own model calls spend — refine, distil, recap. */
-  is_background?: boolean;
   created_at?: string;
   last_used_at?: string;
 };
@@ -705,12 +703,6 @@ export const api = {
   // Re-reads the accounts directory. The daemon already scans at startup, so
   // this is for the moment right after a new slot is created and signed in.
   scanAccounts: () => request<{ accounts: Account[] }>("/accounts/scan", { method: "POST" }),
-  // An empty id is a real answer — the CLI's own slot — not a missing one.
-  setBackgroundAccount: (id: string) =>
-    request<{ accounts: Account[] }>("/accounts/background", {
-      method: "POST",
-      body: { account_id: id },
-    }),
   accountStatus: (id: string) =>
     request<AccountStatus>(`/accounts/${encodeURIComponent(id)}/status`),
   registerProject: (path: string) =>
@@ -781,7 +773,20 @@ export const api = {
   brainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan"),
   pauseBrainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan/pause", { method: "POST" }),
   resumeBrainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan/resume", { method: "POST" }),
-  scanBrainNow: () => request<{ scan: BrainScanStatus }>("/brain/scan/now", { method: "POST" }),
+  /**
+   * POST /brain/scan/now — wake the resident loop for one sweep.
+   *
+   * The selection is optional and applies to that sweep alone. Sending nothing
+   * is the older contract and still means "the configured distil routing", so
+   * the button works the same when the picker was never opened.
+   */
+  scanBrainNow: (sel?: { provider: string; model: string }) =>
+    request<{ scan: BrainScanStatus }>("/brain/scan/now", {
+      method: "POST",
+      // `request` serialises the body itself; passing the object keeps this the
+      // same shape as every other POST here.
+      ...(sel?.provider ? { body: sel } : {}),
+    }),
   // `after` is the last sequence the console rendered, so an open tab asks for
   // the handful of lines it is missing rather than the whole buffer.
   brainScanLog: (after: number) =>

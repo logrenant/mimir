@@ -202,7 +202,6 @@ type fakeAccounts struct {
 	lastDir    string
 	deleted    string
 	synced     []account.Slot
-	background string
 	err        error
 }
 
@@ -233,11 +232,6 @@ func (f *fakeAccounts) Delete(_ context.Context, id string) error {
 func (f *fakeAccounts) Sync(_ context.Context, slots []account.Slot) ([]account.Account, error) {
 	f.synced = slots
 	return f.list, f.err
-}
-
-func (f *fakeAccounts) SetBackground(_ context.Context, id string) error {
-	f.background = id
-	return f.err
 }
 
 // config_dir is the second and last route that accepts a filesystem path, and
@@ -314,24 +308,20 @@ func TestScanAccounts_RegistersWhatTheDirectoryHolds(t *testing.T) {
 	}
 }
 
-// Empty is a real answer — the CLI's own slot — which is why this route sets a
-// value rather than deleting a resource.
-func TestSetBackgroundAccount_MarksAndClears(t *testing.T) {
+// The daemon's own model calls no longer take a slot from anywhere, so the
+// route that used to point them at one is gone rather than deprecated.
+//
+// Asserted as "not a success" rather than as one exact status: with the route
+// unregistered the path now falls to the `/accounts/{id}` pattern, which has no
+// POST and answers 405. Which of the two the mux picks is its business — what
+// matters here is that nothing accepts the request and quietly does nothing.
+func TestSetBackgroundAccount_RouteIsGone(t *testing.T) {
 	accounts := &fakeAccounts{list: []account.Account{{ID: "a1", Label: "Default"}}}
 	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
 
-	if w := do(h, http.MethodPost, "/accounts/background", testToken, `{"account_id":"a2"}`); w.Code != http.StatusOK {
-		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
-	}
-	if accounts.background != "a2" {
-		t.Errorf("the mark did not reach the registry: %q", accounts.background)
-	}
-
-	if w := do(h, http.MethodPost, "/accounts/background", testToken, `{"account_id":""}`); w.Code != http.StatusOK {
-		t.Fatalf("clearing: got %d", w.Code)
-	}
-	if accounts.background != "" {
-		t.Errorf("clearing did not reach the registry: %q", accounts.background)
+	w := do(h, http.MethodPost, "/accounts/background", testToken, `{"account_id":"a2"}`)
+	if w.Code < 400 {
+		t.Errorf("status: got %d, want a refusal (%s)", w.Code, w.Body.String())
 	}
 }
 

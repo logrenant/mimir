@@ -134,17 +134,35 @@ describe("accounts", () => {
     });
   });
 
-  // The empty id is the answer "the CLI's own slot", not a missing field: a
-  // client that dropped it would leave the daemon on whatever it had.
-  test("clearing the background slot sends the empty id", async () => {
-    withDaemon({ status: 200, body: JSON.stringify({ accounts: [] }) });
+});
 
-    await api.setBackgroundAccount("");
+describe("brain scan", () => {
+  // A click that never opened the picker has to keep meaning what it meant
+  // before the picker existed: the daemon's own distil routing.
+  test("scan now without a selection sends no body", async () => {
+    withDaemon({ status: 202, body: JSON.stringify({ scan: {} }) });
+
+    await api.scanBrainNow();
 
     expect(invoke).toHaveBeenCalledWith("daemon_request", {
       method: "POST",
-      path: "/accounts/background",
-      body: JSON.stringify({ account_id: "" }),
+      path: "/brain/scan/now",
+      body: null,
+    });
+  });
+
+  // The pair travels together or not at all: the daemon rejects a model whose
+  // provider it was not given, so a client that sent one alone would only ever
+  // get a 400.
+  test("scan now sends the chosen provider and model", async () => {
+    withDaemon({ status: 202, body: JSON.stringify({ scan: {} }) });
+
+    await api.scanBrainNow({ provider: "claude", model: "claude-haiku-4-5-20251001" });
+
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "POST",
+      path: "/brain/scan/now",
+      body: JSON.stringify({ provider: "claude", model: "claude-haiku-4-5-20251001" }),
     });
   });
 });

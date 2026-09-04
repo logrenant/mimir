@@ -273,10 +273,10 @@ echo '{"result":"ok","is_error":false}'`)
 
 // --- router ------------------------------------------------------------------
 
-// The fallback mechanism, exercised against a config that asks for one. The
-// shipped config does not — see TestRouter_DistillHasNoFallbackByDefault — but
-// the machinery stays tested so that turning it back on is one word in config
-// rather than a rewrite.
+// The fallback mechanism, exercised against a config that asks for one
+// explicitly. The shipped config asks for the same thing — see
+// TestRouter_DistillFallsBackToClaudeByDefault — and this one keeps the
+// machinery covered independently of what that default happens to be.
 func TestRouter_FallsBackWhenThePrimaryIsUnavailable(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.DistillFallback = "claude"
@@ -307,29 +307,34 @@ func TestRouter_ReportsBothFailuresWhenTheFallbackAlsoFails(t *testing.T) {
 	}
 }
 
-// The shipped configuration has no distil fallback (task-51). agy being signed
-// out or out of quota must stop the distil tier, not move the work — and the
-// bill — to claude behind the operator's back.
-func TestRouter_DistillHasNoFallbackByDefault(t *testing.T) {
+// The shipped configuration has a distil fallback again, and task-51's
+// objection is answered rather than overruled.
+//
+// What task-51 refused was a *silent* hand-off. Two things now stop it being
+// silent: a run the operator routed by hand suppresses the fallback outright
+// (TestRouter_SelectionSuppressesTheFallback), so a deliberate choice is never
+// substituted; and for the unselected case — the resident sweep — the answer
+// carries the provider that actually served it, which is what lets the
+// supervisor say so in the scan console the first time it changes.
+func TestRouter_DistillFallsBackToClaudeByDefault(t *testing.T) {
 	cfg := testConfig(t)
-	if cfg.DistillFallback != "" {
-		t.Fatalf("DistillFallback = %q, want empty in the shipped config", cfg.DistillFallback)
+	if cfg.DistillFallback != "claude" {
+		t.Fatalf("DistillFallback = %q, want claude in the shipped config", cfg.DistillFallback)
 	}
 	cfg.AgyCLIPath = writeFakeCLI(t, "agy", `exit 3`)
-	claudeCalls := filepath.Join(t.TempDir(), "called")
-	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude",
-		`touch `+claudeCalls+`
-echo '{"result":"x","is_error":false}'`)
+	cfg.ClaudeCLIPath = writeFakeCLI(t, "claude", `echo '{"result":"from claude","is_error":false}'`)
 
-	_, err := NewRouter(cfg).Complete(context.Background(), Distill, Request{User: "c"})
-	if !errors.Is(err, ErrProviderUnavailable) {
-		t.Fatalf("err = %v, want ErrProviderUnavailable", err)
+	got, err := NewRouter(cfg).Complete(context.Background(), Distill, Request{User: "c"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
 	}
-	if strings.Contains(err.Error(), "fallback") {
-		t.Errorf("a fallback was attempted: %v", err)
+	if got.Text != "from claude" {
+		t.Errorf("Text = %q, want the fallback's answer", got.Text)
 	}
-	if _, err := os.Stat(claudeCalls); err == nil {
-		t.Error("claude ran for a distil call; the shipped config has no fallback")
+	// Reported back rather than inferred: a console that printed the configured
+	// provider would tell the operator agy is still spending when it is not.
+	if got.Provider != "claude" {
+		t.Errorf("Provider = %q, want the provider that actually answered", got.Provider)
 	}
 }
 

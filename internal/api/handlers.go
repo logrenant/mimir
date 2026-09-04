@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -22,6 +24,27 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON body: "+err.Error())
+		return false
+	}
+	return true
+}
+
+// decodeOptionalJSON is decodeJSON for a request whose body is allowed to be
+// absent.
+//
+// An empty body decodes to EOF, which decodeJSON rightly treats as malformed —
+// there, a missing body means a missing request. Here it means "no override",
+// and the endpoint has a defined answer for that, so the zero value is handed
+// back and the caller carries on. Unknown fields are still refused: a typo in
+// an optional body must not be read as having sent nothing.
+func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return true
+		}
 		writeError(w, http.StatusBadRequest, codeBadRequest, "invalid JSON body: "+err.Error())
 		return false
 	}
@@ -184,34 +207,6 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 // failing probe is the honest report for it.
 func (s *Server) handleScanAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts, err := s.deps.Accounts.Sync(r.Context(), account.Discover(s.cfg.ClaudeAccountsDir))
-	if err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	if accounts == nil {
-		accounts = []account.Account{}
-	}
-	writeJSON(w, http.StatusOK, accountListResponse{Accounts: accounts})
-}
-
-type backgroundAccountRequest struct {
-	// AccountID is the slot the daemon's own model calls spend — refine,
-	// distil, recap. Empty clears the choice, which means the CLI's own slot:
-	// that is a real answer, not a missing one, so this route sets a value
-	// rather than deleting a resource.
-	AccountID string `json:"account_id"`
-}
-
-func (s *Server) handleSetBackgroundAccount(w http.ResponseWriter, r *http.Request) {
-	var req backgroundAccountRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if err := s.deps.Accounts.SetBackground(r.Context(), req.AccountID); err != nil {
-		writeDomainError(w, r, err)
-		return
-	}
-	accounts, err := s.deps.Accounts.List(r.Context())
 	if err != nil {
 		writeDomainError(w, r, err)
 		return

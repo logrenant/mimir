@@ -297,15 +297,18 @@ func run() error {
 
 	// The daemon's own model calls — refine, distil, recap — are not coding
 	// runs: nothing dispatched them, so without this they spend whichever
-	// identity this process inherited. Read at call time so changing the
-	// account in the app takes effect without a restart.
+	// identity this process happens to have inherited.
+	//
+	// One identity, named here, rather than a slot the operator picks. Credential
+	// slots exist for coding runs, where a human dispatched the work and can say
+	// which account pays for it; the background loop has no such moment, and a
+	// mark on a slot silently redirected every sweep, recap and page summary the
+	// daemon made afterwards. The empty ConfigDir is the CLI's own login, and
+	// Environ clears any inherited CLAUDE_SECURESTORAGE_CONFIG_DIR so this is the
+	// same identity whether the daemon was started by launchd or from a shell
+	// that had switched accounts.
 	router.UseEnviron(func() []string {
-		acct, err := accounts.Background(ctx)
-		if err != nil {
-			slog.Warn("reading the background account", "error", err)
-			return account.Environ(os.Environ(), "")
-		}
-		return account.Environ(os.Environ(), acct.ConfigDir)
+		return account.Environ(os.Environ(), "")
 	})
 
 	runner := coderunner.New(ctx, cfg, bus, projects, accounts, db)

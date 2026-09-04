@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
+import { ProviderModelPicker } from "../components/ModelPicker";
 import {
   api,
   DaemonError,
@@ -11,6 +12,7 @@ import {
   type BrainNodeVersion,
   type BrainProject,
   type BrainScanStatus,
+  type LLMProviderList,
 } from "../lib/daemon";
 import {
   fitView,
@@ -51,6 +53,26 @@ export function Brain() {
   const [versions, setVersions] = useState<BrainNodeVersion[]>([]);
   const [busy, setBusy] = useState(false);
   const [full, setFull] = useState(false);
+
+  // The picker's vocabulary and the operator's pick for the next sweep. Empty
+  // is the opening state and means the daemon's own distil routing, which is
+  // what the button did before this control existed.
+  const [providers, setProviders] = useState<LLMProviderList | null>(null);
+  const [provider, setProvider] = useState("");
+  const [model, setModel] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    api
+      .llmProviders()
+      .then((res) => live && setProviders(res))
+      // A daemon that will not list its providers still runs the scan on its
+      // configured routing, so the picker simply does not appear.
+      .catch(() => live && setProviders(null));
+    return () => {
+      live = false;
+    };
+  }, []);
 
   // Escape leaves full screen, the way it closes the diagnostics overlay. A
   // view with no chrome needs a way out that does not depend on finding a
@@ -140,9 +162,21 @@ export function Brain() {
         status={status}
         error={error}
         busy={busy}
+        providers={providers}
+        provider={provider}
+        model={model}
+        onProvider={(id) => {
+          setProvider(id);
+          // The model list is a property of the provider, so a stale id from
+          // the previous one would be a pair the daemon rejects. Opening on the
+          // provider's own default is the choice the picker already labels.
+          const next = providers?.providers.find((p) => p.id === id);
+          setModel(next?.default_model ?? "");
+        }}
+        onModel={setModel}
         onPause={() => act(api.pauseBrainScan)}
         onResume={() => act(api.resumeBrainScan)}
-        onNow={() => act(api.scanBrainNow)}
+        onNow={() => act(() => api.scanBrainNow(provider ? { provider, model } : undefined))}
       />
 
       <div className="grid min-h-0 grid-cols-[1fr_18rem] gap-4">
@@ -277,6 +311,11 @@ function ScanPanel({
   status,
   error,
   busy,
+  providers,
+  provider,
+  model,
+  onProvider,
+  onModel,
   onPause,
   onResume,
   onNow,
@@ -284,6 +323,11 @@ function ScanPanel({
   status: BrainScanStatus | null;
   error: string | null;
   busy: boolean;
+  providers: LLMProviderList | null;
+  provider: string;
+  model: string;
+  onProvider: (v: string) => void;
+  onModel: (v: string) => void;
   onPause: () => void;
   onResume: () => void;
   onNow: () => void;
@@ -311,6 +355,13 @@ function ScanPanel({
         aside={
           <div className="flex items-center gap-2">
             <PhaseBadge status={status} />
+            <ProviderModelPicker
+              providers={providers}
+              provider={provider}
+              model={model}
+              onProvider={onProvider}
+              onModel={onModel}
+            />
             {status.paused ? (
               <Button onClick={onResume} disabled={busy}>
                 sürdür

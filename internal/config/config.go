@@ -29,14 +29,24 @@ type Config struct {
 	// a local CLI riding an existing login — still no SDK and no API key — and
 	// both models are pinned to an exact version (SD-5).
 	//
-	// DistillFallback is **empty on purpose** (task-51). It was availability
-	// only — a spare provider for when `agy` is missing or out of quota — and
-	// that is exactly what made it wrong: the operator asked for a machine-wide
-	// scan through agy, and a silent hand-off to claude turns "the free tier
-	// ran out" into a bill nobody chose. An empty name means no fallback at
-	// all; `llm.NewRouter` reads it that way and the distil tier then fails
-	// loudly, which is the honest answer. Putting "claude" back here is the one
-	// line that restores the old behaviour.
+	// DistillFallback is "claude" again, and task-51's objection has been
+	// answered rather than overruled.
+	//
+	// task-51 emptied it because the hand-off was *silent*: the operator asked
+	// for a machine-wide scan through agy, and "the free tier ran out" became a
+	// bill nobody chose. Two things changed. A hand-started scan now carries an
+	// `llm.Selection` the operator picked in the app, and `Router.CompleteWith`
+	// drops the fallback the moment a selection names a provider — so a
+	// deliberate choice is still honoured to the letter, never substituted.
+	// What is left falling back is the unselected case, the resident sweep, and
+	// there the supervisor emits `EventProvider` the first time an answer comes
+	// from someone other than the provider the sweep asked for. The bill still
+	// moves, but nobody has to find out afterwards.
+	//
+	// This is the availability the first mount of a large repository actually
+	// needs: one free pool rarely covers it, and a scan that stops half way is
+	// not a cheaper outcome, only a later one. Emptying this string restores
+	// the fail-loudly behaviour in one line.
 	//
 	// DistillModelChain is the other kind of fallback, and the distinction is
 	// the whole reason it is a separate field. DistillFallback moves work to
@@ -198,6 +208,21 @@ type Config struct {
 	RefineTimeout    time.Duration
 	ResearchTimeout  time.Duration
 	LLMHealthTimeout time.Duration
+
+	// DiagnosticsTimeout is the ceiling on a whole /diagnostics call. It has
+	// to sit above every probe's own budget, or the shared deadline expires
+	// first and kills a probe that was still within its allowance — which is
+	// how a healthy agy CLI came back as "signal: killed" and a reachable
+	// DuckDuckGo as "context deadline exceeded" (SD-6: the message has to name
+	// the real fault, and "killed" named the deadline, not the dependency).
+	//
+	// The widest probe is not SearchTimeout but the refine one: refine.Health
+	// falls back to a second provider when the first fails, so its worst case
+	// is two LLM health probes end to end. The probes themselves run
+	// concurrently, so a healthy machine still answers in a few seconds — this
+	// is only the ceiling, and it is reached only when a dependency is
+	// genuinely hanging.
+	DiagnosticsTimeout time.Duration
 
 	// Concurrency
 	MaxConcurrentCrawls  int
@@ -587,7 +612,7 @@ func Load() Config {
 		// Still pinned to an exact tag (SD-5): 3.8 is the current generation.
 		DistillModel: "gemini-3.8-flash-low",
 		// Provider-level fallback stays off — see the field's comment.
-		DistillFallback: "",
+		DistillFallback: "claude",
 		// The second free pool, cheapest first. GPT-OSS leads because it is the
 		// only one of the three that does not think before answering, so it is
 		// the cheapest way to keep the tier alive once Gemini's weekly budget
@@ -638,6 +663,7 @@ func Load() Config {
 		RefineTimeout:          180 * time.Second,
 		ResearchTimeout:        360 * time.Second,
 		LLMHealthTimeout:       20 * time.Second,
+		DiagnosticsTimeout:     60 * time.Second,
 		MaxConcurrentCrawls:    4,
 		MaxConcurrentRefines:   2,
 		GlobalCrawlSlots:       6,
@@ -1025,6 +1051,15 @@ func (c Config) Validate() error {
 
 	if c.SearchTimeout <= 0 || c.CrawlTimeout <= 0 || c.RefineTimeout <= 0 || c.ResearchTimeout <= 0 || c.LLMHealthTimeout <= 0 {
 		return errors.New("timeout fields must be > 0")
+	}
+
+	// A diagnostics deadline below a probe's own budget cancels that probe
+	// mid-flight and reports a working dependency as broken, so the ordering
+	// is a validated invariant rather than a comment.
+	// 2x LLMHealthTimeout because refine.Health probes a fallback provider
+	// after the primary one fails, back to back, inside this same budget.
+	if c.DiagnosticsTimeout <= c.SearchTimeout || c.DiagnosticsTimeout <= 2*c.LLMHealthTimeout {
+		return errors.New("DiagnosticsTimeout must exceed SearchTimeout and 2x LLMHealthTimeout")
 	}
 
 	if c.MaxConcurrentCrawls <= 0 || c.MaxConcurrentRefines <= 0 || c.GlobalCrawlSlots <= 0 || c.GlobalRefineSlots <= 0 {

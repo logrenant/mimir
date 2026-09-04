@@ -64,12 +64,18 @@ slot and the shell treats as the default would be a third identity no
 - **`Delete` refuses a discovered slot outright**, and refuses any slot while
   queued or running work points at it. The first would promise a removal the
   next scan takes back; the second would strand a queue nothing can drain.
-- **The background slot is one row or none.** It is which identity the
-  *daemon's own* model calls spend — refine, distil, recap — and those never go
-  through the dispatcher, so without it they spend whatever the process
-  inherited. `internal/llm` cannot import this package (account → store →
-  refine → llm is a cycle), so `cmd/mimir-daemon` hands it a builder that calls
-  `Environ`; that builder is the only path, and it must stay the only path.
+- **A slot routes a coding run and nothing else.** There used to be a
+  "background slot" that pointed the *daemon's own* model calls — refine,
+  distil, recap — at one identity. It is gone, and it must not come back. A
+  coding run has a human who dispatched it and can say which account pays; a
+  resident sweep has nobody, so the mark was a switch with no moment attached
+  to it and silently redirected every summary and recap made after the click.
+  Those calls now run on the CLI's own login, named once in `cmd/mimir-daemon`
+  as `Environ(os.Environ(), "")` — which also clears any inherited
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR`, so the identity is the same whether the
+  daemon was started by launchd or from a shell that had switched accounts.
+  `internal/llm` still cannot import this package (account → store → refine →
+  llm is a cycle), so that one builder remains the only path.
 - **`List` is oldest first**, and the dispatcher tries slots in that order.
   Automatic assignment is meant to be predictable, not arbitrary.
 

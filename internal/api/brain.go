@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/logrenant/mimir/internal/brain"
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -18,7 +19,7 @@ type BrainScanner interface {
 	Events(after int64, limit int) ([]brain.ScanEvent, int64)
 	Pause()
 	Resume()
-	ScanNow() bool
+	ScanNow(sel llm.Selection) bool
 }
 
 // BrainReader is the node core behind node detail. *brain.Core satisfies it.
@@ -46,9 +47,10 @@ func (s *Server) handleBrainScanStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, scanStatusResponse{Scan: s.deps.BrainScan.Status()})
 }
 
-// The three controls take no body. That is not an omission: there is nothing to
-// configure about a scan (SD-1), and decoding a body here would 400 every click
-// — decodeJSON's DisallowUnknownFields turns an empty body into an EOF.
+// Pause and Resume take no body. That is not an omission: there is nothing to
+// configure about stopping (SD-1), and decoding a body there would 400 every
+// click — decodeJSON's DisallowUnknownFields turns an empty body into an EOF.
+// Scan-now is the exception, and an optional one: see below.
 func (s *Server) handleBrainScanPause(w http.ResponseWriter, _ *http.Request) {
 	s.deps.BrainScan.Pause()
 	writeJSON(w, http.StatusOK, scanStatusResponse{Scan: s.deps.BrainScan.Status()})
@@ -59,8 +61,34 @@ func (s *Server) handleBrainScanResume(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, scanStatusResponse{Scan: s.deps.BrainScan.Status()})
 }
 
-func (s *Server) handleBrainScanNow(w http.ResponseWriter, _ *http.Request) {
-	if !s.deps.BrainScan.ScanNow() {
+// scanNowRequest routes one hand-started sweep.
+//
+// Both fields are optional and an absent body is the whole of the old contract:
+// a client written before this — or a click that never opened the picker —
+// sends nothing and gets the configured distil routing, exactly as before.
+type scanNowRequest struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// handleBrainScanNow wakes the resident loop for one sweep.
+//
+// The selection it carries is for that sweep only. A first mount is where an
+// operator reaches for a provider whose free pool will actually cover the
+// repository, and that is a decision about this scan — writing it into the
+// daemon's routing would quietly change every sweep that follows, including the
+// ones nobody is watching.
+func (s *Server) handleBrainScanNow(w http.ResponseWriter, r *http.Request) {
+	var req scanNowRequest
+	if !decodeOptionalJSON(w, r, &req) {
+		return
+	}
+	sel, ok := s.llmSelection(w, req.Provider, req.Model)
+	if !ok {
+		return
+	}
+
+	if !s.deps.BrainScan.ScanNow(sel) {
 		// The operator stopped this on purpose and the button they pressed was
 		// drawn before that. 409 says so; starting anyway would be a button
 		// undoing a decision quietly.

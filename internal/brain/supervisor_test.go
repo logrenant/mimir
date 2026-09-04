@@ -197,11 +197,11 @@ func TestSupervisor_PauseCancelsThePassInFlight(t *testing.T) {
 func TestSupervisor_ScanNowIsRefusedWhilePaused(t *testing.T) {
 	s, _, _ := supervisorFixture(t, nil)
 	s.Pause()
-	if s.ScanNow() {
+	if s.ScanNow(llm.Selection{}) {
 		t.Error("a paused scan must refuse to be started by a button")
 	}
 	s.Resume()
-	if !s.ScanNow() {
+	if !s.ScanNow(llm.Selection{}) {
 		t.Error("a resumed scan must accept it")
 	}
 }
@@ -361,6 +361,10 @@ func (f *flakyLLM) bringUp() {
 	f.up = true
 }
 
+func (f *flakyLLM) CompleteWith(ctx context.Context, c llm.Class, _ llm.Selection, r llm.Request) (llm.Response, error) {
+	return f.Complete(ctx, c, r)
+}
+
 func (f *flakyLLM) Complete(_ context.Context, c llm.Class, req llm.Request) (llm.Response, error) {
 	f.mu.Lock()
 	up := f.up
@@ -376,10 +380,50 @@ func (f *flakyLLM) Complete(_ context.Context, c llm.Class, req llm.Request) (ll
 
 // blockingLLM parks the first distil until it is released, so a test can pause
 // a pass that is genuinely in flight.
+// A selection is for the sweep the operator started and no longer.
+//
+// The resident loop keeps running after that sweep, and a routing that outlived
+// it would quietly spend the chosen budget on every sweep that follows —
+// including the ones nobody is watching, which is the whole reason this is not
+// a setting.
+func TestSupervisor_ScanNowSelectionLastsOneSweep(t *testing.T) {
+	s, _, _ := supervisorFixture(t, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+
+	sel := llm.Selection{Provider: "claude", Model: "claude-haiku-4-5-20251001"}
+	if !s.ScanNow(sel) {
+		t.Fatal("ScanNow refused an unpaused supervisor")
+	}
+
+	if got := s.takePending(); got != sel {
+		t.Fatalf("the sweep took %+v, want the operator's %+v", got, sel)
+	}
+	if got := s.takePending(); !got.IsZero() {
+		t.Errorf("the next sweep took %+v, want the zero selection", got)
+	}
+}
+
+// A paused scan must not bank a routing for whenever it is resumed: the button
+// was refused, so nothing about it may take effect later.
+func TestSupervisor_ScanNowOnAPausedScanKeepsNoSelection(t *testing.T) {
+	s, _, _ := supervisorFixture(t, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+	s.Pause()
+
+	if s.ScanNow(llm.Selection{Provider: "claude"}) {
+		t.Fatal("ScanNow accepted a paused supervisor")
+	}
+	if got := s.takePending(); !got.IsZero() {
+		t.Errorf("a refused ScanNow left %+v behind", got)
+	}
+}
+
 type blockingLLM struct {
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+func (b *blockingLLM) CompleteWith(ctx context.Context, c llm.Class, _ llm.Selection, r llm.Request) (llm.Response, error) {
+	return b.Complete(ctx, c, r)
 }
 
 func (b *blockingLLM) Complete(ctx context.Context, _ llm.Class, _ llm.Request) (llm.Response, error) {

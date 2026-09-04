@@ -39,7 +39,7 @@ type leadgenRequest struct {
 
 	// Provider and Model route this run's model stages by hand. Both are
 	// optional and both are checked against cfg.LLMProviders before they go
-	// anywhere — see leadgenSelection.
+	// anywhere — see llmSelection.
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 }
@@ -80,7 +80,7 @@ func (s *Server) handleLeadgenExport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sel, ok := s.leadgenSelection(w, req.leadgenRequest)
+	sel, ok := s.llmSelection(w, req.Provider, req.Model)
 	if !ok {
 		return
 	}
@@ -160,7 +160,7 @@ type llmRoutedDefault struct {
 // had just offered.
 //
 // Nothing here is secret or per-operator: it is the same table
-// leadgenSelection validates against.
+// llmSelection validates against.
 func (s *Server) handleListLLMProviders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, llmProviderListResponse{
 		Providers: s.cfg.LLMProviders,
@@ -171,7 +171,7 @@ func (s *Server) handleListLLMProviders(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// leadgenSelection validates the operator's provider/model override.
+// llmSelection validates the operator's provider/model override.
 //
 // Rejecting rather than falling back to the default is the point. Both strings
 // become argv to a subprocess, so nothing that is not in cfg.LLMProviders may
@@ -179,9 +179,13 @@ func (s *Server) handleListLLMProviders(w http.ResponseWriter, r *http.Request) 
 // asked for something specific, so quietly running a different one would spend
 // a budget nobody chose. A model without a provider is equally a mistake worth
 // naming — the same model id can be reachable through more than one CLI.
-func (s *Server) leadgenSelection(w http.ResponseWriter, req leadgenRequest) (llm.Selection, bool) {
-	provider := strings.TrimSpace(req.Provider)
-	model := strings.TrimSpace(req.Model)
+//
+// Shared by every endpoint that lets a client route a run — leadgen and the
+// brain scan — because the allow-list argument is the same one twice, and a
+// second copy is how one of them eventually stops rejecting something.
+func (s *Server) llmSelection(w http.ResponseWriter, rawProvider, rawModel string) (llm.Selection, bool) {
+	provider := strings.TrimSpace(rawProvider)
+	model := strings.TrimSpace(rawModel)
 
 	if provider == "" && model == "" {
 		return llm.Selection{}, true
@@ -212,7 +216,7 @@ func (s *Server) handleLeadgen(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sel, ok := s.leadgenSelection(w, req)
+	sel, ok := s.llmSelection(w, req.Provider, req.Model)
 	if !ok {
 		return
 	}

@@ -57,11 +57,9 @@ type Account struct {
 	// Discovered means a scan found this slot on disk. Those rows answer to
 	// the filesystem, so they cannot be forgotten from the app: removing one
 	// means removing its directory.
-	Discovered bool `json:"discovered"`
-	// IsBackground marks the slot the daemon's own model calls spend.
-	IsBackground bool      `json:"is_background"`
-	CreatedAt    time.Time `json:"created_at"`
-	LastUsedAt   time.Time `json:"last_used_at"`
+	Discovered bool      `json:"discovered"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at"`
 }
 
 // Store is the persistence the registry needs. *store.Store satisfies it.
@@ -72,8 +70,6 @@ type Store interface {
 	ListAccounts(ctx context.Context) ([]store.AccountRow, error)
 	TouchAccount(ctx context.Context, id string, at time.Time) error
 	MarkAccountDiscovered(ctx context.Context, id string) error
-	SetBackgroundAccount(ctx context.Context, id string) error
-	GetBackgroundAccount(ctx context.Context) (store.AccountRow, bool, error)
 	DeleteAccount(ctx context.Context, id string) error
 	CountRunsForAccount(ctx context.Context, id string, statuses ...string) (int, error)
 }
@@ -95,14 +91,13 @@ func newID() (string, error) {
 
 func fromRow(r store.AccountRow) Account {
 	return Account{
-		ID:           r.ID,
-		Label:        r.Label,
-		ConfigDir:    r.ConfigDir,
-		IsDefault:    r.ConfigDir == "",
-		Discovered:   r.Discovered,
-		IsBackground: r.IsBackground,
-		CreatedAt:    r.CreatedAt,
-		LastUsedAt:   r.LastUsedAt,
+		ID:         r.ID,
+		Label:      r.Label,
+		ConfigDir:  r.ConfigDir,
+		IsDefault:  r.ConfigDir == "",
+		Discovered: r.Discovered,
+		CreatedAt:  r.CreatedAt,
+		LastUsedAt: r.LastUsedAt,
 	}
 }
 

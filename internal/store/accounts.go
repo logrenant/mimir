@@ -21,21 +21,18 @@ type AccountRow struct {
 	// the operator's shell switches between, so removing one means removing
 	// the directory, not forgetting the row.
 	Discovered bool
-	// IsBackground marks the slot the daemon's own model calls spend — refine,
-	// distil, recap. At most one row carries it; none means the CLI's default.
-	IsBackground bool
-	CreatedAt    time.Time
-	LastUsedAt   time.Time
+	CreatedAt  time.Time
+	LastUsedAt time.Time
 }
 
-const accountColumns = `id, label, config_dir, discovered, is_background, created_at, last_used_at`
+const accountColumns = `id, label, config_dir, discovered, created_at, last_used_at`
 
 func scanAccount(scan func(dest ...any) error) (AccountRow, error) {
 	var (
 		a                     AccountRow
 		createdAt, lastUsedAt int64
 	)
-	if err := scan(&a.ID, &a.Label, &a.ConfigDir, &a.Discovered, &a.IsBackground,
+	if err := scan(&a.ID, &a.Label, &a.ConfigDir, &a.Discovered,
 		&createdAt, &lastUsedAt); err != nil {
 		return AccountRow{}, err
 	}
@@ -50,10 +47,10 @@ func (s *Store) InsertAccount(ctx context.Context, a AccountRow) error {
 		return unavailable(errors.New("store not open"))
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO accounts (id, label, config_dir, discovered, is_background,
+		INSERT INTO accounts (id, label, config_dir, discovered,
 		                      created_at, last_used_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.Label, a.ConfigDir, a.Discovered, a.IsBackground,
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		a.ID, a.Label, a.ConfigDir, a.Discovered,
 		unixOrZero(a.CreatedAt), unixOrZero(a.LastUsedAt))
 	if err != nil {
 		return unavailable(err)
@@ -154,58 +151,6 @@ func (s *Store) MarkAccountDiscovered(ctx context.Context, id string) error {
 		return unavailable(err)
 	}
 	return nil
-}
-
-// SetBackgroundAccount moves the background mark to one slot, or clears it.
-//
-// One statement pair in one transaction because the unique index means the
-// intermediate state is illegal: setting the new row before clearing the old
-// one would collide, and clearing without setting would leave the daemon on
-// the default slot if the second statement failed. An empty id clears it,
-// which is how "spend the CLI's own slot" is expressed.
-func (s *Store) SetBackgroundAccount(ctx context.Context, id string) error {
-	if s == nil || s.db == nil {
-		return unavailable(errors.New("store not open"))
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return unavailable(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE accounts SET is_background = 0 WHERE is_background = 1`); err != nil {
-		return unavailable(err)
-	}
-	if id != "" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE accounts SET is_background = 1 WHERE id = ?`, id); err != nil {
-			return unavailable(err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return unavailable(err)
-	}
-	return nil
-}
-
-// GetBackgroundAccount returns the marked slot. No mark is not an error: it is
-// the CLI's own slot, which is what a machine that never chose one uses.
-func (s *Store) GetBackgroundAccount(ctx context.Context) (AccountRow, bool, error) {
-	if s == nil || s.db == nil {
-		return AccountRow{}, false, unavailable(errors.New("store not open"))
-	}
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+accountColumns+` FROM accounts WHERE is_background = 1`)
-
-	a, err := scanAccount(row.Scan)
-	if errors.Is(err, sql.ErrNoRows) {
-		return AccountRow{}, false, nil
-	}
-	if err != nil {
-		return AccountRow{}, false, unavailable(err)
-	}
-	return a, true, nil
 }
 
 // DeleteAccount forgets a slot. The credentials themselves live in the

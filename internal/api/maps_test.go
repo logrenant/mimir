@@ -425,7 +425,7 @@ func TestLLMProviders_IsPublishedWithoutLeadgenDeps(t *testing.T) {
 	if got.Routed.Provider != cfg.DistillProvider || got.Routed.Model != cfg.DistillModel {
 		t.Errorf("routed default = %+v, want the class routing's answer", got.Routed)
 	}
-	// Every published pair must be one leadgenSelection accepts, or the picker
+	// Every published pair must be one llmSelection accepts, or the picker
 	// offers combinations the run route then rejects.
 	for _, p := range got.Providers {
 		for _, m := range p.Models {

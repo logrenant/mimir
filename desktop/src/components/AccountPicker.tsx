@@ -111,20 +111,6 @@ export function AccountManager({
     }
   };
 
-  // The slot the daemon's own model calls spend — refine, distil, recap. Those
-  // are not coding runs: nothing dispatched them, so until one is marked they
-  // go to whichever identity the daemon inherited. Clicking the marked one
-  // again clears it, which means the CLI's own slot.
-  const markBackground = async (id: string) => {
-    setError(null);
-    try {
-      await api.setBackgroundAccount(id);
-      onChanged();
-    } catch (err) {
-      setError(err instanceof DaemonError ? err.message : String(err));
-    }
-  };
-
   const forget = async (id: string) => {
     setError(null);
     try {
@@ -181,18 +167,6 @@ export function AccountManager({
               >
                 {account.is_default ? "varsayılan yuva" : account.config_dir}
               </span>
-              <button
-                type="button"
-                onClick={() => void markBackground(account.is_background ? "" : account.id)}
-                title="Daemon'un kendi model çağrıları (refine, distill, recap) bu hesabı harcasın"
-                className={
-                  account.is_background
-                    ? "cursor-pointer rounded border border-edge bg-transparent px-2 py-0.5 text-xs text-mist"
-                    : "cursor-pointer border-none bg-transparent text-xs text-muted hover:text-mist"
-                }
-              >
-                arka plan
-              </button>
               {/* A discovered slot belongs to the accounts directory, not to
                   this screen: forgetting it here would be undone by the next
                   scan, so the honest control is the directory itself. */}

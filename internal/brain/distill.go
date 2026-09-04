@@ -58,14 +58,17 @@ type distilled struct {
 // to be one row. Everything it returns is checked before it is believed, and a
 // rejection is reported to the caller as a note rather than raised as an error
 // the ingest has to abort over.
-func (c *Core) distil(ctx context.Context, source, kind, body string) (distilled, error) {
+func (c *Core) distil(ctx context.Context, source, kind, body string, sel llm.Selection) (distilled, error) {
 	if c.llm == nil {
 		return distilled{}, fmt.Errorf("%w: no provider configured", llm.ErrProviderUnavailable)
 	}
 
 	system, user := buildDistilPrompt(source, kind, body, c.cfg.BrainAssessmentMaxTokens)
 
-	resp, err := c.llm.Complete(ctx, llm.Distill, llm.Request{
+	// CompleteWith rather than Complete even for the zero Selection: the router
+	// treats an empty one as "route by class", so there is one call path here
+	// instead of two that must be kept saying the same thing.
+	resp, err := c.llm.CompleteWith(ctx, llm.Distill, sel, llm.Request{
 		System:    system,
 		User:      user,
 		Schema:    distilSchema,
