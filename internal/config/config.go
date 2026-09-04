@@ -29,14 +29,24 @@ type Config struct {
 	// a local CLI riding an existing login — still no SDK and no API key — and
 	// both models are pinned to an exact version (SD-5).
 	//
-	// DistillFallback is **empty on purpose** (task-51). It was availability
-	// only — a spare provider for when `agy` is missing or out of quota — and
-	// that is exactly what made it wrong: the operator asked for a machine-wide
-	// scan through agy, and a silent hand-off to claude turns "the free tier
-	// ran out" into a bill nobody chose. An empty name means no fallback at
-	// all; `llm.NewRouter` reads it that way and the distil tier then fails
-	// loudly, which is the honest answer. Putting "claude" back here is the one
-	// line that restores the old behaviour.
+	// DistillFallback is "claude" again, and task-51's objection has been
+	// answered rather than overruled.
+	//
+	// task-51 emptied it because the hand-off was *silent*: the operator asked
+	// for a machine-wide scan through agy, and "the free tier ran out" became a
+	// bill nobody chose. Two things changed. A hand-started scan now carries an
+	// `llm.Selection` the operator picked in the app, and `Router.CompleteWith`
+	// drops the fallback the moment a selection names a provider — so a
+	// deliberate choice is still honoured to the letter, never substituted.
+	// What is left falling back is the unselected case, the resident sweep, and
+	// there the supervisor emits `EventProvider` the first time an answer comes
+	// from someone other than the provider the sweep asked for. The bill still
+	// moves, but nobody has to find out afterwards.
+	//
+	// This is the availability the first mount of a large repository actually
+	// needs: one free pool rarely covers it, and a scan that stops half way is
+	// not a cheaper outcome, only a later one. Emptying this string restores
+	// the fail-loudly behaviour in one line.
 	//
 	// DistillModelChain is the other kind of fallback, and the distinction is
 	// the whole reason it is a separate field. DistillFallback moves work to
@@ -602,7 +612,7 @@ func Load() Config {
 		// Still pinned to an exact tag (SD-5): 3.8 is the current generation.
 		DistillModel: "gemini-3.8-flash-low",
 		// Provider-level fallback stays off — see the field's comment.
-		DistillFallback: "",
+		DistillFallback: "claude",
 		// The second free pool, cheapest first. GPT-OSS leads because it is the
 		// only one of the three that does not think before answering, so it is
 		// the cheapest way to keep the tier alive once Gemini's weekly budget

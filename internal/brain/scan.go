@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -36,6 +37,13 @@ type ScanOptions struct {
 
 	// DryRun reports what a pass would cost without spending anything.
 	DryRun bool
+
+	// Selection routes this pass's distillations to a provider and model the
+	// operator named, for the length of the pass and no longer. The resident
+	// sweep leaves it zero and keeps the configured distil routing; a scan
+	// started by hand is where a first mount gets to spend a different budget
+	// than the background loop does.
+	Selection llm.Selection
 }
 
 // ScanResult is what one pass did, and what is left.
@@ -68,6 +76,12 @@ type ScanResult struct {
 	// files failed" sends its reader to a log file; one that names them is the
 	// difference between a number and a thing to go and look at.
 	FailedFiles []string `json:"failed_files,omitempty"`
+
+	// Provider is who actually distilled in this pass. It is read back from the
+	// answers rather than copied from the config, because the distil tier may
+	// fall back to a second provider mid-pass and the whole point of surfacing
+	// it is to make that visible instead of silent.
+	Provider string `json:"provider,omitempty"`
 }
 
 // Scan reads a repository into Brain, one bounded batch at a time.
@@ -203,6 +217,7 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 				ContentHash: cand.hash,
 				SizeBytes:   cand.size,
 				ModifiedAt:  cand.modTime,
+				Selection:   opts.Selection,
 			})
 
 			mu.Lock()
@@ -225,6 +240,12 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 				return nil
 			}
 			res.Scanned++
+			// Last writer wins, and that is the useful one: if the tier fell
+			// back part-way through a pass, the pass ends on the provider it
+			// actually finished with.
+			if out.Provider != "" {
+				res.Provider = out.Provider
+			}
 			res.Files = append(res.Files, cand.rel)
 			if cand.changed {
 				res.Changed++

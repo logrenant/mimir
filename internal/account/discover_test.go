@@ -158,9 +158,16 @@ func TestDelete_RefusesADiscoveredSlot(t *testing.T) {
 	}
 }
 
-// No mark is the CLI's own slot — a real answer, which is why Background
-// reports it without an error.
-func TestBackground_MarksOneSlotAndClears(t *testing.T) {
+// A slot is for coding runs, and only for coding runs.
+//
+// The registry used to carry a "background" mark that pointed the daemon's own
+// refine, distil and recap calls at one slot. It was a switch with no moment
+// attached: a coding run has a human who dispatched it and can say which
+// account pays, and a resident sweep has nobody, so the mark quietly redirected
+// every summary the daemon made afterwards. Those calls now run on the CLI's
+// own login, named in cmd/mimir-daemon. Asserting the absence keeps the
+// concept from growing back one method at a time.
+func TestRegistry_HasNoBackgroundSlotConcept(t *testing.T) {
 	ctx := context.Background()
 	r := NewRegistry(openTestStore(t))
 
@@ -168,47 +175,19 @@ func TestBackground_MarksOneSlotAndClears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	if acct, err := r.Background(ctx); err != nil || acct.ID != "" {
-		t.Fatalf("with nothing marked: got %+v, %v", acct, err)
+	if len(accounts) != 2 {
+		t.Fatalf("Sync registered %d slots, want 2", len(accounts))
 	}
 
-	second := accounts[1]
-	if err := r.SetBackground(ctx, second.ID); err != nil {
-		t.Fatalf("SetBackground: %v", err)
-	}
-	acct, err := r.Background(ctx)
-	if err != nil || acct.ID != second.ID {
-		t.Fatalf("after marking: got %+v, %v", acct, err)
-	}
-
-	// Moving the mark, not adding a second one: the unique index makes two
-	// marked rows impossible, and this is the path that has to respect it.
-	first := accounts[0]
-	if err := r.SetBackground(ctx, first.ID); err != nil {
-		t.Fatalf("SetBackground again: %v", err)
-	}
-	marked := 0
-	list, err := r.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	for _, a := range list {
-		if a.IsBackground {
-			marked++
+	// Every slot is routable by a coding run and none of them is special: what
+	// a slot means is now the same for all of them.
+	for _, a := range accounts {
+		got, err := r.Get(ctx, a.ID)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", a.Label, err)
 		}
-	}
-	if marked != 1 {
-		t.Errorf("marked slots: got %d, want 1", marked)
-	}
-
-	if err := r.SetBackground(ctx, ""); err != nil {
-		t.Fatalf("clearing: %v", err)
-	}
-	if acct, err := r.Background(ctx); err != nil || acct.ID != "" {
-		t.Errorf("after clearing: got %+v, %v", acct, err)
-	}
-
-	if err := r.SetBackground(ctx, "no-such-account"); !errors.Is(err, ErrAccountNotFound) {
-		t.Errorf("an unknown id: got %v, want ErrAccountNotFound", err)
+		if got.ConfigDir != a.ConfigDir {
+			t.Errorf("%s: ConfigDir = %q, want %q", a.Label, got.ConfigDir, a.ConfigDir)
+		}
 	}
 }

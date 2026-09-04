@@ -55,7 +55,6 @@ type AccountRegistry interface {
 	// scan itself is the handler's, so this interface stays about the
 	// registry rather than about the filesystem.
 	Sync(ctx context.Context, slots []account.Slot) ([]account.Account, error)
-	SetBackground(ctx context.Context, id string) error
 }
 
 // CodeRunner owns the whole life of a coding task, not just its execution.
@@ -228,7 +227,6 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("DELETE /accounts/{id}", s.handleDeleteAccount)
 		mux.HandleFunc("GET /accounts/{id}/status", s.handleAccountStatus)
 		mux.HandleFunc("POST /accounts/scan", s.handleScanAccounts)
-		mux.HandleFunc("POST /accounts/background", s.handleSetBackgroundAccount)
 	}
 
 	if s.deps.Runner != nil {

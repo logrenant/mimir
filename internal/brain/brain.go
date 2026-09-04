@@ -75,6 +75,11 @@ type Store interface {
 // after construction and each call spawns its own subprocess.
 type Completer interface {
 	Complete(ctx context.Context, c llm.Class, req llm.Request) (llm.Response, error)
+	// CompleteWith is Complete with an operator's provider/model override. A
+	// scan the operator started by hand carries one; the resident sweep does
+	// not, and passes the zero Selection to get the class routing it always
+	// had.
+	CompleteWith(ctx context.Context, c llm.Class, sel llm.Selection, req llm.Request) (llm.Response, error)
 }
 
 // Core is the handle both binaries build once and share.
@@ -150,6 +155,12 @@ type IngestResult struct {
 	Distilled bool     `json:"distilled"`
 	Note      string   `json:"note,omitempty"`
 	Linked    int      `json:"linked"`
+
+	// Provider is the one that actually answered, which is not always the one
+	// the routing named: the distil tier falls back, and a caller that reports
+	// the configured provider would tell the operator the scan is spending a
+	// budget it has stopped spending.
+	Provider string `json:"provider,omitempty"`
 }
 
 // Input is one thing to remember.
@@ -170,6 +181,11 @@ type Input struct {
 	// source means, and how big it was is only interesting as history.
 	SizeBytes  int64
 	ModifiedAt time.Time
+
+	// Selection routes this one distillation to a provider and model the
+	// operator named. The zero value means the distil class's own routing,
+	// which is what every caller that never asks keeps getting.
+	Selection llm.Selection
 }
 
 // NodeID is the node's identity: the project, the kind and the source key.
@@ -257,7 +273,7 @@ func (c *Core) Ingest(ctx context.Context, in Input) (IngestResult, error) {
 	}
 
 	result := IngestResult{}
-	distilled, err := c.distil(ctx, source, kind, body)
+	distilled, err := c.distil(ctx, source, kind, body, in.Selection)
 	if err != nil {
 		// The node still gets a title, because a node nothing can name is a
 		// node nothing will ever pick out of a result list.
@@ -275,6 +291,7 @@ func (c *Core) Ingest(ctx context.Context, in Input) (IngestResult, error) {
 		row.Aliases = distilled.Aliases
 		row.Provider = distilled.Provider
 		row.Model = distilled.Model
+		result.Provider = distilled.Provider
 		result.Distilled = true
 	}
 

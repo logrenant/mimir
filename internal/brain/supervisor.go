@@ -113,6 +113,11 @@ const (
 	EventPass       = "pass"
 	EventControl    = "control"
 	EventBackoff    = "backoff"
+	// EventProvider says the tier answered on a provider other than the one
+	// this sweep asked for. It exists because the distil fallback is allowed
+	// again: a hand-off that moves the bill has to be visible in the console
+	// the operator is already watching, not inferred later from node rows.
+	EventProvider = "provider"
 )
 
 // ScanEvent is one line of the scan's own console.
@@ -163,6 +168,17 @@ type Supervisor struct {
 	// clicks are one wake-up, and a send must never block the caller of an HTTP
 	// handler.
 	wake chan struct{}
+
+	// pending is the routing an operator asked the next sweep to use. It is
+	// taken and cleared when that sweep starts, so a hand-started scan spends
+	// the budget the operator picked and the resident loop goes straight back
+	// to the configured one. Guarded by mu with the rest of the runtime state.
+	pending llm.Selection
+
+	// running is the provider the last pass actually answered with. Kept apart
+	// from status.Provider — which says what was asked for — because the gap
+	// between the two is exactly what a silent fallback looks like.
+	running string
 
 	// The console's ring buffer, under the same mutex as the status: a reader
 	// that saw a status from one moment and a log from another would be looking
@@ -246,12 +262,26 @@ func (s *Supervisor) Run(ctx context.Context) {
 func (s *Supervisor) sweep(ctx context.Context) {
 	s.startSweep()
 
+	// Taken once, here, rather than read per project: a sweep runs on one
+	// routing from beginning to end, and a selection that expired half way
+	// through would spend two budgets for one decision.
+	sel := s.takePending()
+	provider, model := s.cfg.DistillProvider, s.cfg.DistillModel
+	if sel.Provider != "" {
+		provider = sel.Provider
+	}
+	if sel.Model != "" {
+		model = sel.Model
+	}
+
 	projects := s.discover()
 	s.emit(EventSweep, "", fmt.Sprintf("tur başladı — %d proje, %s · %s",
-		len(projects), s.cfg.DistillProvider, s.cfg.DistillModel))
+		len(projects), provider, model))
 	s.withStatus(func(st *ScanStatus) {
 		st.ProjectCount = len(projects)
 		st.Phase = PhaseScanning
+		st.Provider = provider
+		st.Model = model
 	})
 
 	for i, project := range projects {
@@ -264,13 +294,13 @@ func (s *Supervisor) sweep(ctx context.Context) {
 			st.ProjectIndex = i + 1
 		})
 		s.emit(EventProject, project, fmt.Sprintf("%s (%d/%d)", filepath.Base(project), i+1, len(projects)))
-		s.scanProject(ctx, project)
+		s.scanProject(ctx, project, sel)
 		s.remember(ctx, project)
 	}
 }
 
 // scanProject runs one project to completion, one bounded pass at a time.
-func (s *Supervisor) scanProject(ctx context.Context, project string) {
+func (s *Supervisor) scanProject(ctx context.Context, project string, sel llm.Selection) {
 	for {
 		if ctx.Err() != nil || s.isPaused() {
 			return
@@ -282,7 +312,7 @@ func (s *Supervisor) scanProject(ctx context.Context, project string) {
 		s.mu.Unlock()
 
 		started := time.Now()
-		res, err := s.deps.Core.Scan(passCtx, project, s.deps.Hashes, ScanOptions{})
+		res, err := s.deps.Core.Scan(passCtx, project, s.deps.Hashes, ScanOptions{Selection: sel})
 		cancel()
 		s.report(project, res, err, time.Since(started))
 
@@ -332,6 +362,31 @@ func (s *Supervisor) scanProject(ctx context.Context, project string) {
 // The names are the point. A console that can only say "twelve files" is a
 // progress bar with extra steps; one that says which file agy is reading is
 // something a person can recognise their own work in.
+// noteProvider says so, once, when the tier stops answering on the provider
+// this sweep asked for.
+//
+// Once rather than per pass: a fallback that holds for a whole repository would
+// otherwise write the same line a hundred times and bury the scan's own output.
+// The state resets when the answer changes back, so a tier that recovers is
+// reported too.
+func (s *Supervisor) noteProvider(project, actual string) {
+	if actual == "" {
+		return
+	}
+
+	s.mu.Lock()
+	asked := s.status.Provider
+	last := s.running
+	s.running = actual
+	s.mu.Unlock()
+
+	if actual == last || asked == "" || actual == asked {
+		return
+	}
+	s.emit(EventProvider, project, fmt.Sprintf(
+		"damıtma %s yerine %s ile sürüyor — bu sağlayıcının bütçesi harcanıyor", asked, actual))
+}
+
 func (s *Supervisor) report(project string, res ScanResult, err error, took time.Duration) {
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
@@ -339,6 +394,8 @@ func (s *Supervisor) report(project string, res ScanResult, err error, took time
 		}
 		return
 	}
+	s.noteProvider(project, res.Provider)
+
 	changed := make(map[string]struct{}, len(res.ChangedFiles))
 	for _, f := range res.ChangedFiles {
 		changed[f] = struct{}{}
@@ -497,12 +554,32 @@ func (s *Supervisor) Resume() {
 // ScanNow shortens the idle wait. It refuses while paused and says so, because
 // starting work the operator explicitly stopped is not something a button
 // should do quietly.
-func (s *Supervisor) ScanNow() bool {
+// ScanNow wakes the loop for one sweep, optionally on a routing the operator
+// named.
+//
+// The selection lives for that sweep and no longer: a first mount is where an
+// operator reaches for a different provider because one tier's free pool will
+// not cover the repository, and that is a decision about this scan, not a new
+// default for a loop that will still be running tomorrow.
+func (s *Supervisor) ScanNow(sel llm.Selection) bool {
 	if s.isPaused() {
 		return false
 	}
+	s.mu.Lock()
+	s.pending = sel
+	s.mu.Unlock()
 	s.signal()
 	return true
+}
+
+// takePending returns the operator's selection for the sweep that is starting
+// and clears it, so the next one is the resident loop's own again.
+func (s *Supervisor) takePending() llm.Selection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sel := s.pending
+	s.pending = llm.Selection{}
+	return sel
 }
 
 func (s *Supervisor) signal() {

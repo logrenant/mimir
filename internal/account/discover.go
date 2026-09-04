@@ -109,26 +109,3 @@ func (r *Registry) Sync(ctx context.Context, slots []Slot) ([]Account, error) {
 	}
 	return r.List(ctx)
 }
-
-// Background returns the slot the daemon's own model calls should spend.
-//
-// No marked slot is not an error — it is the CLI's default, expressed as the
-// zero Account, whose empty ConfigDir Environ turns into an unset variable.
-func (r *Registry) Background(ctx context.Context) (Account, error) {
-	row, found, err := r.store.GetBackgroundAccount(ctx)
-	if err != nil || !found {
-		return Account{}, err
-	}
-	return fromRow(row), nil
-}
-
-// SetBackground moves the background mark to one slot, or clears it when id is
-// empty. An unknown id is refused here rather than silently clearing it.
-func (r *Registry) SetBackground(ctx context.Context, id string) error {
-	if id != "" {
-		if _, err := r.Get(ctx, id); err != nil {
-			return err
-		}
-	}
-	return r.store.SetBackgroundAccount(ctx, id)
-}

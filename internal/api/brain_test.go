@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/logrenant/mimir/internal/brain"
+	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -19,6 +20,9 @@ type fakeScanner struct {
 	events []brain.ScanEvent
 	paused bool
 	woken  int
+	// sawSelection is what the handler validated and passed on, so a test can
+	// tell "the body was accepted" from "the body was accepted and forwarded".
+	sawSelection llm.Selection
 }
 
 func (f *fakeScanner) Status() brain.ScanStatus {
@@ -50,11 +54,12 @@ func (f *fakeScanner) Events(after int64, limit int) ([]brain.ScanEvent, int64) 
 func (f *fakeScanner) Pause()  { f.paused = true }
 func (f *fakeScanner) Resume() { f.paused = false }
 
-func (f *fakeScanner) ScanNow() bool {
+func (f *fakeScanner) ScanNow(sel llm.Selection) bool {
 	if f.paused {
 		return false
 	}
 	f.woken++
+	f.sawSelection = sel
 	return true
 }
 
@@ -191,6 +196,58 @@ func TestBrainScan_PauseResumeRoundTrip(t *testing.T) {
 	}
 	if sc.woken != 1 {
 		t.Errorf("the supervisor was woken %d times, want 1", sc.woken)
+	}
+}
+
+// An empty body is the whole of the old contract: a client written before the
+// picker existed keeps getting the configured distil routing.
+func TestBrainScanNow_WithoutABodyRoutesByClass(t *testing.T) {
+	deps, _, sc := graphDeps()
+	h := New(testConfig(), deps).Handler()
+
+	if w := do(h, http.MethodPost, "/brain/scan/now", testToken, ""); w.Code != http.StatusAccepted {
+		t.Fatalf("scan/now = %d, body %s", w.Code, w.Body.String())
+	}
+	if !sc.sawSelection.IsZero() {
+		t.Errorf("selection = %+v, want the zero value for a body-less call", sc.sawSelection)
+	}
+}
+
+// A first mount is where the operator reaches for a provider whose pool will
+// cover the repository. The pair has to arrive at the supervisor, not merely be
+// accepted by the handler.
+func TestBrainScanNow_ForwardsTheOperatorsSelection(t *testing.T) {
+	deps, _, sc := graphDeps()
+	h := New(testConfig(), deps).Handler()
+
+	w := do(h, http.MethodPost, "/brain/scan/now", testToken,
+		`{"provider":"claude","model":"claude-haiku-4-5-20251001"}`)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("scan/now = %d, body %s", w.Code, w.Body.String())
+	}
+	if sc.sawSelection.Provider != "claude" || sc.sawSelection.Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("selection = %+v, want the pair the operator sent", sc.sawSelection)
+	}
+}
+
+// Both strings become argv to a subprocess, so a pair this daemon does not
+// publish is refused rather than quietly replaced with the default.
+func TestBrainScanNow_RejectsAPairTheDaemonDoesNotOffer(t *testing.T) {
+	for _, body := range []string{
+		`{"provider":"gpt","model":"gpt-5"}`,
+		`{"provider":"claude","model":"gemini-3.8-flash-low"}`,
+		`{"model":"claude-haiku-4-5-20251001"}`,
+	} {
+		deps, _, sc := graphDeps()
+		h := New(testConfig(), deps).Handler()
+
+		w := do(h, http.MethodPost, "/brain/scan/now", testToken, body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("scan/now %s = %d, want 400", body, w.Code)
+		}
+		if sc.woken != 0 {
+			t.Errorf("scan/now %s woke the supervisor despite being rejected", body)
+		}
 	}
 }
 

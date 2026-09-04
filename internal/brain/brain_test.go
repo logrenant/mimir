@@ -112,6 +112,23 @@ type fakeLLM struct {
 	distilErr error
 	relateErr error
 	calls     int
+	// sawSelection is the last override the core passed down, so a test can
+	// assert the operator's routing actually reached the model call rather
+	// than being dropped somewhere in the middle.
+	sawSelection llm.Selection
+}
+
+func (f *fakeLLM) CompleteWith(ctx context.Context, c llm.Class, sel llm.Selection, req llm.Request) (llm.Response, error) {
+	f.mu.Lock()
+	f.sawSelection = sel
+	f.mu.Unlock()
+	return f.Complete(ctx, c, req)
+}
+
+func (f *fakeLLM) selection() llm.Selection {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sawSelection
 }
 
 func (f *fakeLLM) Complete(_ context.Context, _ llm.Class, req llm.Request) (llm.Response, error) {
@@ -156,6 +173,61 @@ func TestNodeID_IsIdentityNotTime(t *testing.T) {
 }
 
 // --- ingest ------------------------------------------------------------------
+
+// The operator's routing has to survive the whole way down to the model call.
+// Ingest is the choke-point every scanned file goes through, so a selection
+// dropped here would be a picker that changes nothing.
+func TestIngest_CarriesTheSelectionToTheModelCall(t *testing.T) {
+	st := newFakeStore()
+	model := &fakeLLM{distil: goodDistil, relate: `{"related":[]}`}
+	c := testCore(t, st, model)
+
+	sel := llm.Selection{Provider: "claude", Model: "claude-haiku-4-5-20251001"}
+	if _, err := c.Ingest(context.Background(), Input{
+		Source: "store", Kind: KindNote, Content: "SQLite WAL and FTS5.", ProjectPath: "/p",
+		Selection: sel,
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if got := model.selection(); got != sel {
+		t.Errorf("the model was called with %+v, want %+v", got, sel)
+	}
+}
+
+// An Ingest nobody routed keeps the class routing it always had, which is what
+// the resident sweep depends on.
+func TestIngest_WithoutASelectionRoutesByClass(t *testing.T) {
+	st := newFakeStore()
+	model := &fakeLLM{distil: goodDistil, relate: `{"related":[]}`}
+	c := testCore(t, st, model)
+
+	if _, err := c.Ingest(context.Background(), Input{
+		Source: "store", Kind: KindNote, Content: "SQLite WAL and FTS5.", ProjectPath: "/p",
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if got := model.selection(); !got.IsZero() {
+		t.Errorf("the model was called with %+v, want the zero selection", got)
+	}
+}
+
+// The distilled node records who actually answered, and Ingest hands that back
+// so a scan can report a fallback instead of the provider it asked for.
+func TestIngest_ReportsTheProviderThatAnswered(t *testing.T) {
+	st := newFakeStore()
+	model := &fakeLLM{distil: goodDistil, relate: `{"related":[]}`}
+	c := testCore(t, st, model)
+
+	res, err := c.Ingest(context.Background(), Input{
+		Source: "store", Kind: KindNote, Content: "SQLite WAL and FTS5.", ProjectPath: "/p",
+	})
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if res.Provider != "agy" {
+		t.Errorf("Provider = %q, want the one the answer came from", res.Provider)
+	}
+}
 
 func TestIngest_StoresAndDistils(t *testing.T) {
 	st := newFakeStore()

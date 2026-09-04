@@ -103,3 +103,35 @@ operator's own pause and resume, and the backoff — read by
 - `test/e2e/e2e_test.go` — a fake agy, since there is no fallback to a fake
   claude any more.
 - Docs: `docs/{SECURITY,CAPABILITIES,CAPABILITIES.tr}.md`, `cmd/mimir-scan/`.
+
+## Amendment (2026-09-04): the distil fallback is back on
+
+`DistillFallback` is `"claude"` again. The decision above is not being
+overruled — its objection was to a *silent* hand-off, and the silence is what
+changed.
+
+- **A run the operator routed by hand suppresses the fallback outright.** The
+  brain scan now takes an `llm.Selection` (`POST /brain/scan/now`, the picker in
+  the Brain tab), and `Router.CompleteWith` drops the fallback the moment a
+  selection names a provider. A deliberate choice gets that provider or an
+  error, never a substitute — which is exactly what this task asked for, now
+  expressed as a control rather than as an absent config value.
+- **The unselected case says so.** The distil answer carries the provider that
+  actually served it (`llm.Response.Provider` → `IngestResult.Provider` →
+  `ScanResult.Provider`), and the supervisor emits `EventProvider` into the scan
+  console the first time a sweep's answers stop coming from the provider it
+  asked for. The bill still moves; nobody has to find out afterwards.
+
+What forced the change is the first mount of a large repository: one free pool
+rarely covers it, and a scan that stops half way is not a cheaper outcome, only
+a later one. The operator picks the provider that will cover it, and the loop
+falls back only when nobody picked.
+
+- `internal/config/config.go` — `DistillFallback: "claude"`, rationale rewritten.
+- `internal/brain/` — `ScanOptions.Selection`, `Input.Selection`,
+  `Completer.CompleteWith`, `IngestResult.Provider`, `ScanResult.Provider`,
+  `Supervisor.ScanNow(sel)`, `EventProvider`, `noteProvider`.
+- `internal/api/` — `scanNowRequest`, `decodeOptionalJSON`, `llmSelection`
+  (was `leadgenSelection`, now shared with the brain route).
+- `desktop/src/` — `ProviderModelPicker` moved out of `Leadgen.tsx` into
+  `components/ModelPicker.tsx` and reused by the Brain tab.
