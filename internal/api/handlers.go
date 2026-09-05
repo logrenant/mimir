@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -197,75 +198,83 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, accountListResponse{Accounts: accounts})
 }
 
-// handleScanAccounts re-reads the accounts directory and registers what it
-// finds.
+// handleStartLogin connects the one Claude account.
 //
-// The daemon already scans at startup, so this is for the moment after the
-// operator creates a slot and signs into it: they click refresh in the app
-// rather than restarting a background service. Adding only — a row whose
-// directory has since gone stays, because a run may be pinned to it and a
-// failing probe is the honest report for it.
-func (s *Server) handleScanAccounts(w http.ResponseWriter, r *http.Request) {
-	accounts, err := s.deps.Accounts.Sync(r.Context(), account.Discover(s.cfg.ClaudeAccountsDir))
+// It runs `claude auth login` against Mimir's own credential slot and opens
+// the authorization page in a private browser window — private because a
+// normal one carries whatever Claude session is already signed in there, and
+// the page then never asks which account is connecting.
+//
+// It answers as soon as the window is open. The operator is in a browser at
+// that point, so the client follows GET /accounts/login rather than holding a
+// request open for as long as a sign-in takes.
+func (s *Server) handleStartLogin(w http.ResponseWriter, r *http.Request) {
+	state, err := s.deps.Accounts.StartLogin(r.Context())
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
-	if accounts == nil {
-		accounts = []account.Account{}
-	}
-	writeJSON(w, http.StatusOK, accountListResponse{Accounts: accounts})
+	writeJSON(w, http.StatusAccepted, state)
 }
 
-type registerAccountRequest struct {
-	Label string `json:"label"`
-	// ConfigDir is the second — and last — place this API accepts a filesystem
-	// path. It is the same discipline as POST /projects and for the same
-	// reason: the path is validated once here, and everything afterwards
-	// carries the opaque id this returns. It is also not a secret. The CLI
-	// hashes it to name a keychain entry; the credential itself never leaves
-	// the keychain and Mimir never reads it.
-	ConfigDir string `json:"config_dir"`
-}
-
-// handleRegisterAccount records a Claude Code credential slot.
+// handleLoginState reports the attempt in flight, or the last one's outcome.
 //
-// An empty config_dir registers the CLI's own default slot, which is what a
-// single-account machine has always been using. Registration is idempotent by
-// directory: the same path is the same identity, and a second row for it would
-// let the dispatcher believe one account could run two tasks at once.
-func (s *Server) handleRegisterAccount(w http.ResponseWriter, r *http.Request) {
-	var req registerAccountRequest
+// A finished login is also the moment the queue can move again: runs released
+// while nothing was connected are sitting there with no slot to claim, and
+// nothing else pumps on an account appearing. The client polls this route
+// throughout a login, so the kick rides along with the answer it is already
+// waiting for.
+func (s *Server) handleLoginState(w http.ResponseWriter, r *http.Request) {
+	state := s.deps.Accounts.LoginState()
+	if state.State == account.LoginDone && s.deps.Runner != nil {
+		if err := s.deps.Runner.Kick(r.Context()); err != nil {
+			slog.Warn("kicking the queue after a login", "error", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+type loginCodeRequest struct {
+	Code string `json:"code"`
+}
+
+// handleLoginCode answers the CLI's paste prompt.
+//
+// Only reachable in the flow the CLI falls back to when it could not open a
+// browser itself. The code is a single-use authorization code, not a
+// credential: it is typed straight into the waiting process and never stored.
+func (s *Server) handleLoginCode(w http.ResponseWriter, r *http.Request) {
+	var req loginCodeRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	acct, err := s.deps.Accounts.Register(r.Context(), req.Label, req.ConfigDir)
-	if err != nil {
-		writeDomainError(w, r, err)
+	if err := s.deps.Accounts.SubmitCode(req.Code); err != nil {
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, acct)
+	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "account id is required")
-		return
-	}
-	if err := s.deps.Accounts.Delete(r.Context(), id); err != nil {
+// handleResetAccounts signs the slot out and forgets it.
+//
+// This is both the "çıkış yap" button and what the desktop shell calls on its
+// way out, which is why it is one route and not two: closing Mimir and
+// disconnecting by hand mean the same thing — no account, and a login needed
+// before anything can run again.
+func (s *Server) handleResetAccounts(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Accounts.Reset(r.Context()); err != nil {
 		writeDomainError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleAccountStatus asks the CLI who is signed in to one slot.
+// handleAccountStatus asks the CLI who is signed in to the slot.
 //
 // It spends nothing — `claude auth status` reads a keychain entry and prints
 // JSON — which is why this is a live probe rather than something cached at
-// registration. A slot whose login has lapsed is a slot whose runs will fail,
-// and the operator should see that on the account, not one run at a time.
+// login. A slot whose login has lapsed is a slot whose runs will fail, and the
+// operator should see that on the account, not one run at a time.
 func (s *Server) handleAccountStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -388,6 +397,128 @@ func (s *Server) handleEnqueueCodingTask(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	run, err := s.deps.Runner.Enqueue(r.Context(), id)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+// handleKickQueue asks the dispatcher to look at the queue again.
+//
+// The queue is pumped when work is released and when a run frees its slot, so
+// nothing pumps it when the *account* is what changed. A queue that filled up
+// with nothing connected therefore kept waiting after the login that could
+// drain it, and the board had no way to say so. This is that missing edge: the
+// login poll calls it when an attempt lands, and a card that has sat in Queued
+// offers it as a button.
+//
+// It answers 409 with the registry's own words when nothing is connected,
+// because "why is this card not starting" is the question being asked.
+func (s *Server) handleKickQueue(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Runner.Kick(r.Context()); err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleQueueLimits answers "why is nothing running, and when will it be?".
+//
+// The pause the dispatcher is holding right now, plus the durable log behind
+// it. A spent token budget is the one interruption an operator can neither fix
+// nor retry their way out of, so what they need is not a button but the time it
+// ends — and the record of how often it has been happening.
+//
+// Registered beside the kick because it is the same question asked the other
+// way round: the kick says "go", this says "here is why it will not".
+func (s *Server) handleQueueLimits(w http.ResponseWriter, r *http.Request) {
+	limit, err := graphLimit(r.URL.Query().Get("limit"), 50, 500)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
+		return
+	}
+	report, err := s.deps.Runner.Limits(r.Context(), limit)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+// editCodingTaskRequest is a patch: an absent field is one the client did not
+// touch. Pointers rather than empty-means-unchanged, because "" is a real value
+// for a title an operator is clearing.
+type editCodingTaskRequest struct {
+	Title         *string   `json:"title"`
+	Prompt        *string   `json:"prompt"`
+	Model         *string   `json:"model"`
+	AttachmentIDs *[]string `json:"attachment_ids"`
+}
+
+// handleEditCodingTask rewrites what a card asks for.
+//
+// PATCH rather than PUT for the reason above: the board sends the fields its
+// form owns, and a client that only renames a card should not have to send the
+// prompt back to keep it.
+//
+// A card that is running or finished answers 409. That is not a permission
+// check — it is the same rule the rest of this package keeps: what a run was
+// asked is the record of what was spent, and the transcript beside it has to
+// stay an answer to the prompt above it.
+func (s *Server) handleEditCodingTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "run id is required")
+		return
+	}
+	var req editCodingTaskRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// The one field that cannot be blanked. Checked here, like create's, so it
+	// is a 400 about the request rather than a 500 about the daemon.
+	if req.Prompt != nil && strings.TrimSpace(*req.Prompt) == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "prompt is required")
+		return
+	}
+	run, err := s.deps.Runner.Edit(r.Context(), id, coderunner.EditRequest{
+		Title:         req.Title,
+		Prompt:        req.Prompt,
+		Model:         req.Model,
+		AttachmentIDs: req.AttachmentIDs,
+	})
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+type retryCodingTaskRequest struct {
+	// Fresh asks for the task to be started over instead of continued. Absent
+	// means continue, because that is the point of retrying a run that already
+	// did half the work — and a client that sends no body at all gets it.
+	Fresh bool `json:"fresh"`
+}
+
+// handleRetryCodingTask puts a failed or stopped run back in the queue.
+//
+// Separate from enqueue for the same reason enqueue is separate from create:
+// releasing a card nobody has spent anything on and picking a run back up where
+// it broke are different decisions, and the second one resumes a session the
+// first has none of.
+func (s *Server) handleRetryCodingTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeBadRequest, "run id is required")
+		return
+	}
+	var req retryCodingTaskRequest
+	if !decodeOptionalJSON(w, r, &req) {
+		return
+	}
+	run, err := s.deps.Runner.Retry(r.Context(), id, req.Fresh)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return

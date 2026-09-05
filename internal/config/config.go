@@ -287,19 +287,31 @@ type Config struct {
 	// Constants for the same reason the rest of this struct is (SD-1): they
 	// describe the machine's behaviour, not an operator's preference.
 	//
-	// There is deliberately no "max concurrent runs" here. Capacity is one run
-	// per registered credential slot, which is a fact about the accounts the
-	// operator has, not a number to tune: two runs sharing one Claude Code
-	// identity share its rate limit and its session state.
+	// There is deliberately no "max concurrent runs" here. Mimir has one
+	// Claude account, so capacity is one run — a fact about the identity the
+	// operator connected, not a number to tune: two runs sharing one Claude
+	// Code identity share its rate limit and its session state.
 	CodingStopGrace          time.Duration
 	CodingStderrMaxBytes     int
 	CodingAttachmentMaxBytes int64
 	AttachmentDir            string
 
-	// ClaudeAccountsDir is the directory whose subdirectories are credential
-	// slots. It is the same convention the operator's shell already uses, so a
-	// slot registered there is a slot Mimir spends without being told twice.
-	ClaudeAccountsDir string
+	// CodingLimitRecheck is how long the dispatcher holds the queue when a run
+	// ran out of tokens and the CLI never said when the window rolls over.
+	//
+	// The CLI usually does say — its rate_limit_event carries a reset time, and
+	// that time is used verbatim when it is there. This is the fallback for the
+	// case where the budget is announced only as a sentence in an error, and it
+	// is a constant rather than a knob (SD-1) because it describes how often it
+	// is worth asking a question whose answer we do not have, not a preference.
+	CodingLimitRecheck time.Duration
+
+	// ClaudeSessionDir is the credential slot Mimir signs into, and the only
+	// one it spends. It is Mimir's own — not the CLI's default slot and not a
+	// directory under the operator's ~/.claude-accounts — because the app
+	// signs this slot out when it quits, and a reset that reached either of
+	// those would log the operator out of their own terminal.
+	ClaudeSessionDir string
 
 	// Project memory (M8). Long-lived per-project context distilled from
 	// session transcripts, so a new session is told what this repository
@@ -467,27 +479,6 @@ func defaultClaudeProjectsDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".claude", "projects")
-}
-
-// defaultClaudeAccountsDir is where a Claude Code credential slot lives: one
-// directory per identity, hashed by the CLI into a keychain entry name. It
-// mirrors the operator's shell convention (`CLAUDE_ACCOUNTS_DIR`, default
-// `~/.claude-accounts`) so both spend the same slots.
-//
-// The shell variable itself is deliberately not read. The daemon runs under
-// launchd, which hands it PATH and HOME and nothing else, so reading it would
-// make discovery depend on who happened to start the daemon. Computed like
-// defaultClaudeProjectsDir; MIMIR_CLAUDE_ACCOUNTS_DIR points it at a temp tree
-// for tests only.
-//
-// An empty result is a defined state: discovery then finds the CLI's own slot
-// and nothing else, which is exactly what a machine with one account has.
-func defaultClaudeAccountsDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".claude-accounts")
 }
 
 // defaultMapScrapeComposeFile is where the daemon starts the Maps sidecar from.
@@ -778,9 +769,14 @@ func Load() Config {
 		// that the daemon holds one in memory without thinking about it.
 		CodingAttachmentMaxBytes: 10 << 20,
 
+		// Long enough that a spent five-hour window is not probed every few
+		// minutes, short enough that a queue does not sit still for an hour
+		// after the budget came back. Only ever reached when the CLI gave no
+		// reset time of its own.
+		CodingLimitRecheck: 15 * time.Minute,
+
 		// One directory per Claude Code identity, the same tree the operator's
 		// shell already switches between.
-		ClaudeAccountsDir: defaultClaudeAccountsDir(),
 
 		// 60 is the Places API's own ceiling for places:searchText, not a
 		// preference. The token ceiling is the same order as a research brief:
@@ -896,9 +892,6 @@ func Load() Config {
 	if val := os.Getenv("MIMIR_CLAUDE_PROJECTS_DIR"); val != "" {
 		c.ClaudeProjectsDir = val
 	}
-	if val := os.Getenv("MIMIR_CLAUDE_ACCOUNTS_DIR"); val != "" {
-		c.ClaudeAccountsDir = val
-	}
 
 	// Process plumbing, parent-provided. An unparseable port keeps the default
 	// (0 = kernel-assigned) rather than failing, like every other override
@@ -930,6 +923,12 @@ func Load() Config {
 		c.MapScrapeComposeFile = val
 	}
 	c.AttachmentDir = filepath.Join(filepath.Dir(c.StorePath), "attachments")
+	// Mimir's own credential slot, derived beside the store like every other
+	// directory here rather than configured (SD-1). The CLI hashes this path
+	// into a keychain entry name, so its location is the whole handle: no
+	// other slot on the machine can be reached through it, and signing it out
+	// touches nothing the operator logged in themselves.
+	c.ClaudeSessionDir = filepath.Join(filepath.Dir(c.StorePath), "claude-session")
 	// Where the agy Stop hook drops a conversation for the daemon to pick up.
 	// A directory rather than an HTTP call: the hook then needs no token,
 	// cannot block a session on the network, and a conversation that ended
@@ -1147,6 +1146,9 @@ func (c Config) Validate() error {
 	}
 	if c.CodingAttachmentMaxBytes <= 0 {
 		return errors.New("CodingAttachmentMaxBytes must be > 0")
+	}
+	if c.CodingLimitRecheck <= 0 {
+		return errors.New("CodingLimitRecheck must be > 0")
 	}
 
 	if c.GMapsWaitForSelector == "" {

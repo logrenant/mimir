@@ -41,6 +41,14 @@ type TerminalsAPI = {
   open: (run: Run) => void;
   close: (runID: string) => void;
   stop: (runID: string) => Promise<void>;
+  /**
+   * Puts a finished run back in the queue from the terminal it failed in.
+   *
+   * fresh = false resumes the CLI session, which is what a run cut off by a
+   * dropped connection or a conflict wants: it carries on rather than redoing
+   * the half it finished. fresh = true throws that session away.
+   */
+  retry: (runID: string, fresh: boolean) => Promise<void>;
   /** Reconciles a session's badge with what the board just fetched. */
   sync: (runs: Run[]) => void;
   /**
@@ -145,6 +153,29 @@ export function TerminalsProvider({ children }: { children: ReactNode }) {
     [patch],
   );
 
+  const retry = useCallback(
+    async (runID: string, fresh: boolean) => {
+      try {
+        const run = await api.retryCodingTask(runID, fresh);
+        // The tab is already open and keeps its scrollback; only the badge and
+        // the session it may resume next are out of date.
+        patch(runID, (s) => ({
+          ...s,
+          status: run.status,
+          sessionID: run.session_id || (fresh ? "" : s.sessionID),
+          closedReason: null,
+        }));
+        watch(runID);
+      } catch (err) {
+        patch(runID, (s) => ({
+          ...s,
+          closedReason: err instanceof DaemonError ? err.message : String(err),
+        }));
+      }
+    },
+    [patch, watch],
+  );
+
   const adopt = useCallback(
     (runs: Run[]) => {
       // A dismissal is about one run, not about that id forever, so it is
@@ -173,8 +204,13 @@ export function TerminalsProvider({ children }: { children: ReactNode }) {
       const next = { ...current };
       for (const run of runs) {
         const session = next[run.id];
-        if (session && session.status !== run.status) {
-          next[run.id] = { ...session, status: run.status };
+        if (!session) continue;
+        // The session id is corrected the same way and for the same reason as
+        // the badge: a run that ended while nothing was watching it has one the
+        // socket never delivered, and "devam et" is drawn from it.
+        const sessionID = run.session_id || session.sessionID;
+        if (session.status !== run.status || session.sessionID !== sessionID) {
+          next[run.id] = { ...session, status: run.status, sessionID };
           changed = true;
         }
       }
@@ -200,8 +236,8 @@ export function TerminalsProvider({ children }: { children: ReactNode }) {
   }, [activeID, ordered, sessions]);
 
   const value = useMemo<TerminalsAPI>(
-    () => ({ sessions: ordered, activeID, setActive: setActiveID, open, close, stop, sync, adopt }),
-    [ordered, activeID, open, close, stop, sync, adopt],
+    () => ({ sessions: ordered, activeID, setActive: setActiveID, open, close, stop, retry, sync, adopt }),
+    [ordered, activeID, open, close, stop, retry, sync, adopt],
   );
 
   return <TerminalsContext.Provider value={value}>{children}</TerminalsContext.Provider>;

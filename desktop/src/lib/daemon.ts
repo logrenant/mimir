@@ -67,7 +67,11 @@ export async function restart(): Promise<void> {
 type ErrorEnvelope = { error?: { code?: string; message?: string } };
 type ProxyResponse = { status: number; body: string };
 
-type RequestOptions = { method?: "GET" | "POST" | "DELETE"; body?: unknown };
+// PUT is here for the routes that replace a whole document rather than amend
+// one — the scan policy, the settings values, a rule file. The distinction is
+// the daemon's: PATCH takes the fields that changed, PUT takes the list as it
+// should now be.
+type RequestOptions = { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown };
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? "GET";
@@ -209,28 +213,22 @@ export type RunStatus =
   | "stopped";
 
 /**
- * A Claude Code credential slot.
+ * The one Claude account Mimir is connected as.
  *
- * `config_dir` is not a secret and holds none: the CLI hashes it to name a
- * keychain entry, and the credential itself never leaves the keychain. It is
- * reported so two slots can be told apart.
+ * `config_dir` is Mimir's own credential slot, and it is neither a secret nor
+ * holds one: the CLI hashes the path to name a keychain entry, and the
+ * credential itself never leaves the keychain. It is reported because it is
+ * what the operator would type to reach the same slot from a terminal.
  */
 export type Account = {
   id: string;
   label: string;
   config_dir: string;
-  is_default: boolean;
-  /**
-   * Found by the daemon's scan of the accounts directory rather than
-   * registered here. Those slots answer to the filesystem: removing one means
-   * removing its directory, so the app does not offer to forget them.
-   */
-  discovered?: boolean;
   created_at?: string;
   last_used_at?: string;
 };
 
-/** What `claude auth status` says about one slot. Costs nothing to ask. */
+/** What `claude auth status` says about the slot. Costs nothing to ask. */
 export type AccountStatus = {
   logged_in: boolean;
   email?: string;
@@ -238,6 +236,22 @@ export type AccountStatus = {
   subscription_type?: string;
   auth_method?: string;
   error?: string;
+};
+
+/**
+ * One attempt at connecting the account, as the daemon reports it.
+ *
+ * `waiting` is the good case: the browser window is open and the CLI is
+ * listening on its own loopback callback, so finishing in the browser finishes
+ * the login with nothing to type. `code` is the fallback the CLI takes when it
+ * could not open a browser itself — then, and only then, a code is pasted back.
+ */
+export type LoginState = {
+  state: "idle" | "opening" | "waiting" | "code" | "done" | "failed";
+  url?: string;
+  message?: string;
+  output?: string;
+  email?: string;
 };
 
 export type Run = {
@@ -260,6 +274,44 @@ export type Run = {
   queued_at?: string;
   started_at?: string;
   ended_at?: string;
+};
+
+/**
+ * One credential slot the queue is currently waiting on.
+ *
+ * A pause, not a failure: the account has no tokens left until `resets_at`,
+ * and the daemon restarts the pipeline itself when that moment arrives. There
+ * is deliberately no way to clear one from here — the only thing that ends it
+ * is the window rolling over.
+ */
+export type Hold = {
+  account_id?: string;
+  since: string;
+  resets_at: string;
+  reason?: string;
+};
+
+/**
+ * One moment in the life of a spent token budget.
+ *
+ * `run` is a task the budget cut off mid-flight (it went back to the queue with
+ * its session, so it resumes rather than restarts), `dispatch` is a queued task
+ * that could not be claimed, and `resumed` is the window rolling over and the
+ * queue picking itself back up.
+ */
+export type RateLimitEvent = {
+  id: number;
+  at: string;
+  phase: "run" | "dispatch" | "resumed";
+  account_id?: string;
+  run_id?: string;
+  resets_at?: string;
+  detail?: string;
+};
+
+export type LimitReport = {
+  holds: Hold[];
+  log: RateLimitEvent[];
 };
 
 /**
@@ -361,9 +413,43 @@ export type LeadCompany = {
   source?: string;
   category: string;
   category_method?: string;
+  /**
+   * The company's own address, found by the contacts stage — where an email is
+   * sent, never the letter itself. The two shared one field once and stage 4
+   * overwrote the address with the draft; they are separate on the wire now
+   * because they are separate things.
+   */
   email?: string;
-  email_status?: "draft" | "sent" | "skipped";
-  email_method?: string;
+  /** leadgen.CompanyLead.Drafts — at most one per channel. */
+  drafts?: Draft[];
+};
+
+/**
+ * settings.Channel — the closed set of media an outreach message is written
+ * for. It is closed on the daemon too: a channel *is* a rule file, so a third
+ * one means shipping a third default rather than adding a string here.
+ */
+export type OutreachChannel = "email" | "whatsapp";
+
+/** Every channel, in the order the daemon lists them. Email first: it is the
+ *  one that existed before this set had two members. */
+export const CHANNELS: OutreachChannel[] = ["email", "whatsapp"];
+
+/** The human's decision on one draft. */
+export type OutreachStatus = "draft" | "sent" | "skipped";
+
+/**
+ * leadgen.Draft — one outreach message for one company on one channel.
+ *
+ * The status is per channel, because sending the email and skipping the
+ * WhatsApp line is an ordinary thing to decide.
+ */
+export type Draft = {
+  channel: OutreachChannel;
+  body: string;
+  status?: OutreachStatus;
+  method?: string;
+  truncated?: boolean;
 };
 
 /** leadgen.CategoryReport. */
@@ -390,7 +476,15 @@ export type LeadgenReport = {
   notes?: string[];
 };
 
-/** The body POST /maps/leadgen accepts. */
+/**
+ * The body POST /maps/leadgen accepts.
+ *
+ * There is deliberately no provider/model here any more. The route falls back
+ * to the operator's saved default (`api.leadgenSelection`), and that default
+ * lives on the settings screen — one place to choose a model rather than one
+ * per screen that spends one. Leaving the fields on this type would be an
+ * invitation to put a second picker back on the search bar.
+ */
 export type LeadgenRequest = {
   query: string;
   region?: string;
@@ -400,13 +494,6 @@ export type LeadgenRequest = {
   near?: { latitude: number; longitude: number; radius_meters: number };
   gap_analysis?: boolean;
   emails?: boolean;
-  /**
-   * Which provider and model run this search's model stages. Both are
-   * optional and must travel together; omitting them routes by class, which
-   * is what the daemon does for everything it starts on its own.
-   */
-  provider?: string;
-  model?: string;
 };
 
 /**
@@ -439,7 +526,59 @@ export type LLMProviderList = {
   routed: { provider: string; model: string };
 };
 
-export type EmailStatus = "sent" | "skipped" | "draft";
+/**
+ * The body POST /maps/outreach accepts: the companies the operator ticked, and
+ * what to write them.
+ *
+ * Ids rather than a filter, and that is the whole difference between this and
+ * POST /maps/leadgen. A search is "find me companies"; this is "write to these
+ * ones". A filter would let one short string spend a region's worth of tokens
+ * with nobody having seen how many companies that was.
+ */
+export type OutreachRequest = {
+  place_ids: string[];
+  /** Empty means email alone — what a client written before WhatsApp meant. */
+  channels?: OutreachChannel[];
+  /** Labels the gap analysis. Empty falls back to the companies' own region. */
+  region?: string;
+};
+
+/** leadgen.OutreachResult — what was written, and what it was written from. */
+export type OutreachResult = {
+  companies: LeadCompany[];
+  categories: CategoryReport[];
+  notes?: string[];
+};
+
+/**
+ * api.ruleView — one channel's rule file as the settings screen sees it.
+ *
+ * `path` is shown because the operator may well prefer their own editor, and a
+ * rule file whose location is a secret is a rule file nobody trusts.
+ */
+export type OutreachRule = {
+  channel: OutreachChannel;
+  label: string;
+  path: string;
+  body: string;
+  is_default: boolean;
+  updated_at?: number;
+};
+
+/**
+ * api.settingsView — the whole settings screen in one response.
+ *
+ * One response because it is one screen: a client that had to fan out to three
+ * routes to draw it would show the model picker before the rule files and look
+ * broken for the difference.
+ */
+export type SettingsView = {
+  provider: string;
+  model: string;
+  /** What a run gets when no model is saved: the class routing's own answer. */
+  routed: { provider: string; model: string };
+  rules: OutreachRule[];
+};
 
 /** What POST /maps/leadgen/export accepts: the same search, plus the file. */
 export type LeadgenExportRequest = LeadgenRequest & {
@@ -552,6 +691,22 @@ export type BrainScanStatus = {
   provider_down: boolean;
   backoff_until?: string;
   last_error?: string;
+  /** The operator's "not this one" list, echoed back from the running sweep. */
+  excludes?: string[];
+};
+
+/**
+ * What the scan is permitted to read — GET/PUT /brain/scan/policy.
+ *
+ * `configured` is the difference between "these are the folders Mimir picked"
+ * and "these are the folders you chose". The screen says which, because only
+ * one of the two invites a look.
+ */
+export type BrainScanPolicy = {
+  roots: string[];
+  excludes: string[];
+  configured: boolean;
+  default_roots: string[];
 };
 
 export type BrainScanEvent = {
@@ -679,7 +834,7 @@ export type TerminalProfile = {
   /**
    * Whether the daemon has a live shell for this profile. Not the same as
    * "you are looking at it": a session outlives its viewer, which is what lets
-   * both accounts stay open at once.
+   * a terminal survive a trip to another screen.
    */
   running?: boolean;
 };
@@ -694,15 +849,19 @@ export const api = {
   listProjects: () => request<{ projects: Project[] }>("/projects"),
   listAccounts: () => request<{ accounts: Account[] }>("/accounts"),
   listCodingModels: () => request<{ models: CodingModel[] }>("/coding-models"),
-  // The second and last route that takes a filesystem path, validated once
-  // there exactly as /projects is.
-  registerAccount: (label: string, configDir: string) =>
-    request<Account>("/accounts", { method: "POST", body: { label, config_dir: configDir } }),
-  deleteAccount: (id: string) =>
-    request<void>(`/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  // Re-reads the accounts directory. The daemon already scans at startup, so
-  // this is for the moment right after a new slot is created and signed in.
-  scanAccounts: () => request<{ accounts: Account[] }>("/accounts/scan", { method: "POST" }),
+  // Connecting is a login the *daemon* runs — it starts `claude auth login`
+  // against its own credential slot and opens the authorization page in a
+  // private browser window. This returns once that window is open, not once
+  // the login is finished, so the caller follows loginState from there.
+  startAccountLogin: () => request<LoginState>("/accounts/login", { method: "POST" }),
+  loginState: () => request<LoginState>("/accounts/login"),
+  // Only for the flow the CLI falls back to when it could not open a browser
+  // itself. A single-use authorization code, typed into the waiting process.
+  submitLoginCode: (code: string) =>
+    request<void>("/accounts/login/code", { method: "POST", body: { code } }),
+  // Signs the account out and forgets it — the "çıkış yap" button, and what
+  // the shell calls on its way out of the app.
+  resetAccounts: () => request<void>("/accounts/reset", { method: "POST" }),
   accountStatus: (id: string) =>
     request<AccountStatus>(`/accounts/${encodeURIComponent(id)}/status`),
   registerProject: (path: string) =>
@@ -720,6 +879,51 @@ export const api = {
     request<Run>(`/coding-tasks/${encodeURIComponent(runID)}/enqueue`, { method: "POST" }),
   stopCodingTask: (runID: string) =>
     request<Run>(`/coding-tasks/${encodeURIComponent(runID)}/stop`, { method: "POST" }),
+  // Puts a failed or stopped card back in the queue. `fresh` is the whole of
+  // the difference the two buttons make: false resumes the CLI session the
+  // first attempt left behind — the run carries on — and true drops it, so the
+  // task is done again from nothing.
+  //
+  // Either way the run lands in `queued`, not in `running`: capacity is one run
+  // per account, so if something is in flight this waits its turn rather than
+  // contending with it. That is the queueing the board promises.
+  retryCodingTask: (runID: string, fresh = false) =>
+    request<Run>(`/coding-tasks/${encodeURIComponent(runID)}/retry`, {
+      method: "POST",
+      body: { fresh },
+    }),
+  // Rewrites what a card asks for.
+  //
+  // A patch: only the fields sent are changed, so a rename does not have to
+  // carry the prompt back. The daemon answers 409 for a card that is running or
+  // finished — what a run was asked is the record of what was spent.
+  editCodingTask: (
+    runID: string,
+    patch: { title?: string; prompt?: string; model?: string; attachment_ids?: string[] },
+  ) =>
+    request<Run>(`/coding-tasks/${encodeURIComponent(runID)}`, {
+      method: "PATCH",
+      body: patch,
+    }),
+  // Asks the dispatcher to look at the queue again.
+  //
+  // The daemon pumps its queue when work is released and when a run frees its
+  // slot — never when the *account* changes — so a card queued while nothing
+  // was connected keeps waiting after the login that could start it. This is
+  // the way out, and it answers 409 with the reason when there is still
+  // nothing to start with.
+  kickQueue: () => request<void>("/coding-tasks/queue/kick", { method: "POST" }),
+  // Why the queue is not moving, and when it will be.
+  //
+  // A spent token budget is the one interruption nobody can act on: the daemon
+  // parks the run it cut off, holds the slot, and restarts the pipeline itself
+  // when the window rolls over. `holds` is what it is waiting on right now,
+  // `log` is the durable record — including the pauses that ended, which is
+  // how an operator sees what happened overnight.
+  queueLimits: (limit?: number) =>
+    request<LimitReport>(
+      `/coding-tasks/queue/limits${limit ? `?limit=${limit}` : ""}`,
+    ),
   deleteCodingTask: (runID: string) =>
     request<void>(`/coding-tasks/${encodeURIComponent(runID)}`, { method: "DELETE" }),
   uploadAttachment: (filename: string, dataBase64: string) =>
@@ -761,12 +965,38 @@ export const api = {
   leadRuns: () => request<{ runs: LeadRun[] }>("/maps/leads/runs"),
   // Regions, not runs, are what the picker offers: one row per place.
   leadRegions: () => request<{ regions: LeadRegion[] }>("/maps/leads/regions"),
-  // 204, no body — the caller updates its own row optimistically.
-  setEmailStatus: (placeID: string, status: EmailStatus) =>
-    request<void>("/maps/emails/status", {
+  // Writes outreach for the companies the operator ticked. The only route that
+  // spends model tokens on a decision somebody actually made — which is why it
+  // takes ids and the search route takes a query.
+  draftOutreach: (body: OutreachRequest) =>
+    request<OutreachResult>("/maps/outreach", { method: "POST", body }),
+  // 204, no body — the caller updates its own row optimistically. The channel
+  // travels with the place id because a company has one draft per channel and
+  // "sent" is a decision about one of them, not about the company.
+  setOutreachStatus: (placeID: string, channel: OutreachChannel, status: OutreachStatus) =>
+    request<void>("/maps/outreach/status", {
       method: "POST",
-      body: { place_id: placeID, status },
+      body: { place_id: placeID, channel, status },
     }),
+
+  // The operator's own configuration: the model their lead-gen runs spend by
+  // default, and the rule file behind each outreach channel. Distinct from
+  // `/coding-models` and `/llm/providers`, which publish constants the binary
+  // ships — these read and write files the operator owns.
+  settings: () => request<SettingsView>("/settings"),
+  // PUT, not PATCH: the pair is one decision. Both empty means "route by
+  // class", which is what every run did before this screen existed.
+  saveSettings: (provider: string, model: string) =>
+    request<SettingsView>("/settings", { method: "PUT", body: { provider, model } }),
+  // An empty body is a reset on the daemon's side, not an empty prompt: "I
+  // cleared the box" means start over far more often than it means "write with
+  // no rules at all".
+  saveRule: (channel: OutreachChannel, body: string) =>
+    request<OutreachRule>("/settings/rules", { method: "PUT", body: { channel, body } }),
+  // A route rather than "send the shipped default back": a client that held a
+  // copy of the default is exactly the drift `GET /coding-models` avoids.
+  resetRule: (channel: OutreachChannel) =>
+    request<OutreachRule>("/settings/rules/reset", { method: "POST", body: { channel } }),
 
   // The Brain tab. The three controls take no body: there is nothing to
   // configure about a scan, and the daemon's handlers do not decode one.
@@ -793,6 +1023,16 @@ export const api = {
     request<{ events: BrainScanEvent[]; seq: number }>(
       `/brain/scan/log?after=${encodeURIComponent(String(after))}`,
     ),
+  /**
+   * The scan permission surface. A PUT of the whole document rather than
+   * add/remove routes: the screen holds the list, so two rows removed quickly
+   * are one edit and not a race.
+   */
+  brainScanPolicy: () => request<BrainScanPolicy>("/brain/scan/policy"),
+  saveBrainScanPolicy: (policy: { roots: string[]; excludes: string[] }) =>
+    request<BrainScanPolicy>("/brain/scan/policy", { method: "PUT", body: policy }),
+  resetBrainScanPolicy: () =>
+    request<BrainScanPolicy>("/brain/scan/policy/reset", { method: "POST" }),
   brainProjects: () => request<{ projects: BrainProject[] }>("/brain/projects"),
   // `project` is the opaque id from /brain/projects, never a path: the daemon
   // accepts a filesystem path at exactly two routes and this is not one of

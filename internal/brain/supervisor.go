@@ -54,15 +54,38 @@ type SupervisorDeps struct {
 	// After is a test seam. Nil means time.After — the loop spends most of its
 	// life waiting, and a test that actually waited would be a test nobody runs.
 	After func(time.Duration) <-chan time.Time
+
+	// Policy is where this loop asks what it is allowed to read. It is a
+	// function rather than a value because the answer changes while the loop is
+	// running: the operator adds a folder on the Brain tab and the next sweep
+	// has to pick it up, without a daemon restart and without this package
+	// knowing that a settings file is what is behind it.
+	//
+	// Nil means cfg.BrainScanRoots and no exclusions — the behaviour every
+	// caller had before the policy existed.
+	Policy func() ScanPolicy
+}
+
+// ScanPolicy is what the supervisor is permitted to read, as it reads it.
+//
+// The same shape settings.ScanPolicy has, restated here so internal/brain does
+// not import the settings package: the loop does not care that this came from a
+// file, and a dependency on where it is stored would make it care.
+type ScanPolicy struct {
+	Roots    []string
+	Excludes []string
 }
 
 // ScanStatus is the whole of what the Brain tab knows. One snapshot, taken
 // under the lock, because a screen that mixed a project name from one pass with
 // a count from another would be lying in a way nobody could reproduce.
 type ScanStatus struct {
-	Phase        string   `json:"phase"`
-	Paused       bool     `json:"paused"`
-	Roots        []string `json:"roots"`
+	Phase  string   `json:"phase"`
+	Paused bool     `json:"paused"`
+	Roots  []string `json:"roots"`
+	// Excludes is the operator's "not this one" list, echoed back so the tab
+	// can render what it is about to enforce rather than what it last sent.
+	Excludes     []string `json:"excludes,omitempty"`
 	Provider     string   `json:"provider"`
 	Model        string   `json:"model"`
 	Project      string   `json:"project,omitempty"`
@@ -204,13 +227,27 @@ func NewSupervisor(cfg config.Config, deps SupervisorDeps) *Supervisor {
 		log:  deps.Log,
 		wake: make(chan struct{}, 1),
 	}
+	initial := s.policy()
 	s.status = ScanStatus{
 		Phase:    PhaseIdle,
-		Roots:    cfg.BrainScanRoots,
+		Roots:    initial.Roots,
+		Excludes: initial.Excludes,
 		Provider: cfg.DistillProvider,
 		Model:    cfg.DistillModel,
 	}
 	return s
+}
+
+// policy is what this loop may read, right now.
+//
+// Every call goes through here rather than through cfg directly, so there is
+// one place where "the operator has not configured anything" resolves to the
+// shipped default — and one place to look when the answer is surprising.
+func (s *Supervisor) policy() ScanPolicy {
+	if s.deps.Policy == nil {
+		return ScanPolicy{Roots: s.cfg.BrainScanRoots}
+	}
+	return s.deps.Policy()
 }
 
 // Run sweeps the roots until ctx is cancelled.
@@ -220,8 +257,8 @@ func NewSupervisor(cfg config.Config, deps SupervisorDeps) *Supervisor {
 // designed to sit in rather than fail out of, and the daemon has nowhere to
 // report an error to at this point anyway.
 func (s *Supervisor) Run(ctx context.Context) {
-	if s.deps.Core == nil || !s.deps.Core.Available() || len(s.cfg.BrainScanRoots) == 0 {
-		s.log.Info("brain scan supervisor is inert", "roots", len(s.cfg.BrainScanRoots))
+	if s.deps.Core == nil || !s.deps.Core.Available() {
+		s.log.Info("brain scan supervisor is inert — no knowledge base to write to")
 		return
 	}
 	s.restore(ctx)
@@ -233,6 +270,19 @@ func (s *Supervisor) Run(ctx context.Context) {
 		if s.isPaused() {
 			s.setPhase(PhasePaused)
 			if !s.waitFor(ctx, time.Hour) {
+				return
+			}
+			continue
+		}
+
+		// An empty root list is a state to sit in, not one to exit on. It is
+		// what the operator sees after removing the last folder, and the loop
+		// has to still be here when they add the next one — before this, an
+		// empty list ended the goroutine and only a daemon restart brought
+		// scanning back.
+		if len(s.policy().Roots) == 0 {
+			s.setPhase(PhaseIdle)
+			if !s.waitFor(ctx, s.cfg.BrainScanIdleInterval) {
 				return
 			}
 			continue
@@ -274,7 +324,14 @@ func (s *Supervisor) sweep(ctx context.Context) {
 		model = sel.Model
 	}
 
-	projects := s.discover()
+	// Read once per sweep, like the routing above and for the same reason: a
+	// sweep that picked up a new exclusion half way through would have already
+	// read the file it names, and the operator would have no way to tell which
+	// half of the pass their change applied to.
+	policy := s.policy()
+	exclude := NewExcluder(policy.Excludes)
+
+	projects := s.discover(policy.Roots)
 	s.emit(EventSweep, "", fmt.Sprintf("tur başladı — %d proje, %s · %s",
 		len(projects), provider, model))
 	s.withStatus(func(st *ScanStatus) {
@@ -282,6 +339,8 @@ func (s *Supervisor) sweep(ctx context.Context) {
 		st.Phase = PhaseScanning
 		st.Provider = provider
 		st.Model = model
+		st.Roots = policy.Roots
+		st.Excludes = exclude.List()
 	})
 
 	for i, project := range projects {
@@ -294,13 +353,13 @@ func (s *Supervisor) sweep(ctx context.Context) {
 			st.ProjectIndex = i + 1
 		})
 		s.emit(EventProject, project, fmt.Sprintf("%s (%d/%d)", filepath.Base(project), i+1, len(projects)))
-		s.scanProject(ctx, project, sel)
+		s.scanProject(ctx, project, sel, exclude)
 		s.remember(ctx, project)
 	}
 }
 
 // scanProject runs one project to completion, one bounded pass at a time.
-func (s *Supervisor) scanProject(ctx context.Context, project string, sel llm.Selection) {
+func (s *Supervisor) scanProject(ctx context.Context, project string, sel llm.Selection, exclude Excluder) {
 	for {
 		if ctx.Err() != nil || s.isPaused() {
 			return
@@ -312,7 +371,7 @@ func (s *Supervisor) scanProject(ctx context.Context, project string, sel llm.Se
 		s.mu.Unlock()
 
 		started := time.Now()
-		res, err := s.deps.Core.Scan(passCtx, project, s.deps.Hashes, ScanOptions{Selection: sel})
+		res, err := s.deps.Core.Scan(passCtx, project, s.deps.Hashes, ScanOptions{Selection: sel, Exclude: exclude})
 		cancel()
 		s.report(project, res, err, time.Since(started))
 
@@ -478,12 +537,12 @@ func (s *Supervisor) clearBackoff() {
 // discover lists every project under every root, once, in a stable order. A
 // path found under two roots is scanned once: a node is keyed by its project
 // path, so scanning it twice is two identical distils and one row.
-func (s *Supervisor) discover() []string {
+func (s *Supervisor) discover(roots []string) []string {
 	s.setPhase(PhaseDiscovering)
 
 	seen := map[string]struct{}{}
 	var out []string
-	for _, root := range s.cfg.BrainScanRoots {
+	for _, root := range roots {
 		found, err := DiscoverProjects(root, s.cfg.BrainScanDepth)
 		if err != nil {
 			// A root that is not there is not an error worth stopping for: a

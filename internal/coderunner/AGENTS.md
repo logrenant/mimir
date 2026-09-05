@@ -62,6 +62,29 @@ order to act.
 - **A run with no `result` line is a failure.** Exiting cleanly without
   reporting an outcome is not success, and reporting it as one would hide real
   breakage.
+- **A spent token budget is a pause, not a failure.** Nothing went wrong, so
+  nothing is handed to the operator to diagnose: `park` puts the run back in
+  `queued` with its session id and holds the slot until the window rolls over
+  (`ratelimit.go`). Failing it instead would put a card on the board that no
+  retry can fix and no operator can act on — and would throw away the session
+  that makes the resumed attempt a continuation.
+- **The pause ends by itself, on one armed wake-up.** `time.AfterFunc` per
+  held slot, calling the same `pump` every other release calls. Not a poll and
+  not a loop: the reset time is a fact the CLI reported, so waiting for it is
+  one timer, and `releaseSlot`'s `base.Err()` guard is the whole of that
+  timer's lifetime management — which is why `Wait` does not disarm it. `Wait`
+  is also how callers join in-flight runs at an arbitrary moment, and stopping
+  the pipeline's restart there would make a synchronisation point change what
+  happens next.
+- **The failure the CLI reports for a spent budget is recorded, not
+  announced.** `consume` writes it to the transcript and withholds it from the
+  bus; `park` publishes a `rate_limit` carrying the reset time instead. A
+  watcher told "failed" would be told something that stops being true one line
+  later, when the row goes back to `queued`.
+- **One `dispatch` row per pause, not per pump.** The queue is pumped on every
+  release and every finished run anywhere in the daemon. Without the `noted`
+  flag the log would fill with rows about unrelated moments and bury the one
+  that happened.
 - **`execute` never returns an error.** By the time it runs there is no caller
   left; every failure becomes a `run.failed` event plus a `failed` row.
 - **Terminal state comes from the CLI when it reported one.** Its own
@@ -122,9 +145,38 @@ A task now has a life before and after that:
 
 ```
 Create ─→ backlog ──Enqueue──→ queued ──pump/claim──→ running ─→ completed
-             ↑                    │                      │     ├→ failed
-             └────── Stop ────────┘                      └Stop─→ stopped
+             ↑                    │  ↑                   │     ├→ failed
+             └────── Stop ────────┘  │                   └Stop─→ stopped
+                                  ↑  └──── park ─────────┘           │
+                                  └──────────── Retry ───────────────┘
 ```
+
+`park` is the second edge back into the queue, and the only one that starts
+from a *running* row: the token budget ran out mid-task. It is not a retry —
+nothing finished — which is why it needs `store.ParkRun` rather than
+`RequeueRun` (that starts from a terminal state) or `UpdateRunStatus` (which
+cannot carry the session id). A run learns its session from the CLI's first
+line and the row does not see it until the run ends, so a run parked mid-flight
+holds one the row has never been told: writing it there is what makes the
+resumed attempt `--resume` the same work instead of doing the task twice.
+
+`Retry` is the one edge back out of a terminal state, and only from the two that
+stopped short — `failed` and `stopped`. A completed run has nothing left to pick
+up and a backlog card is `Enqueue`'s business, so both are `ErrNotRetryable`.
+
+What makes it a continuation rather than a second attempt is the session id.
+`RequeueRun` leaves it on the row, `args` turns a non-empty one into
+`--resume <id>`, and `execute` prefixes the prompt with what interrupted the
+previous attempt. A run that died after `init` therefore resumes with everything
+it had already done — which is the whole point, because the case this exists for
+is a dropped connection or a conflict partway through real work. `fresh` clears
+the session instead; it is not a preference but the way out of a session the CLI
+can no longer resume, which would otherwise fail on every retry with the same
+card and the same reason.
+
+The error is deliberately left on the row until `ClaimRun` clears it, because
+two things still need to read it: the card, which must keep saying why it
+failed, and the resumed session, which is told what cut it off.
 
 A run also carries two account fields, and they answer different questions:
 `RequestedAccountID` is the slot the operator pinned (empty means "any free

@@ -19,6 +19,10 @@ type fakeLeadGen struct {
 	exportReq leadgen.ExportRequest
 	exportRes leadgen.ExportResult
 	exportErr error
+
+	outreachReq leadgen.OutreachRequest
+	outreachRes leadgen.OutreachResult
+	outreachErr error
 }
 
 func (f *fakeLeadGen) Run(_ context.Context, req leadgen.RunRequest) (leadgen.Report, error) {
@@ -32,6 +36,12 @@ func (f *fakeLeadGen) Export(_ context.Context, req leadgen.ExportRequest) (lead
 	return f.exportRes, f.exportErr
 }
 
+func (f *fakeLeadGen) DraftOutreach(_ context.Context, req leadgen.OutreachRequest) (leadgen.OutreachResult, error) {
+	f.calls++
+	f.outreachReq = req
+	return f.outreachRes, f.outreachErr
+}
+
 // The export route is a run plus a file: the same search validation, then the
 // workbook. Enrichment is opt-in because it is a page fetch per company.
 func TestLeadgenExport_RunsTheSearchThenWrites(t *testing.T) {
@@ -39,7 +49,7 @@ func TestLeadgenExport_RunsTheSearchThenWrites(t *testing.T) {
 		rep:       leadgen.Report{Region: "Kadıköy", Companies: []leadgen.CompanyLead{{Name: "A"}}},
 		exportRes: leadgen.ExportResult{Path: "/tmp/Kadikoy.xlsx", Companies: 1},
 	}
-	h := New(testConfig(), Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	w := do(h, http.MethodPost, "/maps/leadgen/export", testToken,
 		`{"query":"Kadıköy diş kliniği","region":"Kadıköy","enrich":true}`)
@@ -61,7 +71,7 @@ func TestLeadgenExport_RunsTheSearchThenWrites(t *testing.T) {
 // applies, because both share one validator.
 func TestLeadgenExport_EmptyQueryIs400(t *testing.T) {
 	lg := &fakeLeadGen{}
-	h := New(testConfig(), Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	if w := do(h, http.MethodPost, "/maps/leadgen/export", testToken, `{"query":"  "}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d, want 400", w.Code)
@@ -71,22 +81,22 @@ func TestLeadgenExport_EmptyQueryIs400(t *testing.T) {
 	}
 }
 
-type fakeEmailStatus struct {
+type fakeOutreachStatus struct {
 	calls                              int
-	lastPlace, lastVersion, lastStatus string
+	lastPlace, lastChannel, lastStatus string
 	err                                error
 }
 
-func (f *fakeEmailStatus) SetOutreachEmailStatus(_ context.Context, placeID, version, status string) error {
+func (f *fakeOutreachStatus) SetOutreachStatus(_ context.Context, placeID, channel, status string) error {
 	f.calls++
-	f.lastPlace, f.lastVersion, f.lastStatus = placeID, version, status
+	f.lastPlace, f.lastChannel, f.lastStatus = placeID, channel, status
 	return f.err
 }
 
 func TestMaps_RoutesUnregisteredWithoutLeadGen(t *testing.T) {
 	h := New(testConfig(), Deps{}).Handler()
 
-	for _, path := range []string{"/maps/leadgen", "/maps/emails/status"} {
+	for _, path := range []string{"/maps/leadgen", "/maps/outreach/status"} {
 		w := do(h, http.MethodPost, path, testToken, `{}`)
 		if w.Code != http.StatusNotFound {
 			t.Errorf("%s without a LeadGen dep = %d, want 404", path, w.Code)
@@ -96,7 +106,7 @@ func TestMaps_RoutesUnregisteredWithoutLeadGen(t *testing.T) {
 
 func TestLeadgen_HappyPathThreadsTheRequest(t *testing.T) {
 	lg := &fakeLeadGen{rep: leadgen.Report{Region: "Kadikoy", RanCategorize: true}}
-	h := New(testConfig(), Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	body := `{"query":"dentists in Kadikoy","region":"Kadikoy","count":10,"gap_analysis":true,"emails":true}`
 	w := do(h, http.MethodPost, "/maps/leadgen", testToken, body)
@@ -126,7 +136,7 @@ func TestLeadgen_HappyPathThreadsTheRequest(t *testing.T) {
 }
 
 func TestLeadgen_Validation(t *testing.T) {
-	h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	cases := map[string]string{
 		"empty query":      `{"query":"  "}`,
@@ -144,7 +154,7 @@ func TestLeadgen_Validation(t *testing.T) {
 
 func TestLeadgen_NoDataIsBadGateway(t *testing.T) {
 	lg := &fakeLeadGen{err: leadgen.ErrNoData}
-	h := New(testConfig(), Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	w := do(h, http.MethodPost, "/maps/leadgen", testToken, `{"query":"x"}`)
 	if w.Code != http.StatusBadGateway {
@@ -154,7 +164,7 @@ func TestLeadgen_NoDataIsBadGateway(t *testing.T) {
 
 func TestLeadgen_UnknownErrorIsInternal(t *testing.T) {
 	lg := &fakeLeadGen{err: context.DeadlineExceeded}
-	h := New(testConfig(), Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	w := do(h, http.MethodPost, "/maps/leadgen", testToken, `{"query":"x"}`)
 	if w.Code != http.StatusInternalServerError {
@@ -163,19 +173,19 @@ func TestLeadgen_UnknownErrorIsInternal(t *testing.T) {
 }
 
 func TestSetEmailStatus_HappyPath(t *testing.T) {
-	es := &fakeEmailStatus{}
+	es := &fakeOutreachStatus{}
 	cfg := testConfig()
-	h := New(cfg, Deps{LeadGen: &fakeLeadGen{}, Emails: es}).Handler()
+	h := New(cfg, Deps{LeadGen: &fakeLeadGen{}, Outreach: es}).Handler()
 
-	w := do(h, http.MethodPost, "/maps/emails/status", testToken, `{"place_id":"place-1","status":"sent"}`)
+	w := do(h, http.MethodPost, "/maps/outreach/status", testToken, `{"place_id":"place-1","status":"sent"}`)
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	if es.calls != 1 || es.lastPlace != "place-1" || es.lastStatus != "sent" {
-		t.Fatalf("SetOutreachEmailStatus args wrong: %+v", es)
+		t.Fatalf("SetOutreachStatus args wrong: %+v", es)
 	}
-	if es.lastVersion != cfg.LeadgenEmailVersion {
-		t.Errorf("version = %q, want the server constant %q", es.lastVersion, cfg.LeadgenEmailVersion)
+	if es.lastChannel != "email" {
+		t.Errorf("channel = %q, want the default %q", es.lastChannel, "email")
 	}
 }
 
@@ -185,13 +195,13 @@ func TestSetEmailStatus_ErrorMapping(t *testing.T) {
 		err  error
 		want int
 	}{
-		{"invalid status", store.ErrEmailStatusInvalid, http.StatusBadRequest},
-		{"not found", store.ErrEmailNotFound, http.StatusNotFound},
+		{"invalid status", store.ErrOutreachStatusInvalid, http.StatusBadRequest},
+		{"not found", store.ErrOutreachNotFound, http.StatusNotFound},
 	}
 	for _, tc := range cases {
-		es := &fakeEmailStatus{err: tc.err}
-		h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Emails: es}).Handler()
-		w := do(h, http.MethodPost, "/maps/emails/status", testToken, `{"place_id":"p","status":"sent"}`)
+		es := &fakeOutreachStatus{err: tc.err}
+		h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Outreach: es}).Handler()
+		w := do(h, http.MethodPost, "/maps/outreach/status", testToken, `{"place_id":"p","status":"sent"}`)
 		if w.Code != tc.want {
 			t.Errorf("%s: status = %d, want %d", tc.name, w.Code, tc.want)
 		}
@@ -199,15 +209,15 @@ func TestSetEmailStatus_ErrorMapping(t *testing.T) {
 }
 
 func TestSetEmailStatus_MissingPlaceID(t *testing.T) {
-	h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Emails: &fakeEmailStatus{}}).Handler()
-	w := do(h, http.MethodPost, "/maps/emails/status", testToken, `{"status":"sent"}`)
+	h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Outreach: &fakeOutreachStatus{}}).Handler()
+	w := do(h, http.MethodPost, "/maps/outreach/status", testToken, `{"status":"sent"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", w.Code)
 	}
 }
 
 func TestMaps_RoutesRequireToken(t *testing.T) {
-	h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Outreach: &fakeOutreachStatus{}}).Handler()
 	w := do(h, http.MethodPost, "/maps/leadgen", "", `{"query":"x"}`)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
@@ -222,7 +232,7 @@ type fakeLedger struct {
 	filter  store.LeadFilter
 	counts  []store.CategoryCount
 	runs    []store.LeadRun
-	drafts  map[string]store.OutreachEmail
+	drafts  map[string][]store.OutreachMessage
 	listErr error
 }
 
@@ -244,15 +254,29 @@ func (f *fakeLedger) ListLeadRegions(_ context.Context) ([]store.LeadRegion, err
 	return f.regions, nil
 }
 
-func (f *fakeLedger) OutreachEmailsFor(_ context.Context, _ []string, _ string) (map[string]store.OutreachEmail, error) {
+func (f *fakeLedger) LeadsByPlaceID(_ context.Context, placeIDs []string) ([]store.LeadRow, error) {
+	want := make(map[string]struct{}, len(placeIDs))
+	for _, id := range placeIDs {
+		want[id] = struct{}{}
+	}
+	var out []store.LeadRow
+	for _, row := range f.rows {
+		if _, ok := want[row.PlaceID]; ok {
+			out = append(out, row)
+		}
+	}
+	return out, f.listErr
+}
+
+func (f *fakeLedger) OutreachMessagesFor(_ context.Context, _ []string) (map[string][]store.OutreachMessage, error) {
 	return f.drafts, nil
 }
 
 func TestListLeads_ServesTheLedgerWithDraftStatus(t *testing.T) {
 	led := &fakeLedger{
 		rows: []store.LeadRow{{PlaceID: "p1", Name: "Alfa", Category: "health"}},
-		drafts: map[string]store.OutreachEmail{
-			"p1": {Email: "merhaba", Status: store.EmailStatusSent},
+		drafts: map[string][]store.OutreachMessage{
+			"p1": {{Channel: "email", Body: "merhaba", Status: store.OutreachStatusSent}},
 		},
 	}
 	h := New(testConfig(), Deps{Leads: led}).Handler()
@@ -266,7 +290,8 @@ func TestListLeads_ServesTheLedgerWithDraftStatus(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(got.Companies) != 1 || got.Companies[0].EmailStatus != store.EmailStatusSent {
+	if len(got.Companies) != 1 || len(got.Companies[0].Drafts) != 1 ||
+		got.Companies[0].Drafts[0].Status != store.OutreachStatusSent {
 		t.Fatalf("the draft status must ride the lead: %+v", got.Companies)
 	}
 	if led.filter.Category != "health" || led.filter.Text != "alf" || !led.filter.WithoutWebsite {
@@ -327,7 +352,7 @@ func TestLeadRuns_ServesTheHistory(t *testing.T) {
 // The ledger routes are gated on their own dep: a daemon with no region source
 // still serves what earlier runs found.
 func TestLeadRoutes_NotRegisteredWithoutTheLedger(t *testing.T) {
-	h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: &fakeLeadGen{}, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	if w := do(h, http.MethodGet, "/maps/leads", testToken, ""); w.Code != http.StatusNotFound {
 		t.Fatalf("status: got %d, want 404", w.Code)
@@ -338,7 +363,7 @@ func TestLeadRoutes_NotRegisteredWithoutTheLedger(t *testing.T) {
 
 func TestLeadgen_ThreadsThePublishedProviderAndModel(t *testing.T) {
 	lg := &fakeLeadGen{rep: leadgen.Report{Region: "Kadikoy"}}
-	h := New(testConfig(), Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	body := `{"query":"x","provider":"claude","model":"claude-opus-5"}`
 	if w := do(h, http.MethodPost, "/maps/leadgen", testToken, body); w.Code != http.StatusOK {
@@ -355,7 +380,7 @@ func TestLeadgen_ThreadsThePublishedProviderAndModel(t *testing.T) {
 func TestLeadgen_AProviderWithoutAModelResolvesToItsDefault(t *testing.T) {
 	cfg := testConfig()
 	lg := &fakeLeadGen{rep: leadgen.Report{Region: "Kadikoy"}}
-	h := New(cfg, Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(cfg, Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	if w := do(h, http.MethodPost, "/maps/leadgen", testToken, `{"query":"x","provider":"agy"}`); w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -369,7 +394,7 @@ func TestLeadgen_AProviderWithoutAModelResolvesToItsDefault(t *testing.T) {
 // what keeps every cache entry written before the picker existed a hit.
 func TestLeadgen_NoSelectionRoutesByClass(t *testing.T) {
 	lg := &fakeLeadGen{rep: leadgen.Report{Region: "Kadikoy"}}
-	h := New(testConfig(), Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	if w := do(h, http.MethodPost, "/maps/leadgen", testToken, `{"query":"x"}`); w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
@@ -383,7 +408,7 @@ func TestLeadgen_NoSelectionRoutesByClass(t *testing.T) {
 // table is refused rather than quietly replaced with the default.
 func TestLeadgen_RejectsUnpublishedSelections(t *testing.T) {
 	lg := &fakeLeadGen{rep: leadgen.Report{Region: "Kadikoy"}}
-	h := New(testConfig(), Deps{LeadGen: lg, Emails: &fakeEmailStatus{}}).Handler()
+	h := New(testConfig(), Deps{LeadGen: lg, Outreach: &fakeOutreachStatus{}}).Handler()
 
 	cases := map[string]string{
 		"unknown provider":       `{"query":"x","provider":"gpt","model":"gpt-4"}`,

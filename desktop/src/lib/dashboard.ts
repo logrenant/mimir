@@ -115,31 +115,27 @@ export function hasBlockingFault(rows: DepRow[]): boolean {
 }
 
 export type AccountLoad = {
-  id: string;
-  label: string;
-  /** The run occupying this slot, if any. Capacity is one. */
+  /** The run occupying the account, if any. Capacity is one. */
   busyWith: Run | null;
-  /** Cards pinned to this slot and still waiting for it. */
+  /** Cards waiting for it to come free. */
   waiting: number;
 };
 
 /**
- * Who is busy and who is free.
+ * Whether the account is busy, and how much is behind it.
  *
- * `account_id` is filled in when the dispatcher claims a run, so a running row
- * names the slot it actually took; `requested_account_id` is only an intent and
- * is what a queued card can be counted against.
+ * Every queued card counts, not just the ones naming this account: there is one
+ * account, so everything in the queue is waiting for the same identity. Nothing
+ * is returned with no account connected — an idle lane that does not exist
+ * would read as capacity Mimir does not have.
  */
-export function accountLoad(accounts: Account[] | null, runs: Run[] | null): AccountLoad[] {
-  if (!accounts) return [];
+export function accountLoad(account: Account | null, runs: Run[] | null): AccountLoad | null {
+  if (!account) return null;
   const live = runs ?? [];
-  return accounts.map((account) => ({
-    id: account.id,
-    label: account.label,
-    busyWith: live.find((r) => r.status === "running" && r.account_id === account.id) ?? null,
-    waiting: live.filter((r) => r.status === "queued" && r.requested_account_id === account.id)
-      .length,
-  }));
+  return {
+    busyWith: live.find((r) => r.status === "running") ?? null,
+    waiting: live.filter((r) => r.status === "queued").length,
+  };
 }
 
 /**

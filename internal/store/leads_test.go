@@ -177,26 +177,60 @@ func TestLeadCategoryCounts_GroupsAndCountsWebsiteGaps(t *testing.T) {
 	}
 }
 
-func TestOutreachEmailsFor_BatchLookup(t *testing.T) {
+func TestOutreachMessagesFor_BatchLookup(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
 
-	if err := s.PutOutreachEmail(ctx, "p1", "email-v1", "merhaba", false); err != nil {
-		t.Fatalf("PutOutreachEmail: %v", err)
+	if err := s.PutOutreachMessage(ctx, "p1", "email", "email-v1#email", "merhaba", false); err != nil {
+		t.Fatalf("PutOutreachMessage: %v", err)
 	}
-	if err := s.SetOutreachEmailStatus(ctx, "p1", "email-v1", EmailStatusSent); err != nil {
-		t.Fatalf("SetOutreachEmailStatus: %v", err)
+	if err := s.SetOutreachStatus(ctx, "p1", "email", OutreachStatusSent); err != nil {
+		t.Fatalf("SetOutreachStatus: %v", err)
+	}
+	if err := s.PutOutreachMessage(ctx, "p1", "whatsapp", "email-v1#whatsapp", "selam", false); err != nil {
+		t.Fatalf("PutOutreachMessage(whatsapp): %v", err)
 	}
 
-	got, err := s.OutreachEmailsFor(ctx, []string{"p1", "p2"}, "email-v1")
+	got, err := s.OutreachMessagesFor(ctx, []string{"p1", "p2"})
 	if err != nil {
-		t.Fatalf("OutreachEmailsFor: %v", err)
+		t.Fatalf("OutreachMessagesFor: %v", err)
 	}
-	if len(got) != 1 || got["p1"].Status != EmailStatusSent {
-		t.Fatalf("want p1 sent only, got %+v", got)
+	if len(got) != 1 || len(got["p1"]) != 2 {
+		t.Fatalf("want both of p1's channels and nothing for p2, got %+v", got)
 	}
-	if other, _ := s.OutreachEmailsFor(ctx, []string{"p1"}, "email-v2"); len(other) != 0 {
-		t.Error("a different prompt version must miss")
+
+	byChannel := map[string]OutreachMessage{}
+	for _, m := range got["p1"] {
+		byChannel[m.Channel] = m
+	}
+	if byChannel["email"].Status != OutreachStatusSent {
+		t.Fatalf("email status = %q, want sent", byChannel["email"].Status)
+	}
+	if byChannel["whatsapp"].Status != OutreachStatusDraft {
+		t.Fatalf("whatsapp status = %q, want draft", byChannel["whatsapp"].Status)
+	}
+}
+
+// The selection route reads through this: the operator's own rows, in the order
+// they picked them, and nothing they did not pick.
+func TestLeadsByPlaceID_KeepsCallerOrder(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	rows := []LeadRow{lead("p1", "Alfa", "health"), lead("p2", "Beta", "beauty"), lead("p3", "Gama", "retail")}
+	if err := s.PutLeadRun(ctx, LeadRun{ID: "run-1", RanAt: time.Now()}, rows); err != nil {
+		t.Fatalf("PutLeadRun: %v", err)
+	}
+
+	got, err := s.LeadsByPlaceID(ctx, []string{"p3", "p1", "missing", "p3"})
+	if err != nil {
+		t.Fatalf("LeadsByPlaceID: %v", err)
+	}
+	if len(got) != 2 || got[0].PlaceID != "p3" || got[1].PlaceID != "p1" {
+		t.Fatalf("want p3 then p1, deduplicated, got %+v", got)
+	}
+	if empty, _ := s.LeadsByPlaceID(ctx, nil); len(empty) != 0 {
+		t.Error("no ids means no rows, not every row")
 	}
 }
 
@@ -235,8 +269,11 @@ func TestLeadLedger_NilStoreTolerated(t *testing.T) {
 	if r, err := s.ListLeadRuns(ctx, 10); err != nil || r != nil {
 		t.Errorf("ListLeadRuns on a nil store: %v %v", r, err)
 	}
-	if m, err := s.OutreachEmailsFor(ctx, []string{"p1"}, "email-v1"); err != nil || m != nil {
-		t.Errorf("OutreachEmailsFor on a nil store: %v %v", m, err)
+	if m, err := s.OutreachMessagesFor(ctx, []string{"p1"}); err != nil || m != nil {
+		t.Errorf("OutreachMessagesFor on a nil store: %v %v", m, err)
+	}
+	if rows, err := s.LeadsByPlaceID(ctx, []string{"p1"}); err != nil || rows != nil {
+		t.Errorf("LeadsByPlaceID on a nil store: %v %v", rows, err)
 	}
 }
 

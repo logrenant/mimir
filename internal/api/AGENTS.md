@@ -2,7 +2,7 @@
 
 The daemon's HTTP surface. Introduced by `tasks/task-22` (REST + `/mcp`),
 extended by `tasks/task-25` (`GET /ws/runs/{id}`) and `tasks/task-34`
-(`POST /maps/leadgen`, `POST /maps/emails/status`).
+(`POST /maps/leadgen`, `POST /maps/outreach`).
 
 This package is a **door, not a floor**. Every route is a thin translation
 between JSON and a runtime package that already enforces its own rules —
@@ -19,16 +19,15 @@ decisions, it is in the wrong package.
 - **`/mcp` is the same registry `cmd/mimir-mcp` serves over stdio.** Never build
   a parallel tool path here; that would put a tool response outside
   `finalize.go`'s choke-point (SD-2). Two transports, one engine.
-- **A filesystem path is accepted at exactly two routes** — `POST /projects`
-  and `POST /accounts` — and both immediately stop being paths: each hands back
-  an opaque id, and every later call carries that id. The second was added by
-  `tasks/task-37` because a Claude Code credential slot *is* a directory (the
-  CLI hashes it to name a keychain entry), so there is no other shape it could
-  take. The rule that matters is unchanged and is the one to enforce: a path is
-  validated once, at registration, by a package that owns that decision
-  (`internal/project`, `internal/account`). Do not add a path parameter to a
-  third route, and do not let either of these two accept one anywhere but its
-  register handler.
+- **A filesystem path is accepted at exactly one route** — `POST /projects` —
+  and it immediately stops being a path: the route hands back an opaque id, and
+  every later call carries that id. `POST /accounts` used to be the second,
+  because a Claude Code credential slot *is* a directory; it is gone. Mimir has
+  one account, in a slot it derived for itself, so there is nothing for a client
+  to name — connecting is `POST /accounts/login`, which takes no body at all.
+  The rule to enforce is unchanged: a path is validated once, at registration,
+  by the package that owns that decision (`internal/project`). Do not add a path
+  parameter to a second route.
 
 - **The body cap is a table, not a constant.** Everything gets
   `DaemonMaxRequestBytes`; `POST /coding-tasks/attachments` gets
@@ -106,13 +105,33 @@ begin.
   carries the per-stage diagnostics, so the handler does not synthesise its
   own. The only hard failure, `leadgen.ErrNoData`, maps to 502 — an upstream
   source failed, not the daemon.
-- **`POST /maps/emails/status` takes the prompt version from the server, not the
-  client.** A client marking "sent" means the draft it is looking at, which is
-  the current `config.LeadgenEmailVersion`. `store.ErrEmailStatusInvalid` → 400,
-  `store.ErrEmailNotFound` → 404.
-- **No new path parameter.** Both routes take their identifiers in the JSON
-  body, keeping "a filesystem path is accepted at exactly one route" and "no
-  path parameter anywhere else" intact.
+- **`POST /maps/outreach` takes place ids, never a filter.** That is the whole
+  difference between it and `POST /maps/leadgen`: a search is "find me
+  companies", this is "write to these ones". A filter would let a client spend a
+  region's worth of tokens with one short string, and nobody — least of all the
+  operator — would have seen beforehand how many companies that was. The ids are
+  resolved against the ledger, so an id it does not hold is simply not written
+  to, and the count is capped at `cfg.LeadsPageMax`.
+- **`POST /maps/outreach/status` takes the prompt version from the server, not
+  the client.** A client marking "sent" means the draft it is looking at, and a
+  draft's version is now composed from the model *and* the rule file it was
+  written under — so the row the client means is the newest draft that company
+  has on that channel, which the store resolves.
+  `store.ErrOutreachStatusInvalid` → 400, `store.ErrOutreachNotFound` → 404.
+- **The `/settings` routes serve the operator, not the machine.** `GET
+  /coding-models` and `GET /llm/providers` publish constants the binary ships;
+  `GET`/`PUT /settings` and the two rule routes read and write files the
+  operator owns. A route that let a client change a timeout or a token ceiling
+  would be an SD-1 violation — one that lets them choose which model their own
+  outreach spends, and how it is written, is the opposite.
+- **A saved model selection goes through the same allow-list as a per-run one**
+  (`leadgenSelection` → `llmSelection`). More carefully, not less: both strings
+  become argv to a subprocess, and a saved value is spent by every run
+  afterwards without anybody re-reading it. A saved pair that a later build
+  retired is dropped back to class routing rather than failed at the subprocess.
+- **No new path parameter.** Every one of these routes takes its identifiers in
+  the JSON body, keeping "a filesystem path is accepted at exactly one route"
+  and "no path parameter anywhere else" intact.
 
 The library's Origin check is disabled deliberately: it defends servers whose
 auth is ambient (a cookie the browser attaches for you). Ours is a bearer token

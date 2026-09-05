@@ -3,6 +3,7 @@ import { Terminal as Xterm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { endpoint, ptyWSURL, type TerminalProfile } from "../lib/daemon";
+import { clipboardOf, shellPasteInput } from "../lib/shellPaste";
 
 /**
  * A real terminal, attached to a real shell.
@@ -108,6 +109,20 @@ export function ShellTerminal({ profile }: { profile: TerminalProfile }) {
       }
     })();
 
+    // ⌘V with an image on the pasteboard: xterm has nothing to type, so the
+    // paste is turned into the keystroke the CLI answers by reading the
+    // pasteboard itself (lib/shellPaste.ts). Everything else is left to xterm.
+    const onPaste = (event: ClipboardEvent) => {
+      const input = shellPasteInput(clipboardOf(event.clipboardData));
+      if (input === null) return;
+      event.preventDefault();
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "input", data: input }));
+      }
+    };
+    // Capture, so it runs before xterm's own handler on the hidden textarea.
+    host.addEventListener("paste", onPaste, true);
+
     // The shell only learns the viewport changed if we tell it, and a program
     // drawing a full screen redraws on the SIGWINCH that follows.
     const onResize = () => {
@@ -125,6 +140,7 @@ export function ShellTerminal({ profile }: { profile: TerminalProfile }) {
 
     return () => {
       disposed = true;
+      host.removeEventListener("paste", onPaste, true);
       observer.disconnect();
       // Closing the socket only detaches now: the daemon owns the shell, so
       // this leaves it running for the next viewer (internal/ptyterm).

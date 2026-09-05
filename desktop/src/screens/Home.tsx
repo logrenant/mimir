@@ -14,6 +14,7 @@ import { StatusDot } from "../components/Terminal";
 import { HealthStrip, useDiagnostics } from "../components/DiagnosticsPanel";
 import { NewTaskOverlay } from "../components/NewTaskOverlay";
 import { identityLabel, useAccounts } from "../components/AccountsProvider";
+import { AccountPanel } from "../components/AccountPanel";
 import { useModels, modelLabel } from "../components/ModelPicker";
 import { useRuns, type BoardRun } from "../components/RunsProvider";
 import { useTerminals } from "../components/TerminalsProvider";
@@ -47,7 +48,7 @@ export function Home({
 }) {
   const { runs, error, refresh } = useRuns();
   const { sessions, stop } = useTerminals();
-  const { accounts, statuses } = useAccounts();
+  const { account, status } = useAccounts();
   const { models } = useModels();
   const { diagnostics, error: diagnosticsError } = useDiagnostics(true);
   const [composing, setComposing] = useState(false);
@@ -63,7 +64,7 @@ export function Home({
   const running = useMemo(() => (runs ?? []).filter((r) => r.status === "running"), [runs]);
   const queued = useMemo(() => (runs ?? []).filter((r) => r.status === "queued"), [runs]);
   const finished = useMemo(() => recentlyFinished(runs, 6), [runs]);
-  const load = useMemo(() => accountLoad(accounts, runs), [accounts, runs]);
+  const load = useMemo(() => accountLoad(account, runs), [account, runs]);
 
   const sessionFor = (runID: string) => sessions.find((s) => s.runID === runID) ?? null;
 
@@ -189,42 +190,35 @@ export function Home({
               <HealthStrip diagnostics={diagnostics} error={diagnosticsError} />
             </Panel>
 
-            <Panel title="HESAPLAR">
-              {load.length === 0 ? (
-                <Muted>
-                  Kayıtlı hesap yok — tasklar CLI'ın kendi oturumuyla çalışır. İkinci bir hesap
-                  eklemek aynı anda iki job demektir.
-                </Muted>
-              ) : (
-                load.map((slot) => {
-                  // The identity, not the directory: the operator picks a slot
-                  // by which account still has room, and "b" does not say that.
-                  const who = identityLabel(statuses[slot.id]);
-                  return (
-                    <div key={slot.id} style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                      <StatusDot status={slot.busyWith ? "running" : "completed"} />
-                      <span
-                        style={{
-                          font: "450 11.5px/1.35 ui-sans-serif,system-ui",
-                          color: "#eef0f2",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          minWidth: 0,
-                        }}
-                        title={who || slot.label}
-                      >
-                        {who || slot.label}
-                      </span>
-                      <div style={{ flex: 1 }} />
-                      <span style={{ font: "400 10px/1 ui-monospace,Menlo,monospace", color: "#6b7079", whiteSpace: "nowrap" }}>
-                        {slot.busyWith ? "meşgul" : "boşta"}
-                        {slot.waiting > 0 ? ` · ${slot.waiting} bekliyor` : ""}
-                      </span>
-                    </div>
-                  );
-                })
+            {/* The connect flow itself lives here, not on a settings screen
+                buried behind a tab: nothing runs without an account, and the
+                account is gone at every launch, so this is the first thing the
+                operator has to be able to do on the first screen they see. */}
+            <Panel title="HESAP">
+              {load && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <StatusDot status={load.busyWith ? "running" : "completed"} />
+                  <span
+                    style={{
+                      font: "450 11.5px/1.35 ui-sans-serif,system-ui",
+                      color: "#eef0f2",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      minWidth: 0,
+                    }}
+                    title={identityLabel(status) || account?.label}
+                  >
+                    {identityLabel(status) || account?.label}
+                  </span>
+                  <div style={{ flex: 1 }} />
+                  <span style={{ font: "400 10px/1 ui-monospace,Menlo,monospace", color: "#6b7079", whiteSpace: "nowrap" }}>
+                    {load.busyWith ? "meşgul" : "boşta"}
+                    {load.waiting > 0 ? ` · ${load.waiting} bekliyor` : ""}
+                  </span>
+                </div>
               )}
+              <AccountPanel />
             </Panel>
 
             <Panel title="MODÜLLER">

@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 import { api, DaemonError, type Project } from "../lib/daemon";
-import { AccountSelect } from "./AccountPicker";
-import { useAccounts } from "./AccountsProvider";
 import { defaultModelID, ModelSelect, useModels } from "./ModelPicker";
 import { TaskComposer, type Attached } from "./TaskComposer";
 import { HoverButton } from "./hover";
@@ -13,8 +11,9 @@ import { HoverButton } from "./hover";
  * the dashboard opens the same form, and two copies of a create form is how
  * the two screens end up sending different requests.
  *
- * Three choices, in the order they matter: which folder, which identity spends
- * the limit, and which model spends it how fast.
+ * Two choices, in the order they matter: which folder, and which model spends
+ * the limit how fast. There is no third — Mimir has one Claude account, so
+ * which identity pays is not a decision anyone gets to make here.
  */
 export function NewTaskOverlay({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -22,11 +21,9 @@ export function NewTaskOverlay({ onClose, onCreated }: { onClose: () => void; on
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<Attached[]>([]);
-  const [accountID, setAccountID] = useState("");
   const [modelID, setModelID] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { accounts, statuses } = useAccounts();
   const { models } = useModels();
 
   // The form opens on the daemon's default rather than on an "automatic"
@@ -55,7 +52,6 @@ export function NewTaskOverlay({ onClose, onCreated }: { onClose: () => void; on
         project_id: projectID,
         title: title.trim(),
         prompt: prompt.trim(),
-        account_id: accountID,
         model: modelID,
         attachment_ids: attachments.map((a) => a.id),
         start,
@@ -99,23 +95,10 @@ export function NewTaskOverlay({ onClose, onCreated }: { onClose: () => void; on
           </select>
         </label>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <label style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
-            <span className="label" style={{ color: "#6b7079" }}>HESAP</span>
-            <AccountSelect
-              accounts={accounts}
-              statuses={statuses}
-              value={accountID}
-              onChange={setAccountID}
-              disabled={busy}
-            />
-          </label>
-
-          <label style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
-            <span className="label" style={{ color: "#6b7079" }}>MODEL</span>
-            <ModelSelect models={models} value={modelID} onChange={setModelID} disabled={busy} />
-          </label>
-        </div>
+        <label style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
+          <span className="label" style={{ color: "#6b7079" }}>MODEL</span>
+          <ModelSelect models={models} value={modelID} onChange={setModelID} disabled={busy} />
+        </label>
 
         <TaskComposer
           title={title}

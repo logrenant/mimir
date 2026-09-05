@@ -11,6 +11,7 @@ import (
 	"github.com/logrenant/mimir/internal/leadgen"
 	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/settings"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -80,7 +81,7 @@ func (s *Server) handleLeadgenExport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sel, ok := s.llmSelection(w, req.Provider, req.Model)
+	sel, ok := s.leadgenSelection(w, req.Provider, req.Model)
 	if !ok {
 		return
 	}
@@ -206,6 +207,22 @@ func (s *Server) llmSelection(w http.ResponseWriter, rawProvider, rawModel strin
 	return llm.Selection{Provider: provider, Model: model}, true
 }
 
+// leadgenSelection is llmSelection with the operator's saved default behind it.
+//
+// The lead-gen screen no longer carries a picker: the choice moved to the
+// settings screen, because "which model writes my outreach" is a decision about
+// a campaign and not about one search, and re-making it on every run is how it
+// ends up different on two runs nobody meant to differ. A request that still
+// names a provider wins — the per-run override is not gone, it is just no longer
+// the only way to answer the question — and a request that names nothing gets
+// what the operator saved, or class routing if they saved nothing.
+func (s *Server) leadgenSelection(w http.ResponseWriter, rawProvider, rawModel string) (llm.Selection, bool) {
+	if strings.TrimSpace(rawProvider) == "" && strings.TrimSpace(rawModel) == "" {
+		rawProvider, rawModel = s.savedSelection()
+	}
+	return s.llmSelection(w, rawProvider, rawModel)
+}
+
 func (s *Server) handleLeadgen(w http.ResponseWriter, r *http.Request) {
 	var req leadgenRequest
 	if !decodeJSON(w, r, &req) {
@@ -216,7 +233,7 @@ func (s *Server) handleLeadgen(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sel, ok := s.llmSelection(w, req.Provider, req.Model)
+	sel, ok := s.leadgenSelection(w, req.Provider, req.Model)
 	if !ok {
 		return
 	}
@@ -237,17 +254,140 @@ func (s *Server) handleLeadgen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, report)
 }
 
-type emailStatusRequest struct {
+// outreachRequest drafts messages for companies the operator picked by hand.
+//
+// It carries place ids rather than a search, and that is the whole difference
+// between it and POST /maps/leadgen: a search is "find me companies", this is
+// "write to these ones". The ids come from the ledger, which is where the
+// checkbox column reads its rows from, so nothing here has to be trusted — an id
+// the ledger does not hold simply is not written to.
+type outreachRequest struct {
+	PlaceIDs []string `json:"place_ids"`
+	// Channels is what to write. Empty is email alone, which is what a client
+	// written before WhatsApp existed means.
+	Channels []string `json:"channels"`
+	// Region labels the gap analysis. Empty lets the pipeline fall back to the
+	// companies' own region, which is what the ledger's region filter already
+	// shows the operator.
+	Region   string `json:"region"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// handleDraftOutreach writes outreach for a chosen set of companies.
+//
+// The bound on how much this can cost is the request itself: one gap analysis
+// per distinct category in the selection, then one draft per company per
+// channel. That is why the route takes ids and not a filter — a filter would let
+// a client spend a region's worth of tokens with one short string, and the
+// operator would have no way to see beforehand how many companies that was.
+func (s *Server) handleDraftOutreach(w http.ResponseWriter, r *http.Request) {
+	var req outreachRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.PlaceIDs) == 0 {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"place_ids is required — pick the companies to write to")
+		return
+	}
+	if len(req.PlaceIDs) > s.cfg.LeadsPageMax {
+		writeError(w, http.StatusBadRequest, codeBadRequest,
+			"too many companies in one request — select fewer than "+strconv.Itoa(s.cfg.LeadsPageMax))
+		return
+	}
+	if s.deps.Leads == nil {
+		writeError(w, http.StatusInternalServerError, codeInternal,
+			"the lead ledger is not available on this daemon")
+		return
+	}
+
+	channels := make([]settings.Channel, 0, len(req.Channels))
+	for _, raw := range req.Channels {
+		ch, ok := s.channel(w, raw)
+		if !ok {
+			return
+		}
+		channels = append(channels, ch)
+	}
+
+	sel, ok := s.leadgenSelection(w, req.Provider, req.Model)
+	if !ok {
+		return
+	}
+
+	rows, err := s.deps.Leads.LeadsByPlaceID(r.Context(), req.PlaceIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, err.Error())
+		return
+	}
+	if len(rows) == 0 {
+		writeError(w, http.StatusNotFound, codeNotFound,
+			"none of those companies are in the ledger — run a search for them first")
+		return
+	}
+
+	companies := make([]maps.Company, 0, len(rows))
+	categories := make([]leadgen.Category, 0, len(rows))
+	for _, row := range rows {
+		companies = append(companies, maps.Company{
+			PlaceID:          row.PlaceID,
+			Name:             row.Name,
+			FormattedAddress: row.Address,
+			Latitude:         row.Latitude,
+			Longitude:        row.Longitude,
+			Rating:           row.Rating,
+			ReviewCount:      row.ReviewCount,
+			Website:          row.Website,
+			Phone:            row.Phone,
+			PrimaryType:      row.PrimaryType,
+			BusinessStatus:   row.BusinessStatus,
+			Source:           row.Source,
+		})
+		categories = append(categories, leadgen.Category(row.Category))
+	}
+
+	result, err := s.deps.LeadGen.DraftOutreach(r.Context(), leadgen.OutreachRequest{
+		Companies:  companies,
+		Categories: categories,
+		Region:     strings.TrimSpace(req.Region),
+		Channels:   channels,
+		Selection:  sel,
+	})
+	if err != nil {
+		writeLeadgenError(w, r, err)
+		return
+	}
+
+	// The ledger holds the address an email goes to; the pipeline was handed
+	// companies, which do not carry one. Put it back before answering, so the
+	// screen can offer "send" beside a draft rather than beside nothing.
+	emails := make(map[string]string, len(rows))
+	for _, row := range rows {
+		emails[row.PlaceID] = row.Email
+	}
+	for i := range result.Companies {
+		result.Companies[i].Email = emails[result.Companies[i].PlaceID]
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+type outreachStatusRequest struct {
 	PlaceID string `json:"place_id"`
+	Channel string `json:"channel"`
 	Status  string `json:"status"`
 }
 
-// handleSetEmailStatus records a human's decision on a drafted outreach email.
-// The prompt version is the server's constant, not a client field: a client
-// marking "sent" means "the email I am looking at", which is the current
-// version's draft.
-func (s *Server) handleSetEmailStatus(w http.ResponseWriter, r *http.Request) {
-	var req emailStatusRequest
+// handleSetOutreachStatus records a human's decision on a drafted message.
+//
+// The prompt version is not a client field, and now it is not a server constant
+// either: a draft's version is composed from the model and the rule file it was
+// written under, so the row a client means by "the one I am looking at" is the
+// newest draft that company has on that channel. The store resolves it; see the
+// note above SetOutreachStatus for why reading and writing key differently.
+func (s *Server) handleSetOutreachStatus(w http.ResponseWriter, r *http.Request) {
+	var req outreachStatusRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
@@ -255,18 +395,22 @@ func (s *Server) handleSetEmailStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, "place_id is required")
 		return
 	}
-	if s.deps.Emails == nil {
-		writeError(w, http.StatusInternalServerError, codeInternal, "email status is not available on this daemon")
+	ch, ok := s.channel(w, req.Channel)
+	if !ok {
+		return
+	}
+	if s.deps.Outreach == nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, "outreach status is not available on this daemon")
 		return
 	}
 
-	err := s.deps.Emails.SetOutreachEmailStatus(r.Context(), req.PlaceID, s.cfg.LeadgenEmailVersion, req.Status)
+	err := s.deps.Outreach.SetOutreachStatus(r.Context(), req.PlaceID, string(ch), req.Status)
 	switch {
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
-	case errors.Is(err, store.ErrEmailStatusInvalid):
+	case errors.Is(err, store.ErrOutreachStatusInvalid):
 		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
-	case errors.Is(err, store.ErrEmailNotFound):
+	case errors.Is(err, store.ErrOutreachNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
 	default:
 		writeDomainError(w, r, err)
@@ -303,10 +447,21 @@ type savedLead struct {
 	Source         string  `json:"source,omitempty"`
 	Category       string  `json:"category"`
 	CategoryMethod string  `json:"category_method,omitempty"`
-	Email          string  `json:"email,omitempty"`
-	EmailStatus    string  `json:"email_status,omitempty"`
-	FirstSeenAt    int64   `json:"first_seen_at"`
-	LastSeenAt     int64   `json:"last_seen_at"`
+	// Email is the company's own address — where a draft is sent, not the draft.
+	Email string `json:"email,omitempty"`
+	// Drafts is what has been written for this company, newest per channel.
+	Drafts      []savedDraft `json:"drafts,omitempty"`
+	FirstSeenAt int64        `json:"first_seen_at"`
+	LastSeenAt  int64        `json:"last_seen_at"`
+}
+
+// savedDraft mirrors leadgen.Draft so a client renders one draft shape whether
+// it came from a run or from the ledger.
+type savedDraft struct {
+	Channel   string `json:"channel"`
+	Body      string `json:"body"`
+	Status    string `json:"status,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 type savedLeadsResponse struct {
@@ -383,7 +538,7 @@ func (s *Server) handleListLeads(w http.ResponseWriter, r *http.Request) {
 	}
 	// One query for every draft on the page rather than one per row: the
 	// ledger's whole point is that reading it is cheap.
-	drafts, err := s.deps.Leads.OutreachEmailsFor(r.Context(), ids, s.cfg.LeadgenEmailVersion)
+	drafts, err := s.deps.Leads.OutreachMessagesFor(r.Context(), ids)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
@@ -405,6 +560,7 @@ func (s *Server) handleListLeads(w http.ResponseWriter, r *http.Request) {
 			ReviewCount:    row.ReviewCount,
 			Website:        row.Website,
 			Phone:          row.Phone,
+			Email:          row.Email,
 			PrimaryType:    row.PrimaryType,
 			BusinessStatus: row.BusinessStatus,
 			Source:         row.Source,
@@ -413,9 +569,13 @@ func (s *Server) handleListLeads(w http.ResponseWriter, r *http.Request) {
 			FirstSeenAt:    row.FirstSeenAt.Unix(),
 			LastSeenAt:     row.LastSeenAt.Unix(),
 		}
-		if d, ok := drafts[row.PlaceID]; ok {
-			l.Email = d.Email
-			l.EmailStatus = d.Status
+		for _, d := range drafts[row.PlaceID] {
+			l.Drafts = append(l.Drafts, savedDraft{
+				Channel:   d.Channel,
+				Body:      d.Body,
+				Status:    d.Status,
+				Truncated: d.Truncated,
+			})
 		}
 		out.Companies = append(out.Companies, l)
 	}

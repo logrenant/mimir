@@ -6,8 +6,7 @@ import { Card, CardBody, CardHeader } from "../components/ui/card";
 import { api, DaemonError, isTerminalStatus, type Project, type Run } from "../lib/daemon";
 import { emptyRun, openRunStream, reduceRun, type RunView } from "../lib/runStream";
 import { TaskComposer, type Attached } from "../components/TaskComposer";
-import { AccountManager, AccountSelect } from "../components/AccountPicker";
-import { useAccounts } from "../components/AccountsProvider";
+import { AccountPanel } from "../components/AccountPanel";
 import { defaultModelID, ModelSelect, useModels } from "../components/ModelPicker";
 import { useTerminals } from "../components/TerminalsProvider";
 
@@ -23,14 +22,12 @@ export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}
   const [selected, setSelected] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<Attached[]>([]);
-  const [accountID, setAccountID] = useState("");
   const [modelID, setModelID] = useState("");
   const [run, setRun] = useState<Run | null>(null);
   const [view, setView] = useState<RunView>(emptyRun);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const terminals = useTerminals();
-  const { accounts, statuses, refresh: refreshAccounts } = useAccounts();
   const { models } = useModels();
 
   // Opens on the daemon's default rather than on a blank that means "whatever":
@@ -84,7 +81,6 @@ export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}
       const started = await api.createCodingTask({
         project_id: selected,
         prompt: prompt.trim(),
-        account_id: accountID,
         model: modelID,
         attachment_ids: attachments.map((a) => a.id),
       });
@@ -152,11 +148,11 @@ export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}
 
       <Card>
         <CardHeader
-          title="Accounts"
-          subtitle="One run per Claude Code identity — a second account is how you get two at once"
+          title="Account"
+          subtitle="One Claude identity, signed out when Mimir closes"
         />
         <CardBody>
-          <AccountManager accounts={accounts} onChanged={() => refreshAccounts()} />
+          <AccountPanel />
         </CardBody>
       </Card>
 
@@ -174,13 +170,6 @@ export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}
             placeholder="What should Claude do in this folder? Paste or drop an image to attach it."
           />
           <div className="flex flex-wrap items-center gap-3">
-            <AccountSelect
-              accounts={accounts}
-              statuses={statuses}
-              value={accountID}
-              onChange={setAccountID}
-              disabled={busy || running}
-            />
             <ModelSelect
               models={models}
               value={modelID}

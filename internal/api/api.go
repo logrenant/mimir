@@ -31,6 +31,7 @@ import (
 	mimirmcp "github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/project"
 	"github.com/logrenant/mimir/internal/ptyterm"
+	"github.com/logrenant/mimir/internal/settings"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -43,18 +44,27 @@ type ProjectRegistry interface {
 	Get(ctx context.Context, id string) (project.Project, error)
 }
 
-// AccountRegistry is the credential slots this API exposes. Same contract as
-// ProjectRegistry: Register validates a directory and the id it returns is the
-// only thing a client passes afterwards.
+// AccountRegistry is the one Claude account this API exposes.
+//
+// There is no Register here and no path on the wire. Mimir signs into its own
+// credential slot, whose directory it derived for itself, so connecting is a
+// login the daemon performs rather than a directory a client names — and
+// disconnecting is a logout, not a row being forgotten.
 type AccountRegistry interface {
-	Register(ctx context.Context, label, configDir string) (account.Account, error)
 	List(ctx context.Context) ([]account.Account, error)
 	Get(ctx context.Context, id string) (account.Account, error)
-	Delete(ctx context.Context, id string) error
-	// Sync registers the slots a scan of the accounts directory found. The
-	// scan itself is the handler's, so this interface stays about the
-	// registry rather than about the filesystem.
-	Sync(ctx context.Context, slots []account.Slot) ([]account.Account, error)
+	// StartLogin runs `claude auth login` against Mimir's slot and opens the
+	// authorization page in a private browser window. It returns once the
+	// window is open, not once the login is finished.
+	StartLogin(ctx context.Context) (account.LoginState, error)
+	// LoginState is how a client follows an attempt it started.
+	LoginState() account.LoginState
+	// SubmitCode answers the CLI's paste prompt, for the flow it falls back to
+	// when it could not open a browser itself.
+	SubmitCode(code string) error
+	// Reset signs the slot out, removes it, and forgets the row — what
+	// closing the app does.
+	Reset(ctx context.Context) error
 }
 
 // CodeRunner owns the whole life of a coding task, not just its execution.
@@ -65,6 +75,10 @@ type CodeRunner interface {
 	Create(ctx context.Context, req coderunner.CreateRequest) (coderunner.Run, error)
 	Start(ctx context.Context, req coderunner.CreateRequest) (coderunner.Run, error)
 	Enqueue(ctx context.Context, runID string) (coderunner.Run, error)
+	Retry(ctx context.Context, runID string, fresh bool) (coderunner.Run, error)
+	Edit(ctx context.Context, runID string, req coderunner.EditRequest) (coderunner.Run, error)
+	Kick(ctx context.Context) error
+	Limits(ctx context.Context, limit int) (coderunner.LimitReport, error)
 	Stop(ctx context.Context, runID string) (coderunner.Run, error)
 	Delete(ctx context.Context, runID string) error
 	Get(ctx context.Context, runID string) (coderunner.Run, error)
@@ -100,6 +114,10 @@ type TranscriptOpener interface {
 type LeadGenRunner interface {
 	Run(ctx context.Context, req leadgen.RunRequest) (leadgen.Report, error)
 	Export(ctx context.Context, req leadgen.ExportRequest) (leadgen.ExportResult, error)
+	// DraftOutreach writes messages for companies the operator picked, rather
+	// than for everything a search returned. Same pipeline, entered after the
+	// region search instead of before it.
+	DraftOutreach(ctx context.Context, req leadgen.OutreachRequest) (leadgen.OutreachResult, error)
 }
 
 // RegionSourceReporter is what the diagnostics surface asks about region
@@ -110,10 +128,36 @@ type RegionSourceReporter interface {
 	Free() bool
 }
 
-// EmailStatusSetter records a human's decision on a drafted outreach email.
+// OutreachStatusSetter records a human's decision on a drafted message.
 // *store.Store satisfies it.
-type EmailStatusSetter interface {
-	SetOutreachEmailStatus(ctx context.Context, placeID, promptVersion, status string) error
+type OutreachStatusSetter interface {
+	SetOutreachStatus(ctx context.Context, placeID, channel, status string) error
+}
+
+// SettingsStore is the operator's own configuration: the default model their
+// lead-gen runs spend, and the rule file behind each outreach channel.
+// *settings.Store satisfies it.
+//
+// Its own Deps field rather than a corner of the store because it fails on its
+// own terms: it is files in a directory, and a daemon whose database will not
+// open still has a settings screen — which, on a machine where something is
+// wrong, is exactly the screen an operator wants to reach.
+type SettingsStore interface {
+	Get() (settings.Values, error)
+	Put(v settings.Values) error
+	Rule(ch settings.Channel) (settings.Rule, error)
+	Rules() ([]settings.Rule, error)
+	PutRule(ch settings.Channel, body string) (settings.Rule, error)
+	ResetRule(ch settings.Channel) (settings.Rule, error)
+
+	// The scan permission surface. Here rather than on BrainScanner because it
+	// outlives any one scan: the folders Mimir may read are a saved decision,
+	// and a daemon whose supervisor never started still has to be able to show
+	// and change them — that is the state somebody goes looking for when the
+	// scan is the thing that is wrong.
+	ScanPolicy() (settings.ScanPolicy, bool, error)
+	EffectiveScanPolicy(defaultRoots []string) settings.ScanPolicy
+	PutScanPolicy(p settings.ScanPolicy) (settings.ScanPolicy, error)
 }
 
 // LeadLedger is the durable lead record behind the /maps/leads routes.
@@ -122,10 +166,13 @@ type EmailStatusSetter interface {
 // one with no region source can still read what earlier runs found.
 type LeadLedger interface {
 	ListLeads(ctx context.Context, f store.LeadFilter) ([]store.LeadRow, error)
+	// LeadsByPlaceID resolves the operator's own selection — the checkbox
+	// column's rows, in the order they were picked.
+	LeadsByPlaceID(ctx context.Context, placeIDs []string) ([]store.LeadRow, error)
 	LeadCategoryCounts(ctx context.Context, f store.LeadFilter) ([]store.CategoryCount, error)
 	ListLeadRuns(ctx context.Context, limit int) ([]store.LeadRun, error)
 	ListLeadRegions(ctx context.Context) ([]store.LeadRegion, error)
-	OutreachEmailsFor(ctx context.Context, placeIDs []string, promptVersion string) (map[string]store.OutreachEmail, error)
+	OutreachMessagesFor(ctx context.Context, placeIDs []string) (map[string][]store.OutreachMessage, error)
 }
 
 // Deps are the collaborators the API serves. Every one is an interface so the
@@ -143,12 +190,17 @@ type Deps struct {
 	Events      EventSource
 	Transcripts TranscriptOpener
 
-	// LeadGen and Emails are both needed for the /maps/* routes; they are not
+	// LeadGen and Outreach are both needed for the /maps/* routes; they are not
 	// registered unless LeadGen is present. Regions is what /diagnostics
 	// reports about the sources behind it.
-	LeadGen LeadGenRunner
-	Emails  EmailStatusSetter
-	Regions RegionSourceReporter
+	LeadGen  LeadGenRunner
+	Outreach OutreachStatusSetter
+	Regions  RegionSourceReporter
+
+	// Settings is the operator's own configuration, gated on its own: the model
+	// picker and the two rule files are useful on a daemon with no region source
+	// and no store at all.
+	Settings SettingsStore
 
 	// Leads is the ledger — the reads that cost nothing. Gated on its own so a
 	// store that opened serves saved businesses even where a search cannot run.
@@ -175,10 +227,10 @@ type Server struct {
 	deps    Deps
 	started time.Time
 
-	// terminals owns the interactive shells. Held by the server rather than
+	// terminals owns the interactive shell. Held by the server rather than
 	// passed in Deps because it is not a dependency the daemon injects — it is
 	// state this process keeps, and a shell has to outlive the request that
-	// opened it or two profiles could never be open at once.
+	// opened it or a trip to another screen would hang it up.
 	terminals *ptyterm.Registry
 }
 
@@ -187,7 +239,7 @@ func New(cfg config.Config, deps Deps) *Server {
 		cfg:       cfg,
 		deps:      deps,
 		started:   time.Now(),
-		terminals: ptyterm.NewRegistry(),
+		terminals: ptyterm.NewRegistry(cfg.ClaudeSessionDir),
 	}
 }
 
@@ -223,21 +275,29 @@ func (s *Server) Handler() http.Handler {
 
 	if s.deps.Accounts != nil {
 		mux.HandleFunc("GET /accounts", s.handleListAccounts)
-		mux.HandleFunc("POST /accounts", s.handleRegisterAccount)
-		mux.HandleFunc("DELETE /accounts/{id}", s.handleDeleteAccount)
 		mux.HandleFunc("GET /accounts/{id}/status", s.handleAccountStatus)
-		mux.HandleFunc("POST /accounts/scan", s.handleScanAccounts)
+		// Connecting is a login the daemon runs, so it is three routes rather
+		// than a POST with a body: start it, follow it, and — only when the
+		// CLI could not open a browser itself — hand it the pasted code.
+		mux.HandleFunc("POST /accounts/login", s.handleStartLogin)
+		mux.HandleFunc("GET /accounts/login", s.handleLoginState)
+		mux.HandleFunc("POST /accounts/login/code", s.handleLoginCode)
+		mux.HandleFunc("POST /accounts/reset", s.handleResetAccounts)
 	}
 
 	if s.deps.Runner != nil {
 		mux.HandleFunc("GET /coding-models", s.handleListCodingModels)
 		mux.HandleFunc("POST /coding-tasks", s.handleStartCodingTask)
+		mux.HandleFunc("POST /coding-tasks/queue/kick", s.handleKickQueue)
+		mux.HandleFunc("GET /coding-tasks/queue/limits", s.handleQueueLimits)
 		mux.HandleFunc("GET /coding-tasks", s.handleListCodingTasks)
 		mux.HandleFunc("POST /coding-tasks/attachments", s.handleUploadAttachment)
 		mux.HandleFunc("GET /coding-tasks/attachments/{id}", s.handleGetAttachment)
 		mux.HandleFunc("GET /coding-tasks/{id}", s.handleGetCodingTask)
+		mux.HandleFunc("PATCH /coding-tasks/{id}", s.handleEditCodingTask)
 		mux.HandleFunc("DELETE /coding-tasks/{id}", s.handleDeleteCodingTask)
 		mux.HandleFunc("POST /coding-tasks/{id}/enqueue", s.handleEnqueueCodingTask)
+		mux.HandleFunc("POST /coding-tasks/{id}/retry", s.handleRetryCodingTask)
 		mux.HandleFunc("POST /coding-tasks/{id}/stop", s.handleStopCodingTask)
 	}
 
@@ -275,10 +335,35 @@ func (s *Server) Handler() http.Handler {
 	// empty.
 	mux.HandleFunc("GET /llm/providers", s.handleListLLMProviders)
 
+	// The operator's own configuration. Registered apart from everything else
+	// and before the guards below: which model writes an outreach message, and
+	// how, is answerable on a daemon that can neither search a region nor open
+	// its database — and that is precisely when somebody goes looking for it.
+	if s.deps.Settings != nil {
+		mux.HandleFunc("GET /settings", s.handleGetSettings)
+		mux.HandleFunc("PUT /settings", s.handleSaveSettings)
+		mux.HandleFunc("PUT /settings/rules", s.handleSaveRule)
+		mux.HandleFunc("POST /settings/rules/reset", s.handleResetRule)
+
+		// Under /brain because that is what they govern, and gated on Settings
+		// because that is what stores them. A daemon with no supervisor still
+		// serves these: "which folders may be read" is answerable, and worth
+		// answering, on a machine where the scan itself will not start.
+		mux.HandleFunc("GET /brain/scan/policy", s.handleGetScanPolicy)
+		mux.HandleFunc("PUT /brain/scan/policy", s.handleSaveScanPolicy)
+		mux.HandleFunc("POST /brain/scan/policy/reset", s.handleResetScanPolicy)
+	}
+
 	if s.deps.LeadGen != nil {
 		mux.HandleFunc("POST /maps/leadgen", s.handleLeadgen)
 		mux.HandleFunc("POST /maps/leadgen/export", s.handleLeadgenExport)
-		mux.HandleFunc("POST /maps/emails/status", s.handleSetEmailStatus)
+		// Drafting for a chosen set, rather than for a whole search. Needs the
+		// ledger as well as the pipeline — it resolves place ids through it —
+		// and the handler says so rather than the route disappearing, because
+		// "this daemon has no ledger" is a different answer from "no such
+		// route".
+		mux.HandleFunc("POST /maps/outreach", s.handleDraftOutreach)
+		mux.HandleFunc("POST /maps/outreach/status", s.handleSetOutreachStatus)
 	}
 
 	// The ledger reads. Registered apart from the run routes above: they need

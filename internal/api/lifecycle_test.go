@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/coderunner"
+	"github.com/logrenant/mimir/internal/store"
 )
 
 // start:false is the board writing intent down; without it the route keeps its
@@ -196,19 +197,13 @@ func TestCodingTaskRoutesAreAbsentWithoutARunner(t *testing.T) {
 // ---- accounts --------------------------------------------------------------
 
 type fakeAccounts struct {
-	list       []account.Account
-	registered account.Account
-	lastLabel  string
-	lastDir    string
-	deleted    string
-	synced     []account.Slot
-	err        error
-}
-
-func (f *fakeAccounts) Register(_ context.Context, label, configDir string) (account.Account, error) {
-	f.lastLabel = label
-	f.lastDir = configDir
-	return f.registered, f.err
+	list  []account.Account
+	login account.LoginState
+	// started, code and reset record what the handler asked of the registry.
+	started bool
+	code    string
+	reset   bool
+	err     error
 }
 
 func (f *fakeAccounts) List(context.Context) ([]account.Account, error) {
@@ -224,87 +219,99 @@ func (f *fakeAccounts) Get(_ context.Context, id string) (account.Account, error
 	return account.Account{}, fmt.Errorf("%w: %s", account.ErrAccountNotFound, id)
 }
 
-func (f *fakeAccounts) Delete(_ context.Context, id string) error {
-	f.deleted = id
+func (f *fakeAccounts) StartLogin(context.Context) (account.LoginState, error) {
+	f.started = true
+	return f.login, f.err
+}
+
+func (f *fakeAccounts) LoginState() account.LoginState { return f.login }
+
+func (f *fakeAccounts) SubmitCode(code string) error {
+	f.code = code
 	return f.err
 }
 
-func (f *fakeAccounts) Sync(_ context.Context, slots []account.Slot) ([]account.Account, error) {
-	f.synced = slots
-	return f.list, f.err
+func (f *fakeAccounts) Reset(context.Context) error {
+	f.reset = true
+	return f.err
 }
 
-// config_dir is the second and last route that accepts a filesystem path, and
-// it is validated once here exactly as POST /projects is.
-func TestRegisterAccount_TakesTheConfigDirectoryOnce(t *testing.T) {
-	accounts := &fakeAccounts{registered: account.Account{ID: "a1", Label: "b"}}
+// Connecting is a login the daemon runs, not a directory a client names: the
+// route takes no body and there is no path on the wire at all.
+func TestStartLogin_TakesNoInputAndReportsTheWindow(t *testing.T) {
+	accounts := &fakeAccounts{login: account.LoginState{
+		State:   account.LoginWaiting,
+		URL:     "https://claude.com/cai/oauth/authorize?code=true",
+		Message: "Giriş sayfası Chrome'da gizli pencerede açıldı.",
+	}}
+	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
+
+	w := do(h, http.MethodPost, "/accounts/login", testToken, "")
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status: got %d, want 202 (%s)", w.Code, w.Body.String())
+	}
+	if !accounts.started {
+		t.Error("the login was never started")
+	}
+	// The URL is echoed even though the daemon opened it: a window that landed
+	// behind another app leaves the operator with a link to use.
+	if !strings.Contains(w.Body.String(), "oauth/authorize") {
+		t.Errorf("the authorization URL did not reach the client: %s", w.Body.String())
+	}
+}
+
+// The registration route is gone rather than deprecated: there is no directory
+// to accept, and a POST that quietly did nothing would be worse than a refusal.
+func TestRegisterAccount_RouteIsGone(t *testing.T) {
+	accounts := &fakeAccounts{}
 	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
 
 	w := do(h, http.MethodPost, "/accounts", testToken,
 		`{"label":"ikinci hesap","config_dir":"/Users/x/.claude-accounts/b"}`)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status: got %d, want 201 (%s)", w.Code, w.Body.String())
-	}
-	if accounts.lastDir != "/Users/x/.claude-accounts/b" || accounts.lastLabel != "ikinci hesap" {
-		t.Errorf("the registry was called with %q / %q", accounts.lastLabel, accounts.lastDir)
+	if w.Code < 400 {
+		t.Errorf("status: got %d, want a refusal (%s)", w.Code, w.Body.String())
 	}
 }
 
-func TestRegisterAccount_BadDirectoryIs400(t *testing.T) {
-	accounts := &fakeAccounts{err: fmt.Errorf("%w: relative", account.ErrInvalidDir)}
+// Same for the scan: the accounts directory is no longer an authority for
+// anything, because Mimir signs into a slot of its own.
+func TestScanAccounts_RouteIsGone(t *testing.T) {
+	accounts := &fakeAccounts{}
 	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
-
-	w := do(h, http.MethodPost, "/accounts", testToken, `{"label":"x","config_dir":"slot-b"}`)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400", w.Code)
-	}
-}
-
-// Forgetting a slot with a queue behind it would strand work nothing can drain.
-func TestDeleteAccount_InUseIs409(t *testing.T) {
-	accounts := &fakeAccounts{err: fmt.Errorf("%w: 2 run(s)", account.ErrAccountInUse)}
-	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
-
-	w := do(h, http.MethodDelete, "/accounts/a1", testToken, "")
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status: got %d, want 409", w.Code)
-	}
-}
-
-// A discovered slot answers to the accounts directory, so forgetting it here
-// would promise a removal the next scan takes back.
-func TestDeleteAccount_DiscoveredIs409(t *testing.T) {
-	accounts := &fakeAccounts{err: fmt.Errorf("%w: eziode", account.ErrAccountDiscovered)}
-	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
-
-	w := do(h, http.MethodDelete, "/accounts/a1", testToken, "")
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status: got %d, want 409", w.Code)
-	}
-}
-
-// The scan is the daemon's reading of the accounts directory, handed to the
-// registry: the default slot always, plus every directory in the tree.
-func TestScanAccounts_RegistersWhatTheDirectoryHolds(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "eziode"), 0o700); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	cfg := testConfig()
-	cfg.ClaudeAccountsDir = root
-
-	accounts := &fakeAccounts{list: []account.Account{{ID: "a1", Label: "Default"}}}
-	h := New(cfg, Deps{Accounts: accounts}).Handler()
 
 	w := do(h, http.MethodPost, "/accounts/scan", testToken, "")
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
+	if w.Code < 400 {
+		t.Errorf("status: got %d, want a refusal (%s)", w.Code, w.Body.String())
 	}
-	if len(accounts.synced) != 2 {
-		t.Fatalf("synced %+v, want the default slot and eziode", accounts.synced)
+}
+
+// The reset is both the "çıkış yap" button and what the desktop shell calls on
+// its way out, so it takes no arguments — at that point there is no id to hold.
+func TestResetAccounts_SignsOut(t *testing.T) {
+	accounts := &fakeAccounts{}
+	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
+
+	w := do(h, http.MethodPost, "/accounts/reset", testToken, "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204 (%s)", w.Code, w.Body.String())
 	}
-	if accounts.synced[0].ConfigDir != "" || accounts.synced[1].Label != "eziode" {
-		t.Errorf("synced the wrong slots: %+v", accounts.synced)
+	if !accounts.reset {
+		t.Error("the registry was never asked to reset")
+	}
+}
+
+// The paste-a-code fallback: the code is typed straight into the waiting
+// process, and an empty one is the client's mistake rather than the daemon's.
+func TestLoginCode_ReachesTheWaitingLogin(t *testing.T) {
+	accounts := &fakeAccounts{login: account.LoginState{State: account.LoginCode}}
+	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
+
+	w := do(h, http.MethodPost, "/accounts/login/code", testToken, `{"code":"abc123"}`)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204 (%s)", w.Code, w.Body.String())
+	}
+	if accounts.code != "abc123" {
+		t.Errorf("the code did not reach the registry: %q", accounts.code)
 	}
 }
 
@@ -312,11 +319,11 @@ func TestScanAccounts_RegistersWhatTheDirectoryHolds(t *testing.T) {
 // route that used to point them at one is gone rather than deprecated.
 //
 // Asserted as "not a success" rather than as one exact status: with the route
-// unregistered the path now falls to the `/accounts/{id}` pattern, which has no
-// POST and answers 405. Which of the two the mux picks is its business — what
-// matters here is that nothing accepts the request and quietly does nothing.
+// unregistered the path now falls to another pattern, which answers 404 or 405.
+// Which of the two the mux picks is its business — what matters here is that
+// nothing accepts the request and quietly does nothing.
 func TestSetBackgroundAccount_RouteIsGone(t *testing.T) {
-	accounts := &fakeAccounts{list: []account.Account{{ID: "a1", Label: "Default"}}}
+	accounts := &fakeAccounts{list: []account.Account{{ID: "a1", Label: "Claude"}}}
 	h := New(testConfig(), Deps{Accounts: accounts}).Handler()
 
 	w := do(h, http.MethodPost, "/accounts/background", testToken, `{"account_id":"a2"}`)
@@ -339,9 +346,10 @@ func TestStartCodingTask_PinsTheAccount(t *testing.T) {
 	}
 }
 
-// Absent means "any free one", which is the default because it is what makes a
-// second account worth registering.
-func TestStartCodingTask_NoAccountMeansAutomatic(t *testing.T) {
+// Absent is what every client sends now: there is one account, so which
+// identity pays is not a choice a composer offers. The field stays on the wire
+// for clients written before that, which is what the test above covers.
+func TestStartCodingTask_NoAccountIsTheNormalCase(t *testing.T) {
 	runner := &fakeRunner{run: coderunner.Run{ID: "r1"}}
 	h := New(testConfig(), Deps{Runner: runner}).Handler()
 
@@ -431,5 +439,176 @@ func TestStartCodingTask_UnknownModelIs400(t *testing.T) {
 		`{"project_id":"p","prompt":"x","model":"gpt-9"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d, want 400", w.Code)
+	}
+}
+
+// The two buttons on a failed card are one route and one flag, so the flag is
+// the only thing worth asserting about the wire.
+func TestRetryCodingTask_CarriesTheFreshFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		// No body at all is what "devam et" sends, and continuing is the point
+		// of retrying a run that already did half the work.
+		{"no body continues", "", false},
+		{"explicit continue", `{"fresh":false}`, false},
+		{"start over", `{"fresh":true}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeRunner{run: coderunner.Run{ID: "r1", Status: "queued"}}
+			h := New(testConfig(), Deps{Runner: runner}).Handler()
+
+			w := do(h, http.MethodPost, "/coding-tasks/r1/retry", testToken, tc.body)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status: got %d, want 202 (%s)", w.Code, w.Body.String())
+			}
+			if runner.retried != "r1" {
+				t.Errorf("retried: got %q, want r1", runner.retried)
+			}
+			if runner.retriedFresh != tc.want {
+				t.Errorf("fresh: got %v, want %v", runner.retriedFresh, tc.want)
+			}
+		})
+	}
+}
+
+// A patch carries only the fields the form owns, and an absent one must reach
+// the runner as "not touched" rather than as an empty string.
+func TestEditCodingTask_PatchesOnlyWhatItSends(t *testing.T) {
+	runner := &fakeRunner{run: coderunner.Run{ID: "r1", Status: "backlog"}}
+	h := New(testConfig(), Deps{Runner: runner}).Handler()
+
+	w := do(h, http.MethodPatch, "/coding-tasks/r1", testToken,
+		`{"title":"yeni ad","attachment_ids":["abc123"]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if runner.edited != "r1" {
+		t.Errorf("edited: got %q, want r1", runner.edited)
+	}
+	if runner.lastEdit.Title == nil || *runner.lastEdit.Title != "yeni ad" {
+		t.Errorf("title: got %v, want \"yeni ad\"", runner.lastEdit.Title)
+	}
+	if runner.lastEdit.Prompt != nil {
+		t.Errorf("an untouched prompt must stay untouched, got %q", *runner.lastEdit.Prompt)
+	}
+	if runner.lastEdit.AttachmentIDs == nil || len(*runner.lastEdit.AttachmentIDs) != 1 {
+		t.Errorf("attachment_ids: got %v", runner.lastEdit.AttachmentIDs)
+	}
+}
+
+// Clearing an image list is a real edit; clearing the prompt is not, because a
+// card with no prompt asks for nothing.
+func TestEditCodingTask_RefusesAnEmptiedPromptAndAcceptsAnEmptiedGallery(t *testing.T) {
+	runner := &fakeRunner{run: coderunner.Run{ID: "r1", Status: "backlog"}}
+	h := New(testConfig(), Deps{Runner: runner}).Handler()
+
+	if w := do(h, http.MethodPatch, "/coding-tasks/r1", testToken, `{"prompt":"   "}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", w.Code)
+	}
+	if runner.edited != "" {
+		t.Error("a refused edit must not reach the runner")
+	}
+
+	w := do(h, http.MethodPatch, "/coding-tasks/r1", testToken, `{"attachment_ids":[]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if runner.lastEdit.AttachmentIDs == nil || len(*runner.lastEdit.AttachmentIDs) != 0 {
+		t.Errorf("an emptied gallery must reach the runner as empty, got %v", runner.lastEdit.AttachmentIDs)
+	}
+}
+
+// A card the operator was editing while it started is a conflict, like every
+// other too-late click on this board.
+func TestEditCodingTask_NotEditableIsAConflict(t *testing.T) {
+	runner := &fakeRunner{err: coderunner.ErrNotEditable}
+	h := New(testConfig(), Deps{Runner: runner}).Handler()
+
+	if w := do(h, http.MethodPatch, "/coding-tasks/r1", testToken, `{"title":"x"}`); w.Code != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", w.Code)
+	}
+}
+
+// The board's answer to a card that has sat in Queued: ask the dispatcher
+// again, and be told why when the answer is "nothing can start".
+func TestKickQueue_PumpsAndReportsWhyItCannot(t *testing.T) {
+	runner := &fakeRunner{}
+	h := New(testConfig(), Deps{Runner: runner}).Handler()
+
+	if w := do(h, http.MethodPost, "/coding-tasks/queue/kick", testToken, ""); w.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204", w.Code)
+	}
+	if runner.kicked != 1 {
+		t.Errorf("kicked: got %d, want 1", runner.kicked)
+	}
+
+	stalled := &fakeRunner{kickErr: account.ErrNotConnected}
+	h = New(testConfig(), Deps{Runner: stalled}).Handler()
+	w := do(h, http.MethodPost, "/coding-tasks/queue/kick", testToken, "")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "connect") {
+		t.Errorf("the answer must say what to do: %s", w.Body.String())
+	}
+}
+
+// A spent token budget answers the kick the same way a missing login does —
+// 409 with the reason — because the operator's question is the same one, and
+// the only useful part of the answer is when the queue moves again.
+func TestKickQueue_SpentBudgetIsAConflict(t *testing.T) {
+	runner := &fakeRunner{kickErr: fmt.Errorf("%w — the queue restarts by itself at 19:40",
+		coderunner.ErrBudgetSpent)}
+	h := New(testConfig(), Deps{Runner: runner}).Handler()
+
+	w := do(h, http.MethodPost, "/coding-tasks/queue/kick", testToken, "")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "19:40") {
+		t.Errorf("the answer must carry the time it restarts: %s", w.Body.String())
+	}
+}
+
+// The log is only worth keeping if it can be read back. Holds are the live
+// state and the log is durable, and the route serves both.
+func TestQueueLimits_ServesHoldsAndTheLog(t *testing.T) {
+	resets := time.Date(2026, 9, 5, 19, 40, 0, 0, time.UTC)
+	runner := &fakeRunner{limits: coderunner.LimitReport{
+		Holds: []coderunner.Hold{{AccountID: "acct", ResetsAt: resets, Reason: "usage limit"}},
+		Log: []store.RateLimitRow{
+			{ID: 1, Phase: store.RateLimitPhaseRun, AccountID: "acct", RunID: "r1", ResetsAt: resets},
+		},
+	}}
+	h := New(testConfig(), Deps{Runner: runner}).Handler()
+
+	w := do(h, http.MethodGet, "/coding-tasks/queue/limits", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	var got coderunner.LimitReport
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not a LimitReport: %v (%s)", err, w.Body.String())
+	}
+	if len(got.Holds) != 1 || !got.Holds[0].ResetsAt.Equal(resets) {
+		t.Errorf("holds not served: %+v", got.Holds)
+	}
+	if len(got.Log) != 1 || got.Log[0].Phase != store.RateLimitPhaseRun {
+		t.Errorf("log not served: %+v", got.Log)
+	}
+}
+
+// A card the operator clicked a moment too late is a conflict, not a failure:
+// 409 blames the state, which is the thing that has to change.
+func TestRetryCodingTask_NotRetryableIsAConflict(t *testing.T) {
+	runner := &fakeRunner{err: coderunner.ErrNotRetryable}
+	h := New(testConfig(), Deps{Runner: runner}).Handler()
+
+	if w := do(h, http.MethodPost, "/coding-tasks/r1/retry", testToken, `{"fresh":false}`); w.Code != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", w.Code)
 	}
 }

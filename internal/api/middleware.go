@@ -52,20 +52,30 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
 	case errors.Is(err, project.ErrProjectNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
-	case errors.Is(err, account.ErrInvalidDir):
-		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
 	case errors.Is(err, account.ErrAccountNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
-	case errors.Is(err, account.ErrAccountInUse),
-		errors.Is(err, account.ErrAccountDiscovered):
+	case errors.Is(err, account.ErrNotConnected):
+		// Not an error in the request and not a failure of the daemon: there
+		// is simply no identity to spend until one is connected. 409 says the
+		// state is wrong, which is what the operator has to change.
 		writeError(w, http.StatusConflict, codeConflict, err.Error())
+	case errors.Is(err, account.ErrNoSessionDir):
+		writeError(w, http.StatusInternalServerError, codeInternal, err.Error())
 	case errors.Is(err, coderunner.ErrRunNotFound),
 		errors.Is(err, coderunner.ErrAttachmentNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
 	case errors.Is(err, coderunner.ErrNotStoppable),
-		errors.Is(err, coderunner.ErrNotDeletable):
+		errors.Is(err, coderunner.ErrNotDeletable),
+		errors.Is(err, coderunner.ErrNotRetryable),
+		errors.Is(err, coderunner.ErrNotEditable):
 		// The card the operator clicked was a moment out of date. 409 says
 		// that, where a 400 would blame the request and a 500 would blame us.
+		writeError(w, http.StatusConflict, codeConflict, err.Error())
+	case errors.Is(err, coderunner.ErrBudgetSpent):
+		// Nothing is wrong and nothing is to be done: the account has no
+		// tokens left until the window rolls over, and the queue restarts
+		// itself when it does. 409 with the CLI's own reset time, because the
+		// only useful answer here is when, not what.
 		writeError(w, http.StatusConflict, codeConflict, err.Error())
 	case errors.Is(err, coderunner.ErrAttachmentType),
 		errors.Is(err, coderunner.ErrUnknownModel):

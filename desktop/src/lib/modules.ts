@@ -26,8 +26,8 @@ export const MODULES: ModuleDef[] = [
   {
     key: "leadgen",
     name: "Lead-gen · Maps",
-    desc: "Bölge araması → kategorize → kategori başına gap analizi → taslak e-postalar.",
-    route: "POST /maps/leadgen · POST /maps/emails/status",
+    desc: "Bölge araması → kategorize → kategori başına gap analizi → seçtiğiniz şirketlere e-posta ve WhatsApp taslakları.",
+    route: "POST /maps/leadgen · POST /maps/outreach",
     tools: "maps_search · gmaps_business_lookup",
   },
 ];

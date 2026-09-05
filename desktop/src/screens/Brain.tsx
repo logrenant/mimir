@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -11,9 +12,18 @@ import {
   type BrainNodeDetail,
   type BrainNodeVersion,
   type BrainProject,
+  type BrainScanPolicy,
   type BrainScanStatus,
   type LLMProviderList,
 } from "../lib/daemon";
+import {
+  addPath,
+  describePolicy,
+  isDirty,
+  removePath,
+  shortPath,
+  type ScanPolicyDraft,
+} from "../lib/scanPolicy";
 import {
   fitView,
   hitTest,
@@ -44,6 +54,7 @@ import {
  */
 export function Brain() {
   const { status, error, refresh } = useBrainScan();
+  const scanPolicy = useScanPolicy();
   const [projects, setProjects] = useState<BrainProject[]>([]);
   const [project, setProject] = useState<string>("");
   const [graph, setGraph] = useState<BrainGraph | null>(null);
@@ -157,7 +168,7 @@ export function Brain() {
   );
 
   return (
-    <div className="grid h-full grid-rows-[auto_1fr] gap-4 overflow-hidden p-6">
+    <div className="grid h-full grid-rows-[auto_auto_1fr] gap-4 overflow-hidden p-6">
       <ScanPanel
         status={status}
         error={error}
@@ -177,6 +188,20 @@ export function Brain() {
         onPause={() => act(api.pauseBrainScan)}
         onResume={() => act(api.resumeBrainScan)}
         onNow={() => act(() => api.scanBrainNow(provider ? { provider, model } : undefined))}
+      />
+
+      <ScanPolicyCard
+        policy={scanPolicy.policy}
+        draft={scanPolicy.draft}
+        busy={scanPolicy.busy}
+        error={scanPolicy.error}
+        onAddRoot={() => void scanPolicy.addRoot()}
+        onAddExclude={(kind) => void scanPolicy.addExclude(kind)}
+        onRemoveRoot={scanPolicy.removeRoot}
+        onRemoveExclude={scanPolicy.removeExclude}
+        onSave={() => void scanPolicy.save().then(refresh)}
+        onReset={() => void scanPolicy.reset().then(refresh)}
+        onRevert={scanPolicy.revert}
       />
 
       <div className="grid min-h-0 grid-cols-[1fr_18rem] gap-4">
@@ -798,4 +823,313 @@ function messageOf(e: unknown): string {
 
 function trim(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+/**
+ * What the scan is allowed to read.
+ *
+ * Two lists rather than one, because they are two different permissions: a root
+ * is consent being given — "read this folder" — and an exclusion is consent
+ * being taken back inside it. Showing them together, on the tab where the sweep
+ * is running, is the point: the folders being read and the evidence of the
+ * reading belong on one screen or they drift apart in the operator's head.
+ *
+ * Edits are local until "kaydet". A list that saved on every click would make
+ * removing three folders three sweeps' worth of churn, and would leave no
+ * moment at which the operator is looking at what they are about to commit.
+ */
+function ScanPolicyCard({
+  policy,
+  draft,
+  busy,
+  error,
+  onAddRoot,
+  onAddExclude,
+  onRemoveRoot,
+  onRemoveExclude,
+  onSave,
+  onReset,
+  onRevert,
+}: {
+  policy: BrainScanPolicy | null;
+  draft: ScanPolicyDraft;
+  busy: boolean;
+  error: string | null;
+  onAddRoot: () => void;
+  onAddExclude: (kind: "file" | "directory") => void;
+  onRemoveRoot: (path: string) => void;
+  onRemoveExclude: (path: string) => void;
+  onSave: () => void;
+  onReset: () => void;
+  onRevert: () => void;
+}) {
+  if (!policy) {
+    return (
+      <Card>
+        <CardBody className="text-xs text-muted">tarama izinleri okunuyor…</CardBody>
+      </Card>
+    );
+  }
+
+  const dirty = isDirty(draft, { roots: policy.roots, excludes: policy.excludes });
+
+  return (
+    <Card>
+      <CardHeader
+        title="Tarama izinleri"
+        subtitle={describePolicy(draft)}
+        aside={
+          <div className="flex items-center gap-2">
+            {/* Said out loud, because "these are the folders Mimir picked" and
+                "these are the folders you chose" are different sentences and
+                only one of them invites a look. */}
+            {!policy.configured && <Badge tone="muted">varsayılan</Badge>}
+            {dirty && <Badge tone="accent">kaydedilmedi</Badge>}
+            {dirty && (
+              <Button variant="ghost" onClick={onRevert} disabled={busy}>
+                geri al
+              </Button>
+            )}
+            <Button onClick={onSave} disabled={busy || !dirty}>
+              kaydet
+            </Button>
+          </div>
+        }
+      />
+
+      <CardBody className="grid grid-cols-2 gap-6">
+        <PathList
+          title="Taranan klasörler"
+          empty="Hiçbir klasör taranmıyor. Tarama duruyor — bu bir ayar, arıza değil."
+          paths={draft.roots}
+          busy={busy}
+          onRemove={onRemoveRoot}
+          action={
+            <Button variant="ghost" onClick={onAddRoot} disabled={busy}>
+              klasör ekle
+            </Button>
+          }
+        />
+
+        <PathList
+          title="Hariç tutulanlar"
+          empty="Hariç tutulan yok. Kimlik dosyaları (.env, *.pem, id_rsa …) zaten hiç okunmuyor."
+          paths={draft.excludes}
+          busy={busy}
+          onRemove={onRemoveExclude}
+          action={
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => onAddExclude("directory")} disabled={busy}>
+                klasör
+              </Button>
+              <Button variant="ghost" onClick={() => onAddExclude("file")} disabled={busy}>
+                dosya
+              </Button>
+            </div>
+          }
+        />
+      </CardBody>
+
+      <CardBody className="flex items-center justify-between border-t border-edge">
+        <span className="text-[11px] text-muted">
+          Hariç tutulan bir yol bir daha okunmaz. Bilgi grafiğinde ondan gelmiş düğümler
+          varsa yerinde kalır — silmek ayrı bir iş.
+        </span>
+        {policy.configured && (
+          <Button variant="ghost" onClick={onReset} disabled={busy}>
+            varsayılana dön
+          </Button>
+        )}
+      </CardBody>
+
+      {error && (
+        // internal/project's guards explain themselves ("home dizini", "bir
+        // dizin değil"), so the daemon's own sentence is shown as written.
+        <CardBody className="border-t border-edge text-[11px] text-bad">{error}</CardBody>
+      )}
+    </Card>
+  );
+}
+
+function PathList({
+  title,
+  empty,
+  paths,
+  busy,
+  action,
+  onRemove,
+}: {
+  title: string;
+  empty: string;
+  paths: string[];
+  busy: boolean;
+  action: React.ReactNode;
+  onRemove: (path: string) => void;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] uppercase tracking-wide text-muted">{title}</span>
+        {action}
+      </div>
+      {paths.length === 0 ? (
+        <p className="text-[11px] text-muted">{empty}</p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {paths.map((path) => (
+            <li
+              key={path}
+              className="flex items-center justify-between gap-2 rounded border border-edge px-2 py-1"
+            >
+              {/* The full path in the tooltip: two folders called `src` are
+                  indistinguishable by their last segment, and the short form is
+                  what makes the list readable at all. */}
+              <span className="truncate font-mono text-[11px]" title={path}>
+                {shortPath(path)}
+              </span>
+              <button
+                type="button"
+                className="shrink-0 text-[11px] text-muted hover:text-bad disabled:opacity-40"
+                onClick={() => onRemove(path)}
+                disabled={busy}
+                aria-label={`${path} listeden çıkar`}
+              >
+                çıkar
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The scan policy, and the edits that have not been sent yet.
+ *
+ * The draft is separate state rather than a mutation of what the daemon
+ * returned, so "kaydedilmedi" can be true and "geri al" can mean something. It
+ * is re-seeded whenever a save or a reset confirms a new policy — the daemon's
+ * answer wins, because it has resolved the symlinks and dropped the duplicates
+ * and the screen would otherwise show a path that is not the one being scanned.
+ */
+function useScanPolicy() {
+  const [policy, setPolicy] = useState<BrainScanPolicy | null>(null);
+  const [draft, setDraft] = useState<ScanPolicyDraft>({ roots: [], excludes: [] });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const adopt = useCallback((next: BrainScanPolicy) => {
+    setPolicy(next);
+    setDraft({ roots: next.roots ?? [], excludes: next.excludes ?? [] });
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      adopt(await api.brainScanPolicy());
+      setError(null);
+    } catch (err) {
+      // A daemon with no settings store answers 404 here. That is a build
+      // without the feature, not a fault worth a red banner on the tab.
+      if (err instanceof DaemonError && err.status === 404) return;
+      setError(messageOf(err));
+    }
+  }, [adopt]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  // Inside the try, both of them: a picker can reject, and a button that
+  // silently does nothing is worse than one that says why.
+  const pick = useCallback(
+    async (directory: boolean, title: string): Promise<string | null> => {
+      const picked = await open({ directory, multiple: false, title });
+      return typeof picked === "string" ? picked : null;
+    },
+    [],
+  );
+
+  const addRoot = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const picked = await pick(true, "Taranacak klasör");
+      if (picked) setDraft((d) => ({ ...d, roots: addPath(d.roots, picked) }));
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [pick]);
+
+  const addExclude = useCallback(
+    async (kind: "file" | "directory") => {
+      setError(null);
+      setBusy(true);
+      try {
+        const picked = await pick(
+          kind === "directory",
+          kind === "directory" ? "Hariç tutulacak klasör" : "Hariç tutulacak dosya",
+        );
+        if (picked) setDraft((d) => ({ ...d, excludes: addPath(d.excludes, picked) }));
+      } catch (err) {
+        setError(messageOf(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [pick],
+  );
+
+  const removeRoot = useCallback((path: string) => {
+    setDraft((d) => ({ ...d, roots: removePath(d.roots, path) }));
+  }, []);
+
+  const removeExclude = useCallback((path: string) => {
+    setDraft((d) => ({ ...d, excludes: removePath(d.excludes, path) }));
+  }, []);
+
+  const revert = useCallback(() => {
+    if (policy) setDraft({ roots: policy.roots ?? [], excludes: policy.excludes ?? [] });
+    setError(null);
+  }, [policy]);
+
+  const save = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      adopt(await api.saveBrainScanPolicy({ roots: draft.roots, excludes: draft.excludes }));
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [adopt, draft]);
+
+  const reset = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      adopt(await api.resetBrainScanPolicy());
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [adopt]);
+
+  return {
+    policy,
+    draft,
+    busy,
+    error,
+    addRoot,
+    addExclude,
+    removeRoot,
+    removeExclude,
+    save,
+    reset,
+    revert,
+  };
 }

@@ -55,12 +55,18 @@ export function groupRuns(runs: Run[]): Record<ColumnID, Run[]> {
 }
 
 export type Move =
-  | { allowed: true; action: "enqueue" | "dequeue" }
+  | { allowed: true; action: "enqueue" | "dequeue" | "retry" }
   | { allowed: false; reason: string };
 
 /**
  * Whether a card may be dragged from one column to another, and what that
  * means.
+ *
+ * Every move that has a daemon operation behind it is a move: Backlog→Queued
+ * releases, Queued→Backlog takes back, and Failed→Queued picks the work up
+ * again — the same thing the card's own buttons do, because a board where the
+ * buttons can do something the drag cannot is a board that is lying about being
+ * a board.
  *
  * Refusals carry a reason because a drop that silently springs back reads as a
  * broken board rather than a rule.
@@ -73,29 +79,117 @@ export function allowedMove(from: ColumnID, to: ColumnID): Move {
   if (from === "queued" && to === "backlog") {
     return { allowed: true, action: "dequeue" };
   }
+  // Dropping a failure back in the queue is a retry, and it continues the
+  // session when there is one to continue — same rule as the card's buttons.
+  if (from === "failed" && to === "queued") {
+    return { allowed: true, action: "retry" };
+  }
   if (to === "running") {
     return { allowed: false, reason: "Running kolonuna sürüklenmez — Queued'a bırakın, sıra gelince başlar." };
   }
   if (to === "done" || to === "failed") {
     return { allowed: false, reason: "Bir çalışmanın sonucunu elle yazamazsınız." };
   }
-  return { allowed: false, reason: "Bitmiş bir kart tekrar kuyruğa alınamaz." };
+  if (from === "failed" && to === "backlog") {
+    return { allowed: false, reason: "Yarım kalmış işi geri almak diye bir şey yok — Queued'a bırakın, kaldığı yerden devam eder." };
+  }
+  return { allowed: false, reason: "Tamamlanmış bir kartın yapacak işi kalmadı — yeni bir task açın." };
 }
 
 /** The actions a card offers, given where it is. */
-export type CardAction = "run" | "stop" | "dequeue" | "delete" | "terminal";
+export type CardAction =
+  | "run"
+  | "stop"
+  | "dequeue"
+  | "delete"
+  | "terminal"
+  | "continue"
+  | "retry"
+  | "kick"
+  | "edit";
 
 export function actionsFor(status: RunStatus): CardAction[] {
   switch (status) {
     case "backlog":
-      return ["run", "delete"];
+      return ["run", "edit", "delete"];
+    // Kick is on every queued card rather than only the stuck ones: whether
+    // the queue is moving is a question about the daemon, and a card that
+    // offers the answer only once it looks stuck is a card the operator has to
+    // wait to be allowed to ask.
     case "queued":
-      return ["dequeue", "terminal"];
+      return ["kick", "edit", "dequeue", "terminal"];
     case "running":
       return ["stop", "terminal"];
+    // A run that failed or was stopped is the only one with something left to
+    // pick up, and it gets both ways of picking it up. Continue leads because
+    // it is the one that does not throw away the work already done.
+    case "failed":
+    case "stopped":
+      return ["continue", "retry", "edit", "terminal", "delete"];
     default:
       return ["terminal", "delete"];
   }
+}
+
+/**
+ * Whether a card's own text may still be rewritten.
+ *
+ * The same rule the daemon keeps (store.EditableStatuses), and it is here so
+ * the board can offer the button rather than discover the refusal: a run that
+ * is spending or has spent tokens keeps the prompt it was given, because that
+ * text is the record of what was asked. Everything before that is intent, and
+ * intent is editable — including a failed card, which is the one an operator
+ * most wants to fix before trying again.
+ */
+export function canEdit(status: RunStatus): boolean {
+  return status === "backlog" || status === "queued" || status === "failed" || status === "stopped";
+}
+
+/**
+ * Whether a run can be continued rather than started over.
+ *
+ * A session id is the CLI's, written down when it announced itself. Without one
+ * there is nothing for `--resume` to attach to — a run that died before it said
+ * anything can only be done again — so the board offers "devam et" against the
+ * fact rather than against the status alone.
+ */
+export function canContinue(run: Run): boolean {
+  if (run.status !== "failed" && run.status !== "stopped") return false;
+  return !!run.session_id && run.session_id.trim() !== "";
+}
+
+/**
+ * How long a card may sit in Queued with nothing running before the board says
+ * so.
+ *
+ * The queue is pumped when work is released and when a run frees its slot, so a
+ * card queued while no account was connected waits with nothing to move it. A
+ * few seconds of that is a dispatcher about to pick it up; half a minute of it,
+ * with nothing running, is a queue that has stopped.
+ */
+export const STALL_AFTER_MS = 30_000;
+
+/** Whether this queued card has been waiting with nothing able to start it. */
+export function isStalled(run: Run, runs: Run[] | null, now: number): boolean {
+  if (run.status !== "queued") return false;
+  if (runs?.some((r) => r.status === "running")) return false;
+  if (!isSetTime(run.queued_at)) return true;
+  const at = Date.parse(run.queued_at as string);
+  if (Number.isNaN(at)) return false;
+  return now - at > STALL_AFTER_MS;
+}
+
+/**
+ * What pressing continue or try-again will actually do right now.
+ *
+ * Both land the card in Queued. Whether that means "starts now" or "waits"
+ * depends on something outside the card — capacity is one run at a time — and
+ * the button says which, because a card that jumps to Queued and sits there
+ * with no explanation reads as a failure to start.
+ */
+export function retryOutcome(runs: Run[] | null): "queued" | "starts" {
+  if (!runs) return "starts";
+  return runs.some((r) => r.status === "running") ? "queued" : "starts";
 }
 
 /**

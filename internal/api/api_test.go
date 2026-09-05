@@ -59,7 +59,15 @@ type fakeRunner struct {
 	lastCreate    coderunner.CreateRequest
 	created       bool
 	enqueued      string
+	retried       string
+	retriedFresh  bool
+	edited        string
+	lastEdit      coderunner.EditRequest
 	stopped       string
+	kicked        int
+	kickErr       error
+	limits        coderunner.LimitReport
+	limitsErr     error
 	deleted       string
 	attachment    coderunner.Attachment
 	attachmentRaw []byte
@@ -86,6 +94,31 @@ func (f *fakeRunner) Enqueue(_ context.Context, runID string) (coderunner.Run, e
 	f.calls++
 	f.enqueued = runID
 	return f.run, f.err
+}
+
+func (f *fakeRunner) Retry(_ context.Context, runID string, fresh bool) (coderunner.Run, error) {
+	f.calls++
+	f.retried = runID
+	f.retriedFresh = fresh
+	return f.run, f.err
+}
+
+func (f *fakeRunner) Edit(_ context.Context, runID string, req coderunner.EditRequest) (coderunner.Run, error) {
+	f.calls++
+	f.edited = runID
+	f.lastEdit = req
+	return f.run, f.err
+}
+
+func (f *fakeRunner) Kick(context.Context) error {
+	f.calls++
+	f.kicked++
+	return f.kickErr
+}
+
+func (f *fakeRunner) Limits(context.Context, int) (coderunner.LimitReport, error) {
+	f.calls++
+	return f.limits, f.limitsErr
 }
 
 func (f *fakeRunner) Stop(_ context.Context, runID string) (coderunner.Run, error) {

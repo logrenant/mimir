@@ -120,32 +120,38 @@ describe("dependencyRows", () => {
 });
 
 describe("accountLoad", () => {
-  const accounts = [
-    { id: "acc-1", label: "birinci", config_dir: "", is_default: true },
-    { id: "acc-2", label: "ikinci", config_dir: "/b", is_default: false },
-  ] as Account[];
+  const account = { id: "acc-1", label: "Claude", config_dir: "/slot" } as Account;
 
-  test("capacity is one: a slot is busy with a run or it is free", () => {
-    const load = accountLoad(accounts, [
+  test("capacity is one: the account is busy with a run or it is free", () => {
+    const load = accountLoad(account, [
       run({ id: "a", status: "running", account_id: "acc-1" }),
-      run({ id: "b", status: "queued", requested_account_id: "acc-1" }),
+      run({ id: "b", status: "queued" }),
     ]);
-    expect(load[0].busyWith?.id).toBe("a");
-    expect(load[0].waiting).toBe(1);
-    expect(load[1].busyWith).toBeNull();
-    expect(load[1].waiting).toBe(0);
+    expect(load?.busyWith?.id).toBe("a");
+    expect(load?.waiting).toBe(1);
   });
 
-  test("an unpinned queued card waits for nobody in particular", () => {
-    const load = accountLoad(accounts, [run({ id: "b", status: "queued" })]);
-    expect(load.every((a) => a.waiting === 0)).toBe(true);
+  // Nothing pins a run to an account any more — there is one — so a queued
+  // card is waiting for this account whether or not it names it.
+  test("every queued card counts as waiting", () => {
+    const load = accountLoad(account, [
+      run({ id: "b", status: "queued" }),
+      run({ id: "c", status: "queued" }),
+    ]);
+    expect(load?.waiting).toBe(2);
   });
 
-  test("a finished run does not hold a slot", () => {
-    const load = accountLoad(accounts, [
+  test("a finished run does not hold the account", () => {
+    const load = accountLoad(account, [
       run({ id: "a", status: "completed", account_id: "acc-1" }),
     ]);
-    expect(load[0].busyWith).toBeNull();
+    expect(load?.busyWith).toBeNull();
+  });
+
+  // With nothing connected there is no lane at all, which is not the same as
+  // an idle one: the daemon refuses a run outright in that state.
+  test("no account connected is no load to report", () => {
+    expect(accountLoad(null, [run({ id: "b", status: "queued" })])).toBeNull();
   });
 });
 

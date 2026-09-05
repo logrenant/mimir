@@ -66,6 +66,11 @@ pub fn toggle(app: &AppHandle) {
 /// raises it above whatever the operator was looking at.
 pub fn show_main(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_LABEL) {
+        // Before the window is shown: the policy decides whether the app has a
+        // menu bar, and a window that is already up when it changes would be
+        // fullscreen with nothing at the top of the screen to reveal.
+        #[cfg(target_os = "macos")]
+        crate::macos::follow_main_window(app, true);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();

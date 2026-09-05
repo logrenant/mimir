@@ -16,8 +16,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/api"
@@ -39,6 +41,7 @@ import (
 	"github.com/logrenant/mimir/internal/refine"
 	"github.com/logrenant/mimir/internal/regionsearch"
 	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/settings"
 	"github.com/logrenant/mimir/internal/store"
 	"github.com/logrenant/mimir/internal/tools"
 )
@@ -110,8 +113,8 @@ func run() error {
 	// a nil *maps.Client inside a non-nil interface would look like a working
 	// provider until it was called.
 	var (
-		sources       regionsearch.Sources
-		emailStatuser api.EmailStatusSetter
+		sources          regionsearch.Sources
+		outreachStatuser api.OutreachStatusSetter
 	)
 	if cfg.PlacesAPIKey != "" {
 		mc, err := maps.New(cfg, maps.Options{APIKey: cfg.PlacesAPIKey})
@@ -135,10 +138,19 @@ func run() error {
 	slog.Info("region search", "sources", strings.Join(regions.Sources(), ", "),
 		"free_primary", regions.Free())
 
+	// The operator's own settings, beside the store like every other directory
+	// this process derives. Built before the pipeline because the message runner
+	// reads its rule files on every draft.
+	operatorSettings := settings.New(filepath.Join(filepath.Dir(cfg.StorePath), "settings"))
+
 	categorizer := leadgen.New(cfg, refineClient, db)
 	gapRunner := leadgen.NewGapAnalyzer(cfg, refineClient, db)
-	emailRunner := leadgen.NewEmailRunner(cfg, refineClient, db)
-	leadgenPipe := leadgen.NewPipeline(cfg, regions, db, categorizer, gapRunner, emailRunner)
+	messageRunner := leadgen.NewMessageRunner(cfg, refineClient, db)
+	// The rule files are read per draft rather than snapshotted here: an
+	// operator who edits the rules and drafts again expects the new rules, not
+	// the ones the daemon happened to start with.
+	messageRunner.UseRules(operatorSettings)
+	leadgenPipe := leadgen.NewPipeline(cfg, regions, db, categorizer, gapRunner, messageRunner)
 	// Contact enrichment is a stage of the run, not just of the export.
 	//
 	// It used to be the export's alone, on the reasoning that a run nobody
@@ -153,7 +165,7 @@ func run() error {
 	// The ledger is what makes a run outlive its response. Installed like the
 	// enricher: something a finished run feeds, not a stage of it.
 	leadgenPipe.UseLedger(db)
-	emailStatuser = db
+	outreachStatuser = db
 
 	// Built before RegisterAll because the memory tools look projects up
 	// through it; the registry itself has no dependency of its own beyond db.
@@ -257,6 +269,15 @@ func run() error {
 		Counter: db,
 		Probe:   router.Provider(llm.Distill),
 		Log:     slog.Default(),
+		// Read per sweep, not captured once: the operator edits this on the
+		// Brain tab while the loop is running, and a value copied in here would
+		// mean every change waited for a daemon restart. cfg.BrainScanRoots is
+		// the seed the first read falls back to, so a machine nobody has
+		// configured sweeps exactly the folders it always did.
+		Policy: func() brain.ScanPolicy {
+			p := operatorSettings.EffectiveScanPolicy(cfg.BrainScanRoots)
+			return brain.ScanPolicy{Roots: p.Roots, Excludes: p.Excludes}
+		},
 	})
 	scanCtx, stopScan := context.WithCancel(ctx)
 	defer stopScan()
@@ -275,40 +296,32 @@ func run() error {
 
 	// The runner takes the daemon's lifetime, not a request's: a coding session
 	// runs for minutes and must not die when the POST that started it returns.
-	// Which Claude Code identity a run spends. Registered like a project: the
-	// path is accepted once and everything afterwards carries an id.
-	accounts := account.NewRegistry(db)
+	// The one Claude identity Mimir spends, in a credential slot of its own.
+	accounts := account.NewRegistry(db, cfg.ClaudeSessionDir, cfg.ClaudeCLIPath)
 
-	// The accounts directory is the authority for which slots exist — the same
-	// tree the operator's shell switches between — so the daemon reads it
-	// rather than waiting to be told. Adding only, idempotent by directory, and
-	// not fatal: a directory that cannot be read costs the operator a slot on
-	// the picker, not the daemon.
-	if slots, err := accounts.Sync(ctx, account.Discover(cfg.ClaudeAccountsDir)); err != nil {
-		slog.Warn("scanning credential slots", "dir", cfg.ClaudeAccountsDir, "error", err)
+	// A launch starts signed out, always. The desktop shell asks for a reset
+	// on its way out, but a daemon that was killed rather than stopped never
+	// heard that — so the guarantee is made here, where nothing can skip it:
+	// whatever the last run left in the keychain is signed out before anything
+	// can spend it.
+	if err := accounts.Reset(ctx); err != nil {
+		slog.Warn("resetting the Claude account", "dir", cfg.ClaudeSessionDir, "error", err)
 	} else {
-		labels := make([]string, 0, len(slots))
-		for _, a := range slots {
-			labels = append(labels, a.Label)
-		}
-		slog.Info("credential slots", "dir", cfg.ClaudeAccountsDir,
-			"count", len(slots), "slots", strings.Join(labels, ", "))
+		slog.Info("claude account", "dir", cfg.ClaudeSessionDir, "state", "signed out")
 	}
 
 	// The daemon's own model calls — refine, distil, recap — are not coding
 	// runs: nothing dispatched them, so without this they spend whichever
 	// identity this process happens to have inherited.
 	//
-	// One identity, named here, rather than a slot the operator picks. Credential
-	// slots exist for coding runs, where a human dispatched the work and can say
-	// which account pays for it; the background loop has no such moment, and a
-	// mark on a slot silently redirected every sweep, recap and page summary the
-	// daemon made afterwards. The empty ConfigDir is the CLI's own login, and
-	// Environ clears any inherited CLAUDE_SECURESTORAGE_CONFIG_DIR so this is the
-	// same identity whether the daemon was started by launchd or from a shell
-	// that had switched accounts.
+	// They spend the same account as everything else, because there is only one
+	// and "which account paid for this?" should never have two answers. Reading
+	// the directory through the registry rather than capturing it keeps that
+	// true after a reset. Environ also clears any inherited
+	// CLAUDE_SECURESTORAGE_CONFIG_DIR, so this holds whether the daemon was
+	// started by launchd or from a shell that had switched accounts.
 	router.UseEnviron(func() []string {
-		return account.Environ(os.Environ(), "")
+		return account.Environ(os.Environ(), accounts.Dir())
 	})
 
 	runner := coderunner.New(ctx, cfg, bus, projects, accounts, db)
@@ -352,13 +365,17 @@ func run() error {
 		// The chat archive, likewise: reading what was said needs the store
 		// and nothing else.
 		Chat: db,
+
+		// The operator's model choice and the two outreach rule files. Files in
+		// a directory, so this one needs neither the store nor a region source.
+		Settings: operatorSettings,
 	}
 	// Set the interface field only when there is a real pipeline behind it: a
 	// nil *leadgen.Pipeline in an interface is still a non-nil interface, and
 	// the route guard checks the interface.
 	if leadgenPipe != nil {
 		apiDeps.LeadGen = leadgenPipe
-		apiDeps.Emails = emailStatuser
+		apiDeps.Outreach = outreachStatuser
 	}
 
 	httpAPI := api.New(cfg, apiDeps)
@@ -378,6 +395,20 @@ func run() error {
 	// row needs the database to still be open.
 	slog.Info("waiting for in-flight runs")
 	runner.Wait()
+
+	// And sign the account out, after the last run that could have been
+	// spending it. Mimir's slot does not survive the process: the next launch
+	// starts with no account and asks for a login, which is the whole point of
+	// it being Mimir's own slot rather than the operator's. ctx is already
+	// cancelled by the time this runs, so the logout gets a context of its own
+	// — it is a subprocess, and a cancelled one would never start.
+	resetCtx, cancelReset := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelReset()
+	if err := accounts.Reset(resetCtx); err != nil {
+		slog.Warn("resetting the Claude account", "error", err)
+	} else {
+		slog.Info("claude account", "state", "signed out")
+	}
 
 	return serveErr
 }

@@ -1,10 +1,14 @@
+import { CHANNELS } from "./daemon";
 import type {
+  Draft,
   LeadCategoryCount,
   LeadCompany,
   LeadRegion,
   LeadRun,
   LeadgenReport,
   LeadsQuery,
+  OutreachChannel,
+  OutreachStatus,
 } from "./daemon";
 
 /**
@@ -262,14 +266,144 @@ export function classifyNote(report: LeadgenReport | null): string | null {
   return note ?? null;
 }
 
-/** A drafted email, and where it is in the review. */
+/* -------------------------------------------------------------------------- */
+/* the selection: which companies get written to                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The ticked companies, by place id.
+ *
+ * A set of ids rather than a flag on each row, for one reason that decides the
+ * whole feature: the table is filtered and paged on the daemon, so a row that
+ * scrolls out of the filter is still a company the operator chose. A boolean
+ * living on the row would silently drop those the moment the filter changed,
+ * and the operator would send to fewer companies than they ticked without ever
+ * being told.
+ *
+ * The cost of that choice is that the selection can outrun what is on screen,
+ * so `summarize` reports the invisible part explicitly rather than hiding it.
+ */
+export type Selection = ReadonlySet<string>;
+
+export const EMPTY_SELECTION: Selection = new Set<string>();
+
+/** Ticks or unticks one company. */
+export function toggleOne(selection: Selection, placeID: string): Selection {
+  const next = new Set(selection);
+  if (!next.delete(placeID)) next.add(placeID);
+  return next;
+}
+
+/** Ticks or unticks a list at once — the header checkbox, and shift-click. */
+export function setMany(selection: Selection, placeIDs: string[], on: boolean): Selection {
+  const next = new Set(selection);
+  for (const id of placeIDs) {
+    if (on) next.add(id);
+    else next.delete(id);
+  }
+  return next;
+}
+
+/**
+ * The rows between two clicks, inclusive, in either direction.
+ *
+ * Shift-click is the one interaction that makes a sixty-row list workable, and
+ * it is a range over what is *rendered* — the order the operator sees — not
+ * over ids in a set.
+ */
+export function rangeOf(placeIDs: string[], from: number, to: number): string[] {
+  if (from < 0 || to < 0) return [];
+  const [lo, hi] = from <= to ? [from, to] : [to, from];
+  return placeIDs.slice(lo, hi + 1);
+}
+
+/** What the header checkbox shows for the rows currently in the table. */
+export type HeaderState = "none" | "some" | "all";
+
+export function headerState(selection: Selection, visible: string[]): HeaderState {
+  if (visible.length === 0) return "none";
+  let hit = 0;
+  for (const id of visible) if (selection.has(id)) hit++;
+  if (hit === 0) return "none";
+  return hit === visible.length ? "all" : "some";
+}
+
+/**
+ * What the selection is worth acting on, stated before the click.
+ *
+ * Every field here answers a question the operator would otherwise have to
+ * answer by scrolling: how many companies, how many of them this page can even
+ * show me, how many can actually be reached on each channel, and how many
+ * already have something written. `messages` is the honest cost — one model
+ * call per company per channel — and it is what the button prints.
+ */
+export type SelectionSummary = {
+  total: number;
+  /** Ticked rows that are in the table right now. The rest are off-filter. */
+  visible: number;
+  /** Ticked but not on screen — stated, never hidden. */
+  offscreen: number;
+  withPhone: number;
+  withEmail: number;
+  /** Ticked companies that already hold a draft on the chosen channels. */
+  alreadyDrafted: number;
+  /** Companies × channels: what pressing the button spends. */
+  messages: number;
+};
+
+export function summarize(
+  selection: Selection,
+  rows: LeadCompany[],
+  channels: OutreachChannel[],
+): SelectionSummary {
+  const picked = rows.filter((c) => selection.has(c.place_id));
+
+  return {
+    total: selection.size,
+    visible: picked.length,
+    offscreen: Math.max(selection.size - picked.length, 0),
+    withPhone: picked.filter((c) => (c.phone ?? "").trim() !== "").length,
+    withEmail: picked.filter((c) => (c.email ?? "").trim() !== "").length,
+    alreadyDrafted: picked.filter((c) => channels.some((ch) => draftFor(c, ch))).length,
+    messages: selection.size * Math.max(channels.length, 1),
+  };
+}
+
+/**
+ * The channels a run should ask for, keeping the daemon's order.
+ *
+ * Toggling is a set operation and a set has no order, but the daemon drafts one
+ * channel at a time in the order it is given, and an operator who ticked
+ * WhatsApp first should not get a different sequence of notes for it.
+ */
+export function toggleChannel(
+  channels: OutreachChannel[],
+  channel: OutreachChannel,
+): OutreachChannel[] {
+  const next = new Set(channels);
+  if (!next.delete(channel)) next.add(channel);
+  return CHANNELS.filter((c) => next.has(c));
+}
+
+/* -------------------------------------------------------------------------- */
+/* the drafts                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/** One company's draft on one channel, or undefined. */
+export function draftFor(company: LeadCompany, channel: OutreachChannel): Draft | undefined {
+  return (company.drafts ?? []).find((d) => d.channel === channel);
+}
+
+/** A drafted message, and where it is in the review. */
 export type DraftItem = {
   company: LeadCompany;
+  draft: Draft;
   /** Position in the queue, 1-based, for "3 / 12". */
   index: number;
 };
 
 export type DraftQueue = {
+  channel: OutreachChannel;
   items: DraftItem[];
   /** Drafts still waiting for a decision — the actual work remaining. */
   pending: number;
@@ -278,24 +412,108 @@ export type DraftQueue = {
 };
 
 /**
- * The drafts, in review order: undecided first.
+ * The drafts on one channel, in review order: undecided first.
+ *
+ * One queue per channel rather than one list of everything, because a decision
+ * is per channel — sending the email and skipping the WhatsApp line is an
+ * ordinary thing to decide — and a mixed list would make the operator read the
+ * medium off each row before knowing what "Gönderildi" would mean.
  *
  * A queue that keeps sent drafts at the top makes the operator scroll past
  * finished work to find the next decision. Within each group the search order
  * is kept, so a draft does not move because its neighbour was marked.
  */
-export function draftQueue(companies: LeadCompany[]): DraftQueue {
-  const drafted = companies.filter((c) => (c.email ?? "").trim() !== "");
-  const rank = (c: LeadCompany) => (c.email_status === "sent" || c.email_status === "skipped" ? 1 : 0);
+export function draftQueue(companies: LeadCompany[], channel: OutreachChannel): DraftQueue {
+  const rows: { company: LeadCompany; draft: Draft }[] = [];
+  for (const company of companies) {
+    const draft = draftFor(company, channel);
+    if (draft && draft.body.trim() !== "") rows.push({ company, draft });
+  }
 
-  const ordered = [...drafted].sort((a, b) => rank(a) - rank(b));
+  const decided = (d: Draft) => (d.status === "sent" || d.status === "skipped" ? 1 : 0);
+  const ordered = [...rows].sort((a, b) => decided(a.draft) - decided(b.draft));
 
   return {
-    items: ordered.map((company, i) => ({ company, index: i + 1 })),
-    pending: drafted.filter((c) => rank(c) === 0).length,
-    sent: drafted.filter((c) => c.email_status === "sent").length,
-    skipped: drafted.filter((c) => c.email_status === "skipped").length,
+    channel,
+    items: ordered.map((row, i) => ({ ...row, index: i + 1 })),
+    pending: rows.filter((r) => decided(r.draft) === 0).length,
+    sent: rows.filter((r) => r.draft.status === "sent").length,
+    skipped: rows.filter((r) => r.draft.status === "skipped").length,
   };
+}
+
+/** How many drafts each channel holds — the count on the channel tabs. */
+export function draftCounts(companies: LeadCompany[]): Record<OutreachChannel, number> {
+  const out = { email: 0, whatsapp: 0 } as Record<OutreachChannel, number>;
+  for (const company of companies) {
+    for (const draft of company.drafts ?? []) {
+      if (draft.body.trim() !== "") out[draft.channel] = (out[draft.channel] ?? 0) + 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Writes one channel's draft back onto a company, replacing any earlier draft
+ * on that channel. Mirrors `CompanyLead.setDraft` in the pipeline: a re-draft
+ * must not leave two rows for one message.
+ */
+export function withDraft(company: LeadCompany, draft: Draft): LeadCompany {
+  const rest = (company.drafts ?? []).filter((d) => d.channel !== draft.channel);
+  return { ...company, drafts: [...rest, draft] };
+}
+
+/** Records a decision on one company's draft, leaving the other channel alone. */
+export function withDraftStatus(
+  company: LeadCompany,
+  channel: OutreachChannel,
+  status: OutreachStatus,
+): LeadCompany {
+  return {
+    ...company,
+    drafts: (company.drafts ?? []).map((d) => (d.channel === channel ? { ...d, status } : d)),
+  };
+}
+
+/**
+ * Merges what a draft run returned into the rows already on screen.
+ *
+ * The run answers with the companies it wrote for, which is a subset of the
+ * table — everything else has to stay exactly as it was, including the drafts
+ * it already had on the channel this run did not ask for.
+ */
+export function mergeDrafts<T extends LeadCompany>(rows: T[], written: LeadCompany[]): T[] {
+  const byID = new Map(written.map((c) => [c.place_id, c]));
+  return rows.map((row) => {
+    const hit = byID.get(row.place_id);
+    if (!hit) return row;
+    let next = row;
+    for (const draft of hit.drafts ?? []) next = withDraft(next, draft) as T;
+    // The run also resolves the address the ledger holds; keep it if it found
+    // one and the row had none.
+    return hit.email && !next.email ? { ...next, email: hit.email } : next;
+  });
+}
+
+/**
+ * A wa.me address for a Turkish number, or undefined when the shape is not one
+ * this can be sure about.
+ *
+ * Undefined rather than a best guess: a wrong number here opens a chat with a
+ * stranger, and the plain number the panel already shows is a perfectly good
+ * fallback. Only the two forms Google Maps actually returns for Turkey are
+ * accepted — a national number with a leading zero, and one already carrying
+ * the +90 country code.
+ */
+export function whatsappHref(phone: string | undefined): string | undefined {
+  const digits = (phone ?? "").replace(/\D/g, "");
+  if (digits === "") return undefined;
+
+  // +90 5xx xxx xx xx / 90 216 xxx xx xx — 12 digits, country code included.
+  if (digits.length === 12 && digits.startsWith("90")) return `https://wa.me/${digits}`;
+  // 0216 xxx xx xx — 11 digits, national form.
+  if (digits.length === 11 && digits.startsWith("0")) return `https://wa.me/90${digits.slice(1)}`;
+  return undefined;
 }
 
 /** How a company can be reached, as the detail panel lists it. */

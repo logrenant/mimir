@@ -7,19 +7,21 @@ import (
 	"time"
 )
 
-// AccountRow is one Claude Code credential slot.
+// AccountRow is the Claude Code credential slot Mimir signs into. There is at
+// most one row.
 //
 // ConfigDir is the value handed to the CLI as CLAUDE_SECURESTORAGE_CONFIG_DIR,
-// from which it derives its keychain entry. Empty means the CLI's own default
-// slot: the variable is not set at all, rather than set to "".
+// from which it derives its keychain entry. It is always Mimir's own directory
+// (config.ClaudeSessionDir) — the empty string, which would mean the CLI's own
+// default slot, is what this deliberately never writes.
 type AccountRow struct {
 	ID        string
 	Label     string
 	ConfigDir string
-	// Discovered marks a slot found on disk rather than registered by hand.
-	// Those rows answer to the filesystem: ~/.claude-accounts is the same tree
-	// the operator's shell switches between, so removing one means removing
-	// the directory, not forgetting the row.
+	// Discovered is vestigial: it belonged to the scan of ~/.claude-accounts
+	// that made the filesystem the authority for which slots existed. Mimir
+	// has one account and signs into it itself, so nothing sets this. The
+	// column stays because migrations are append-only.
 	Discovered bool
 	CreatedAt  time.Time
 	LastUsedAt time.Time
@@ -135,58 +137,19 @@ func (s *Store) TouchAccount(ctx context.Context, id string, at time.Time) error
 	return nil
 }
 
-// MarkAccountDiscovered records that a scan found this slot on disk.
+// DeleteAllAccounts forgets every slot.
 //
-// It only ever sets the flag. A row registered by hand and then found by a
-// scan is the same slot the scan would have created, so it becomes the
-// filesystem's; a row whose directory later disappears keeps the flag, because
-// the honest report for it is a probe that fails, not a slot that silently
-// turns manual.
-func (s *Store) MarkAccountDiscovered(ctx context.Context, id string) error {
+// This is the store half of "closing Mimir resets the accounts": the login
+// itself is signed out through the CLI, and what is left here is bookkeeping
+// for an identity that no longer exists. A truncate rather than a delete by id
+// because there is only ever one row and the caller is not holding its id — it
+// is clearing whatever a previous, possibly crashed, run left behind.
+func (s *Store) DeleteAllAccounts(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return unavailable(errors.New("store not open"))
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE accounts SET discovered = 1 WHERE id = ?`, id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM accounts`); err != nil {
 		return unavailable(err)
 	}
 	return nil
-}
-
-// DeleteAccount forgets a slot. The credentials themselves live in the
-// keychain and are untouched: this removes Mimir's knowledge of the slot, not
-// the login.
-func (s *Store) DeleteAccount(ctx context.Context, id string) error {
-	if s == nil || s.db == nil {
-		return unavailable(errors.New("store not open"))
-	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id = ?`, id); err != nil {
-		return unavailable(err)
-	}
-	return nil
-}
-
-// CountRunsForAccount reports how many of a slot's runs are in these statuses —
-// what a delete has to check before it orphans a queue.
-func (s *Store) CountRunsForAccount(ctx context.Context, id string, statuses ...string) (int, error) {
-	if s == nil || s.db == nil {
-		return 0, unavailable(errors.New("store not open"))
-	}
-	if len(statuses) == 0 {
-		return 0, nil
-	}
-	query := `SELECT COUNT(*) FROM coding_runs
-	          WHERE (account_id = ? OR requested_account_id = ?) AND status IN (?`
-	args := []any{id, id, statuses[0]}
-	for _, s := range statuses[1:] {
-		query += ", ?"
-		args = append(args, s)
-	}
-	query += ")"
-
-	var n int
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
-		return 0, unavailable(err)
-	}
-	return n, nil
 }

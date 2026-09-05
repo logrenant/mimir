@@ -4,10 +4,12 @@
 
 mod daemon;
 mod exports;
+#[cfg(target_os = "macos")]
+mod macos;
 mod quick;
 mod tray;
 
-use tauri::WindowEvent;
+use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 fn main() {
@@ -34,11 +36,19 @@ fn main() {
             exports::reveal_export
         ])
         .setup(|app| {
-            // No Dock icon: Mimir is a menu-bar app. The daemon outlives every
-            // window, so a Dock tile would advertise a lifetime the app no
-            // longer owns.
+            // Mimir is a menu-bar app, and with no window on screen it still
+            // has no Dock tile — the daemon outlives every window, so a tile
+            // would advertise a lifetime the app no longer owns. The policy is
+            // no longer fixed for the life of the process, though: an accessory
+            // app has no menu bar for a fullscreen window to reveal, so it
+            // follows the main window (see macos::follow_main_window).
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            {
+                macos::sync_policy(app.handle());
+                if let Some(main) = app.get_webview_window(quick::MAIN_LABEL) {
+                    macos::allow_fullscreen(&main);
+                }
+            }
 
             // Started here, not awaited: the window paints immediately and the
             // UI asks for the endpoint until it is ready or has failed.
@@ -64,6 +74,11 @@ fn main() {
                 // tray's "Quit Mimir" and nothing else.
                 api.prevent_close();
                 let _ = window.hide();
+                // The Dock tile goes with the window it belonged to.
+                #[cfg(target_os = "macos")]
+                if window.label() == quick::MAIN_LABEL {
+                    macos::follow_main_window(window.app_handle(), false);
+                }
             }
         })
         .build(tauri::generate_context!())

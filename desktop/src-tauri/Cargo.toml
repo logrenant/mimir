@@ -23,3 +23,8 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 ureq = "=3.4.0"
 getrandom = "=0.4.3"
+
+# macOS-only, and only for the one AppKit flag Tauri does not expose: the
+# window's fullscreen opt-in. Versions match what tauri already locks.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSWindow", "NSResponder"] }

@@ -79,9 +79,9 @@ func TestWith_TheZeroSelectionChangesNothing(t *testing.T) {
 		t.Error("GapAnalyzerRunner.With(zero) should return the same stage")
 	}
 
-	e := NewEmailRunner(testConfig(), nil, nil)
+	e := NewMessageRunner(testConfig(), nil, nil)
 	if e.With(llm.Selection{}) != e {
-		t.Error("EmailRunner.With(zero) should return the same stage")
+		t.Error("MessageRunner.With(zero) should return the same stage")
 	}
 }
 
@@ -90,7 +90,7 @@ func TestWith_TheZeroSelectionChangesNothing(t *testing.T) {
 func TestWith_TolerateANilStage(t *testing.T) {
 	var c *Categorizer
 	var g *GapAnalyzerRunner
-	var e *EmailRunner
+	var e *MessageRunner
 
 	sel := llm.Selection{Provider: "agy", Model: "gemini-3.8-flash-low"}
 	if c.With(sel) != nil || g.With(sel) != nil || e.With(sel) != nil {

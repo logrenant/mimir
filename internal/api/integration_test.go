@@ -81,6 +81,7 @@ func newLive(t *testing.T, claudePath string) *live {
 	cfg.StorePath = filepath.Join(tmp, "mimir.db")
 	cfg.TranscriptDir = filepath.Join(tmp, "transcripts")
 	cfg.ClaudeCLIPath = claudePath
+	cfg.ClaudeSessionDir = filepath.Join(tmp, "claude-session")
 	cfg.CodingRunTimeout = 30 * time.Second
 	cfg.DaemonAuthToken = testToken
 	// The canonical tool set is credential-gated (task-24), so an operator who
@@ -122,9 +123,24 @@ func newLive(t *testing.T, claudePath string) *live {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
+	// Connected, because a run only happens in that state: with no account the
+	// daemon refuses the task rather than falling back to the CLI's own login.
+	// Written through the store because connecting for real means `claude auth
+	// login` and a browser window.
+	if err := db.InsertAccount(ctx, store.AccountRow{
+		ID:        "acct-mimir",
+		Label:     "Claude",
+		ConfigDir: cfg.ClaudeSessionDir,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		cancel()
+		t.Fatalf("InsertAccount: %v", err)
+	}
+
 	bus := events.NewBus()
 	registry := project.NewRegistry(db)
-	runner := coderunner.New(ctx, cfg, bus, registry, account.NewRegistry(db), db)
+	accounts := account.NewRegistry(db, cfg.ClaudeSessionDir, cfg.ClaudeCLIPath)
+	runner := coderunner.New(ctx, cfg, bus, registry, accounts, db)
 
 	srv := httptest.NewServer(New(cfg, Deps{
 		Projects:    registry,

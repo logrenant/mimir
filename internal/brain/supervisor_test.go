@@ -524,3 +524,99 @@ func TestSupervisor_ControlsAreOnTheConsole(t *testing.T) {
 		t.Errorf("controls are not on the console: %q", text)
 	}
 }
+
+// --- the scan permission surface ---------------------------------------------
+
+// The loop must ask for the policy every sweep, not capture it once. This is
+// the property that makes the Brain tab's folder list a control rather than a
+// display: the operator excludes something and the *next* sweep obeys, with no
+// daemon restart.
+func TestSupervisor_PolicyIsReReadEverySweep(t *testing.T) {
+	s, _, project := supervisorFixture(t, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+
+	var mu sync.Mutex
+	policy := ScanPolicy{Roots: s.cfg.BrainScanRoots}
+	s.deps.Policy = func() ScanPolicy {
+		mu.Lock()
+		defer mu.Unlock()
+		return policy
+	}
+
+	runSweep(t, s)
+	if got := s.Status().ScannedSession; got != 2 {
+		t.Fatalf("first sweep scanned %d files, want 2", got)
+	}
+
+	// Exclude one of the two files between sweeps.
+	mu.Lock()
+	policy.Excludes = []string{filepath.Join(project, "README.md")}
+	mu.Unlock()
+
+	// A fresh hash store, so the second sweep would otherwise re-read both.
+	s.deps.Hashes = &fakeHashes{}
+	s.mu.Lock()
+	s.status.ScannedSession = 0
+	s.mu.Unlock()
+
+	runSweep(t, s)
+
+	got := s.Status()
+	if got.ScannedSession != 1 {
+		t.Errorf("after excluding one file, the sweep scanned %d, want 1", got.ScannedSession)
+	}
+	if len(got.Excludes) != 1 {
+		t.Errorf("status excludes = %v, want the one entry the policy carries", got.Excludes)
+	}
+}
+
+// A root list the operator emptied has to leave the loop alive. Before this,
+// an empty list ended Run's goroutine and only a daemon restart brought
+// scanning back — so removing the last folder was a one-way door.
+func TestSupervisor_EmptyRootsPauseTheLoopRatherThanEndIt(t *testing.T) {
+	s, _, _ := supervisorFixture(t, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+	roots := s.cfg.BrainScanRoots
+
+	var mu sync.Mutex
+	var empty bool
+	s.deps.Policy = func() ScanPolicy {
+		mu.Lock()
+		defer mu.Unlock()
+		if empty {
+			return ScanPolicy{}
+		}
+		return ScanPolicy{Roots: roots}
+	}
+
+	// With no roots, a sweep discovers nothing and spends nothing.
+	mu.Lock()
+	empty = true
+	mu.Unlock()
+	runSweep(t, s)
+	if got := s.Status().ScannedSession; got != 0 {
+		t.Fatalf("an empty policy scanned %d files, want 0", got)
+	}
+
+	// Adding a root back must be enough; nothing was torn down.
+	mu.Lock()
+	empty = false
+	mu.Unlock()
+	runSweep(t, s)
+	if got := s.Status().ScannedSession; got != 2 {
+		t.Errorf("after restoring the root, scanned = %d, want 2", got)
+	}
+}
+
+// With no Policy wired at all, the loop behaves exactly as it did before the
+// policy existed. Every other caller of this package depends on that.
+func TestSupervisor_NilPolicyFallsBackToTheConfiguredRoots(t *testing.T) {
+	s, _, _ := supervisorFixture(t, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+	s.deps.Policy = nil
+
+	got := s.policy()
+	if len(got.Roots) != len(s.cfg.BrainScanRoots) || got.Roots[0] != s.cfg.BrainScanRoots[0] {
+		t.Errorf("policy() = %+v, want cfg.BrainScanRoots %v", got, s.cfg.BrainScanRoots)
+	}
+	if len(got.Excludes) != 0 {
+		t.Errorf("policy() excludes = %v, want none", got.Excludes)
+	}
+}

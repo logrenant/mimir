@@ -122,18 +122,32 @@ describe("request", () => {
 });
 
 describe("accounts", () => {
-  test("a rescan is a POST with no body", async () => {
-    withDaemon({ status: 200, body: JSON.stringify({ accounts: [] }) });
+  test("starting a login is a POST with no body", async () => {
+    withDaemon({ status: 202, body: JSON.stringify({ state: "waiting" }) });
 
-    await api.scanAccounts();
+    await api.startAccountLogin();
 
     expect(invoke).toHaveBeenCalledWith("daemon_request", {
       method: "POST",
-      path: "/accounts/scan",
+      path: "/accounts/login",
       body: null,
     });
   });
 
+  // The reset is what the app calls on its way out as well, so it has to be a
+  // route with no arguments: there is no id to hold at that point, and no
+  // screen left to read an error from.
+  test("a reset is a POST with no body", async () => {
+    withDaemon({ status: 204, body: "" });
+
+    await api.resetAccounts();
+
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "POST",
+      path: "/accounts/reset",
+      body: null,
+    });
+  });
 });
 
 describe("brain scan", () => {
@@ -219,14 +233,63 @@ describe("lead-gen", () => {
     });
   });
 
-  test("setEmailStatus POSTs place_id and status, and tolerates a 204", async () => {
-    withDaemon({ status: 204, body: "" });
+  // The search route no longer carries a model. The daemon reads the operator's
+  // saved default behind it, so a body with provider/model in it would be this
+  // client re-introducing the per-run picker the settings screen replaced.
+  test("runLeadgen sends no provider or model", async () => {
+    withDaemon({ status: 200, body: JSON.stringify({ companies: [], categories: [] }) });
 
-    await expect(api.setEmailStatus("p1", "sent")).resolves.toBeUndefined();
+    await api.runLeadgen({ query: "dentists" });
+
+    const [, args] = invoke.mock.calls.find(([cmd]) => cmd === "daemon_request")!;
+    expect(JSON.parse((args as { body: string }).body)).toEqual({ query: "dentists" });
+  });
+
+  test("draftOutreach POSTs the ticked place ids and the chosen channels", async () => {
+    const result = {
+      companies: [
+        {
+          place_id: "p1",
+          name: "Acme Dental",
+          category: "health",
+          drafts: [{ channel: "whatsapp", body: "Merhaba", status: "draft" }],
+        },
+      ],
+      categories: [{ category: "health", company_count: 1 }],
+      notes: ["whatsapp draft skipped for p2: no place_id to key it by"],
+    };
+    withDaemon({ status: 200, body: JSON.stringify(result) });
+
+    const got = await api.draftOutreach({
+      place_ids: ["p1", "p2"],
+      channels: ["email", "whatsapp"],
+      region: "Kadıköy",
+    });
+
+    expect(got.companies[0].drafts?.[0].channel).toBe("whatsapp");
+    // The notes are the pipeline's own diagnostics and reach the screen intact.
+    expect(got.notes).toHaveLength(1);
     expect(invoke).toHaveBeenCalledWith("daemon_request", {
       method: "POST",
-      path: "/maps/emails/status",
-      body: JSON.stringify({ place_id: "p1", status: "sent" }),
+      path: "/maps/outreach",
+      body: JSON.stringify({
+        place_ids: ["p1", "p2"],
+        channels: ["email", "whatsapp"],
+        region: "Kadıköy",
+      }),
+    });
+  });
+
+  test("setOutreachStatus carries the channel, and tolerates a 204", async () => {
+    withDaemon({ status: 204, body: "" });
+
+    await expect(api.setOutreachStatus("p1", "whatsapp", "sent")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "POST",
+      path: "/maps/outreach/status",
+      // No prompt version: the server resolves which draft "the one I am
+      // looking at" means, and this client must never send one.
+      body: JSON.stringify({ place_id: "p1", channel: "whatsapp", status: "sent" }),
     });
   });
 
@@ -238,9 +301,88 @@ describe("lead-gen", () => {
       }),
     });
 
-    await expect(api.setEmailStatus("p1", "sent")).rejects.toMatchObject({
+    await expect(api.setOutreachStatus("p1", "email", "sent")).rejects.toMatchObject({
       code: "bad_request",
       status: 400,
+    });
+  });
+});
+
+describe("settings", () => {
+  const view = {
+    provider: "agy",
+    model: "gemini-3.1-pro-high",
+    routed: { provider: "claude", model: "claude-opus-5" },
+    rules: [
+      { channel: "email", label: "E-posta", path: "/s/rules/email.md", body: "# kural", is_default: false, updated_at: 1_757_000_000 },
+      { channel: "whatsapp", label: "WhatsApp", path: "/s/rules/whatsapp.md", body: "# kural", is_default: true },
+    ],
+  };
+
+  test("the screen is one GET, not three", async () => {
+    withDaemon({ status: 200, body: JSON.stringify(view) });
+
+    const got = await api.settings();
+
+    expect(got.rules).toHaveLength(2);
+    expect(got.routed.provider).toBe("claude");
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "GET",
+      path: "/settings",
+      body: null,
+    });
+  });
+
+  // PUT, not PATCH: the pair is one decision, and the daemon replaces it whole.
+  test("saveSettings PUTs the provider and model together", async () => {
+    withDaemon({ status: 200, body: JSON.stringify(view) });
+
+    await api.saveSettings("agy", "gemini-3.1-pro-high");
+
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "PUT",
+      path: "/settings",
+      body: JSON.stringify({ provider: "agy", model: "gemini-3.1-pro-high" }),
+    });
+  });
+
+  test("clearing the model is a legal save, not an omitted field", async () => {
+    withDaemon({ status: 200, body: JSON.stringify({ ...view, provider: "", model: "" }) });
+
+    const got = await api.saveSettings("", "");
+
+    expect(got.provider).toBe("");
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "PUT",
+      path: "/settings",
+      body: JSON.stringify({ provider: "", model: "" }),
+    });
+  });
+
+  test("saveRule PUTs one channel's body", async () => {
+    withDaemon({ status: 200, body: JSON.stringify(view.rules[1]) });
+
+    const got = await api.saveRule("whatsapp", "# yeni kural");
+
+    expect(got.is_default).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "PUT",
+      path: "/settings/rules",
+      body: JSON.stringify({ channel: "whatsapp", body: "# yeni kural" }),
+    });
+  });
+
+  // A route rather than "send the shipped default back": a client holding a
+  // copy of the default is exactly the drift the daemon publishes lists to avoid.
+  test("resetRule asks the daemon for its own default", async () => {
+    withDaemon({ status: 200, body: JSON.stringify(view.rules[0]) });
+
+    await api.resetRule("email");
+
+    expect(invoke).toHaveBeenCalledWith("daemon_request", {
+      method: "POST",
+      path: "/settings/rules/reset",
+      body: JSON.stringify({ channel: "email" }),
     });
   });
 });
