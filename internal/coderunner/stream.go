@@ -2,6 +2,7 @@ package coderunner
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"time"
 
@@ -68,9 +69,20 @@ type cliLine struct {
 	DurationMs   int64   `json:"duration_ms"`
 	NumTurns     int     `json:"num_turns"`
 	Result       string  `json:"result"`
+	// APIErrorStatus is the upstream HTTP status when the CLI ran fine but the
+	// API refused the turn. A 429 is a spent budget, not a broken run, and the
+	// two get different treatment: one waits for the window, the other is a
+	// failure the operator has to look at.
+	APIErrorStatus int `json:"api_error_status"`
 
 	// rate_limit_event
 	RateLimitInfo *struct {
+		// Status is the CLI's own verdict on the window: "allowed" while there
+		// is budget left, "rejected" once there is not. Read rather than
+		// inferred from utilization, because the threshold is the CLI's to
+		// decide and a client second-guessing it would either pause a run that
+		// could still work or miss one that cannot.
+		Status         string `json:"status"`
 		UnifiedWindows map[string]struct {
 			Utilization float64 `json:"utilization"`
 			ResetsAt    int64   `json:"resetsAt"`
@@ -103,6 +115,14 @@ type state struct {
 	emitted   map[string]struct{} // tool_use ids already announced
 	sessionID string
 	model     string
+
+	// What the CLI has said about the token budget. resetsAt is the last
+	// window reset it reported — kept whatever the status, because the number
+	// is only ever announced while there is still budget left, and the moment
+	// it matters is after there is not. rejected latches: a window that closed
+	// mid-run does not reopen before the run ends.
+	resetsAt int64
+	rejected bool
 }
 
 func newState(runID string) *state {
@@ -169,6 +189,13 @@ func parseLine(line []byte, s *state, at time.Time) []events.Event {
 		if !ok {
 			return nil
 		}
+		if w.ResetsAt > 0 {
+			s.resetsAt = w.ResetsAt
+		}
+		if strings.EqualFold(l.RateLimitInfo.Status, "rejected") {
+			s.rejected = true
+		}
+
 		ev := s.next(events.KindRateLimit, at)
 		ev.Utilization = w.Utilization
 		ev.ResetsAt = w.ResetsAt
@@ -291,7 +318,21 @@ func parseResult(l cliLine, s *state, at time.Time) []events.Event {
 	ev.NumTurns = l.NumTurns
 	ev.Text = l.Result
 	if l.IsError {
-		ev.Error = firstNonEmpty(l.Subtype, "the claude CLI reported an error")
+		// The reason before the label: `result` carries the CLI's own sentence
+		// ("Claude AI usage limit reached|1788104400") and the subtype is a
+		// category. A card that says only "error_during_execution" tells the
+		// operator nothing they can act on, and the sentence is also where a
+		// spent budget announces its reset time.
+		ev.Error = clampError(firstNonEmpty(l.Result, l.Subtype,
+			"the claude CLI reported an error"))
+		// Latched here as well as on a rejected window, because a CLI that
+		// runs out mid-turn reports it as a failed result and nothing else.
+		// consume reads this flag to decide whether the failure is worth
+		// announcing, so it has to be set by the time this line's events are
+		// emitted — which is why it lives in the parser rather than beside it.
+		if l.APIErrorStatus == http.StatusTooManyRequests || looksSpent(ev.Error) {
+			s.rejected = true
+		}
 	}
 	return []events.Event{ev}
 }
@@ -321,6 +362,18 @@ func toolResultText(raw json.RawMessage) string {
 		return strings.Join(parts, "\n")
 	}
 	return ""
+}
+
+// maxResultError bounds what a failed result puts on the card. The CLI's
+// reason is a sentence; a turn that failed on a wall of model output would
+// otherwise write the whole of it into a row that a board renders.
+const maxResultError = 500
+
+func clampError(s string) string {
+	if len(s) > maxResultError {
+		return s[:maxResultError] + "…"
+	}
+	return s
 }
 
 func firstNonEmpty(vals ...string) string {

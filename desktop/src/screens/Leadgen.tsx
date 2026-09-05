@@ -3,17 +3,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
-import { ProviderModelPicker } from "../components/ModelPicker";
+import { Checkbox } from "../components/ui/checkbox";
 import {
   api,
+  CHANNELS,
   DaemonError,
-  type EmailStatus,
   type LeadCategoryCount,
   type LeadCompany,
   type LeadRegion,
   type LeadgenExportResult,
   type LeadgenReport,
-  type LLMProviderList,
+  type OutreachChannel,
+  type OutreachStatus,
   type SavedLead,
 } from "../lib/daemon";
 import {
@@ -24,13 +25,27 @@ import {
   classifyNote,
   contactLines,
   describeRegion,
+  draftCounts,
+  draftFor,
   draftQueue,
+  type DraftQueue,
+  EMPTY_SELECTION,
   filterCompanies,
+  headerState,
   leadsQueryFrom,
   ledgerTotals,
+  mergeDrafts,
   railFromCounts,
+  rangeOf,
+  type Selection,
+  setMany,
   sortCompanies,
+  summarize,
+  toggleChannel,
+  toggleOne,
   totals,
+  whatsappHref,
+  withDraftStatus,
   type SortKey,
 } from "../lib/leadgen";
 
@@ -57,14 +72,6 @@ export function Leadgen() {
   const [withEmails, setWithEmails] = useState(false);
   const [enrich, setEnrich] = useState(true);
 
-  // The model this run spends. Empty is "route by class" — the daemon's own
-  // default — and it stays the opening state on purpose: a picker that
-  // pre-selects a provider would quietly change what a run costs for someone
-  // who never opened it.
-  const [providers, setProviders] = useState<LLMProviderList | null>(null);
-  const [provider, setProvider] = useState("");
-  const [model, setModel] = useState("");
-
   const [report, setReport] = useState<LeadgenReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -75,27 +82,11 @@ export function Leadgen() {
   // when emails are requested. Mirror that here so the checkbox does not lie.
   const gapsEffective = withGaps || withEmails;
 
-  // The allow-list, read once. A failure here is not an error on the screen:
-  // the picker simply does not appear, and every run routes by class exactly
-  // as it did before the picker existed.
-  useEffect(() => {
-    let live = true;
-    api
-      .llmProviders()
-      .then((list) => {
-        if (live) setProviders(list);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  // Provider and model travel together or not at all — the daemon rejects a
-  // model without one, and the same model id can be reachable through more
-  // than one CLI.
-  const selection = provider ? { provider, model: model || undefined } : {};
-
+  // There is no model picker here any more. Which model a run spends is a
+  // decision about a campaign, not about one search, so it lives on the
+  // settings screen and the daemon reads it back (`api.leadgenSelection`).
+  // Sending nothing is not sending "no model": it is asking for whatever the
+  // operator saved, or class routing if they saved nothing.
   const run = async () => {
     if (!query.trim()) return;
     setError(null);
@@ -109,7 +100,6 @@ export function Leadgen() {
         count: parsedCount(count),
         gap_analysis: gapsEffective,
         emails: withEmails,
-        ...selection,
       });
       setReport(result);
     } catch (err) {
@@ -133,7 +123,6 @@ export function Leadgen() {
         gap_analysis: gapsEffective,
         emails: withEmails,
         enrich,
-        ...selection,
       });
       setExported(result);
     } catch (err) {
@@ -143,16 +132,27 @@ export function Leadgen() {
     }
   };
 
-  const onStatusChange = (placeID: string, status: EmailStatus) => {
-    setReport((current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        companies: current.companies.map((c) =>
-          c.place_id === placeID ? { ...c, email_status: status } : c,
-        ),
-      };
-    });
+  // Both writes land the same way: optimistically, on the row in hand. The
+  // daemon has already answered and owns the prompt version, so re-reading the
+  // whole run to learn what this client just did would be a round trip for
+  // nothing.
+  const onStatusChange = (placeID: string, channel: OutreachChannel, status: OutreachStatus) => {
+    setReport((current) =>
+      current
+        ? {
+            ...current,
+            companies: current.companies.map((c) =>
+              c.place_id === placeID ? withDraftStatus(c, channel, status) : c,
+            ),
+          }
+        : current,
+    );
+  };
+
+  const onDrafted = (written: LeadCompany[]) => {
+    setReport((current) =>
+      current ? { ...current, companies: mergeDrafts(current.companies, written) } : current,
+    );
   };
 
   return (
@@ -172,25 +172,11 @@ export function Leadgen() {
         withEmails={withEmails}
         busy={busy}
         error={error}
-        providers={providers}
-        provider={provider}
-        model={model}
         onQuery={setQuery}
         onRegion={setRegion}
         onCount={setCount}
         onGaps={setWithGaps}
         onEmails={setWithEmails}
-        onProvider={(id) => {
-          setProvider(id);
-          // The model list changes with the provider, so the old choice is not
-          // merely stale — it is a combination the daemon rejects. Name the
-          // new provider's default explicitly rather than clearing to "": the
-          // second control has no empty option, so a cleared value would show
-          // whichever model happens to be listed first while the run spent a
-          // different one.
-          setModel(providers?.providers.find((p) => p.id === id)?.default_model ?? "");
-        }}
-        onModel={setModel}
         onRun={() => void run()}
       />
 
@@ -203,6 +189,7 @@ export function Leadgen() {
           exported={exported}
           onExport={() => void exportToExcel()}
           onStatusChange={onStatusChange}
+          onDrafted={onDrafted}
           onShowLedger={() => setReport(null)}
         />
       ) : (
@@ -233,16 +220,11 @@ function SearchPanel(props: {
   withEmails: boolean;
   busy: boolean;
   error: string | null;
-  providers: LLMProviderList | null;
-  provider: string;
-  model: string;
   onQuery: (v: string) => void;
   onRegion: (v: string) => void;
   onCount: (v: string) => void;
   onGaps: (v: boolean) => void;
   onEmails: (v: boolean) => void;
-  onProvider: (v: string) => void;
-  onModel: (v: string) => void;
   onRun: () => void;
 }) {
   return (
@@ -283,16 +265,14 @@ function SearchPanel(props: {
             disabled={props.gapsLocked}
             onChange={props.onGaps}
           />
-          <Check label="taslak e-posta yaz" checked={props.withEmails} onChange={props.onEmails} />
-          <ProviderModelPicker
-            providers={props.providers}
-            provider={props.provider}
-            model={props.model}
-            onProvider={props.onProvider}
-            onModel={props.onModel}
+          <Check
+            label="bulunan herkese e-posta taslağı yaz"
+            checked={props.withEmails}
+            onChange={props.onEmails}
           />
           <span className="text-xs text-muted">
-            boşluk analizi ve taslaklar model harcar; bölge sonucu önbelleğe alınır
+            boşluk analizi ve taslaklar model harcar; bölge sonucu önbelleğe alınır. Seçtiğiniz
+            şirketlere yazmak için tabloda işaretleyin — bu kutu <em>bulunan herkese</em> yazar.
           </span>
           {props.error && <span className="text-xs text-bad">{props.error}</span>}
         </div>
@@ -342,6 +322,206 @@ function Check(props: {
 }
 
 /* -------------------------------------------------------------------------- */
+/* the selection: which companies get written to                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The tick boxes, the channel toggles and the call that spends on them.
+ *
+ * Shared by the run view and the ledger because it is the same decision in both
+ * places — these companies, these channels — and the only thing that differs is
+ * where the answer is written back to.
+ *
+ * The selection is kept after a draft run rather than cleared. Clearing would
+ * be the tidier animation and the worse behaviour: the common next move is
+ * "now do WhatsApp for the same twenty", and a selection that vanished would
+ * have to be rebuilt by hand. What protects against paying twice is not an
+ * empty list, it is `alreadyDrafted` on the bar, which counts the ticked
+ * companies that already hold a draft on the chosen channels.
+ */
+function useOutreach(
+  rows: LeadCompany[],
+  region: string | undefined,
+  apply: (written: LeadCompany[]) => void,
+) {
+  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [channels, setChannels] = useState<OutreachChannel[]>(["email"]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notes, setNotes] = useState<string[]>([]);
+
+  // Where the last plain click landed, for shift-click. A ref rather than
+  // state: it steers the next gesture and must never cause a render of its own.
+  const anchor = useRef<number | null>(null);
+
+  const ids = useMemo(() => rows.map((r) => r.place_id), [rows]);
+  const summary = useMemo(() => summarize(selection, rows, channels), [selection, rows, channels]);
+
+  const toggleRow = (index: number, shift: boolean) => {
+    const id = ids[index];
+    if (!id) return;
+    const on = !selection.has(id);
+
+    if (shift && anchor.current !== null) {
+      // The range takes the state the clicked row is moving to, so shift-click
+      // extends a selection and shift-click again retracts the same span.
+      setSelection(setMany(selection, rangeOf(ids, anchor.current, index), on));
+      return;
+    }
+    anchor.current = index;
+    setSelection(toggleOne(selection, id));
+  };
+
+  // The header box acts on what is in the table, never on the whole ledger: it
+  // sits above these rows, and "all" that quietly meant four thousand rows
+  // would be the most expensive misreading available on this screen.
+  const toggleAll = () => {
+    const state = headerState(selection, ids);
+    setSelection(setMany(selection, ids, state !== "all"));
+    anchor.current = null;
+  };
+
+  const clear = () => {
+    setSelection(EMPTY_SELECTION);
+    anchor.current = null;
+    setNotes([]);
+    setError(null);
+  };
+
+  const draft = async () => {
+    if (selection.size === 0 || channels.length === 0 || busy) return;
+    setBusy(true);
+    setError(null);
+    setNotes([]);
+    try {
+      const result = await api.draftOutreach({
+        place_ids: [...selection],
+        channels,
+        region: region?.trim() || undefined,
+      });
+      apply(result.companies ?? []);
+      // The pipeline's per-stage diagnostics are shown as written. A company
+      // that could not be drafted for says so here rather than silently coming
+      // back without a draft.
+      setNotes(result.notes ?? []);
+    } catch (err) {
+      setError(describe(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return {
+    selection,
+    channels,
+    summary,
+    header: headerState(selection, ids),
+    busy,
+    error,
+    notes,
+    toggleRow,
+    toggleAll,
+    clear,
+    setChannel: (ch: OutreachChannel) => setChannels((cur) => toggleChannel(cur, ch)),
+    draft: () => void draft(),
+  };
+}
+
+type Outreach = ReturnType<typeof useOutreach>;
+
+/**
+ * What the selection is about to cost, and the one control that spends it.
+ *
+ * It appears only with something ticked. A permanently docked bar would take a
+ * strip of the table away from the ninety per cent of the time when nobody is
+ * drafting, and an empty one reads as a control that is broken rather than
+ * one that is waiting.
+ *
+ * Every number on it answers a question the operator would otherwise answer by
+ * scrolling — how many, how many of them I can still see, how many already have
+ * something written — and the button prints the message count rather than the
+ * company count, because that is what is actually being spent.
+ */
+function OutreachBar({ outreach }: { outreach: Outreach }) {
+  const { summary, channels } = outreach;
+  if (summary.total === 0) return null;
+
+  const nothingToWriteWith = channels.length === 0;
+
+  return (
+    <div className="shrink-0 border-t border-electric/30 bg-raised/60">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
+        <span className="text-sm tabular-nums text-mist">
+          {summary.total} şirket seçili
+        </span>
+
+        <span className="text-xs text-muted tabular-nums">
+          {summary.withPhone} telefon · {summary.withEmail} e-posta
+          {/* A selection can outrun the filter it was made under. Saying so is
+              the whole reason the selection is a set of ids and not a flag on
+              the rendered row. */}
+          {summary.offscreen > 0 && (
+            <> · <span className="text-warn">{summary.offscreen} tanesi bu süzgeçte görünmüyor</span></>
+          )}
+          {summary.alreadyDrafted > 0 && (
+            <> · <span className="text-warn">{summary.alreadyDrafted} tanesinde zaten taslak var</span></>
+          )}
+        </span>
+
+        <div className="flex items-center gap-1.5">
+          {CHANNELS.map((ch) => {
+            const on = channels.includes(ch);
+            return (
+              <button
+                key={ch}
+                type="button"
+                onClick={() => outreach.setChannel(ch)}
+                aria-pressed={on}
+                className={`label rounded-sm border px-2.5 py-1.5 leading-none transition-colors ${
+                  on
+                    ? "border-electric/60 bg-electric/10 text-mist"
+                    : "border-edge text-muted hover:border-muted/60 hover:text-mist"
+                }`}
+              >
+                {ch === "email" ? "E-posta" : "WhatsApp"}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="ml-auto flex items-center gap-2">
+          {outreach.error && <span className="text-xs text-bad">{outreach.error}</span>}
+          <Button variant="ghost" onClick={outreach.clear} disabled={outreach.busy}>
+            Seçimi temizle
+          </Button>
+          <Button
+            onClick={outreach.draft}
+            disabled={outreach.busy || nothingToWriteWith}
+            title={
+              nothingToWriteWith
+                ? "En az bir kanal seçin"
+                : "Her şirket için her kanalda bir model çağrısı harcanır"
+            }
+          >
+            {outreach.busy ? "Yazılıyor…" : `Taslak yaz · ${summary.messages} mesaj`}
+          </Button>
+        </div>
+      </div>
+
+      {outreach.notes.length > 0 && (
+        <ul className="max-h-24 space-y-0.5 overflow-auto border-t border-edge px-4 py-2">
+          {outreach.notes.map((note, i) => (
+            <li key={i} className="text-[11px] leading-relaxed text-muted">
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* the results                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -354,7 +534,8 @@ function Results(props: {
   exporting: boolean;
   exported: LeadgenExportResult | null;
   onExport: () => void;
-  onStatusChange: (placeID: string, status: EmailStatus) => void;
+  onStatusChange: (placeID: string, channel: OutreachChannel, status: OutreachStatus) => void;
+  onDrafted: (written: LeadCompany[]) => void;
   // Drops the run and goes back to the ledger. A run is a moment; the ledger is
   // the record, and the operator has to be able to get back to it without
   // running a search to clear one.
@@ -362,9 +543,14 @@ function Results(props: {
 }) {
   const { report } = props;
   const [view, setView] = useState<View>("companies");
+  // Which channel's letters the drafts view is reading. A decision is per
+  // channel, so a mixed list would make the operator read the medium off each
+  // row before knowing what "Gönderildi" would mean.
+  const [channel, setChannel] = useState<OutreachChannel>("email");
 
   const sums = useMemo(() => totals(report), [report]);
-  const drafts = useMemo(() => draftQueue(report.companies), [report.companies]);
+  const counts = useMemo(() => draftCounts(report.companies), [report.companies]);
+  const drafts = useMemo(() => draftQueue(report.companies, channel), [report.companies, channel]);
   const failure = classifyNote(report);
 
   return (
@@ -380,7 +566,7 @@ function Results(props: {
         aside={
           <div className="flex items-center gap-2">
             <SourceBadge report={report} />
-            <Tabs view={view} drafts={drafts.items.length} onChange={setView} />
+            <Tabs view={view} drafts={counts.email + counts.whatsapp} onChange={setView} />
             <Button variant="ghost" onClick={props.onShowLedger}>
               Kayıtlı işletmeler
             </Button>
@@ -398,9 +584,18 @@ function Results(props: {
       )}
 
       {view === "companies" ? (
-        <CompaniesView report={report} onOpenDrafts={() => setView("drafts")} />
+        <CompaniesView
+          report={report}
+          onDrafted={props.onDrafted}
+          onOpenDrafts={() => setView("drafts")}
+        />
       ) : (
-        <DraftsView queue={drafts} onStatusChange={props.onStatusChange} />
+        <DraftsView
+          queue={drafts}
+          counts={counts}
+          onChannel={setChannel}
+          onStatusChange={props.onStatusChange}
+        />
       )}
 
       <ExportBar
@@ -540,16 +735,24 @@ function Ledger() {
   // Sorting is the one thing done here rather than in SQL: it reorders the page
   // in hand, which is what the operator is actually looking at, and it costs no
   // round trip.
-  const ordered = useMemo(() => sortCompanies(rows, sort), [rows, sort]);
+  const ordered = useMemo(() => sortCompanies(rows, sort), [rows, sort]) as SavedLead[];
   const current = ordered.find((c) => c.place_id === selected) ?? null;
 
-  const decide = async (placeID: string, status: EmailStatus) => {
+  const outreach = useOutreach(
+    ordered,
+    region === ALL_REGIONS ? undefined : region,
+    (written) => setRows((cur) => mergeDrafts(cur, written)),
+  );
+
+  const decide = async (placeID: string, channel: OutreachChannel, status: OutreachStatus) => {
     try {
-      await api.setEmailStatus(placeID, status);
+      await api.setOutreachStatus(placeID, channel, status);
       // Optimistic, like the run view: the server owns the prompt version and
       // has already answered, so the row is updated in place rather than by
       // re-reading the whole page.
-      setRows((cur) => cur.map((c) => (c.place_id === placeID ? { ...c, email_status: status } : c)));
+      setRows((cur) =>
+        cur.map((c) => (c.place_id === placeID ? (withDraftStatus(c, channel, status) as SavedLead) : c)),
+      );
     } catch (err) {
       setError(describe(err));
     }
@@ -633,15 +836,22 @@ function Ledger() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-auto">
-              <CompanyTable rows={ordered} selected={selected} onSelect={setSelected} />
+              <CompanyTable
+                rows={ordered}
+                selected={selected}
+                onSelect={setSelected}
+                outreach={outreach}
+              />
             </div>
+
+            <OutreachBar outreach={outreach} />
           </div>
 
           {current && (
             <CompanyDetail
               company={current}
               onClose={() => setSelected(null)}
-              onDecide={(status) => void decide(current.place_id, status)}
+              onDecide={(channel, status) => void decide(current.place_id, channel, status)}
             />
           )}
         </div>
@@ -656,9 +866,11 @@ function Ledger() {
 
 function CompaniesView({
   report,
+  onDrafted,
   onOpenDrafts,
 }: {
   report: LeadgenReport;
+  onDrafted: (written: LeadCompany[]) => void;
   onOpenDrafts: () => void;
 }) {
   const [category, setCategory] = useState<string>(ALL_CATEGORIES);
@@ -679,6 +891,7 @@ function CompaniesView({
 
   const current = rows.find((c) => c.place_id === selected) ?? null;
   const gaps = report.categories.find((c) => c.category === category) ?? null;
+  const outreach = useOutreach(rows, report.region || report.query, onDrafted);
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -718,8 +931,15 @@ function CompaniesView({
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto">
-          <CompanyTable rows={rows} selected={selected} onSelect={setSelected} />
+          <CompanyTable
+            rows={rows}
+            selected={selected}
+            onSelect={setSelected}
+            outreach={outreach}
+          />
         </div>
+
+        <OutreachBar outreach={outreach} />
 
         {gaps?.gap_analysis && (
           <div className="max-h-40 shrink-0 overflow-auto border-t border-edge px-4 py-3">
@@ -794,10 +1014,12 @@ function CompanyTable({
   rows,
   selected,
   onSelect,
+  outreach,
 }: {
   rows: LeadCompany[];
   selected: string | null;
   onSelect: (placeID: string) => void;
+  outreach: Outreach;
 }) {
   if (rows.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-muted">Bu süzgeçle şirket yok.</p>;
@@ -807,33 +1029,69 @@ function CompanyTable({
     <table className="w-full border-collapse text-sm">
       <thead className="sticky top-0 z-10 bg-panel">
         <tr className="label text-muted">
-          <Th className="pl-4">şirket</Th>
+          <Th className="w-9 pl-4 pr-0">
+            <Checkbox
+              label="Görünen şirketlerin hepsini seç"
+              checked={outreach.header === "all"}
+              indeterminate={outreach.header === "some"}
+              onChange={outreach.toggleAll}
+            />
+          </Th>
+          <Th className="pl-3">şirket</Th>
           <Th className="w-20 text-right">puan</Th>
           <Th className="w-24">web</Th>
           <Th className="w-36">telefon</Th>
           <Th>adres</Th>
-          <Th className="w-24 pr-4">taslak</Th>
+          <Th className="w-28 pr-4">taslak</Th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((c) => {
+        {rows.map((c, i) => {
           const active = c.place_id === selected;
+          const ticked = outreach.selection.has(c.place_id);
           return (
             <tr
               key={c.place_id || c.name}
               tabIndex={0}
               onClick={() => onSelect(c.place_id)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
+                // Enter opens the row, space ticks it. That is the split every
+                // list with checkboxes uses, and it is worth following even
+                // though space used to open the row here: the box is now the
+                // thing on the row a keyboard is most likely to be aimed at.
+                if (e.key === "Enter") {
                   e.preventDefault();
                   onSelect(c.place_id);
+                } else if (e.key === " ") {
+                  e.preventDefault();
+                  outreach.toggleRow(i, e.shiftKey);
                 }
               }}
               className={`cursor-pointer border-t border-edge outline-none transition-colors ${
-                active ? "bg-raised" : "hover:bg-raised/50 focus:bg-raised/50"
+                // Ticked outranks focused: the selection is what the bar at the
+                // bottom is about to spend on, so it has to stay visible while
+                // the operator moves the detail panel around.
+                ticked
+                  ? "bg-electric/[0.07] hover:bg-electric/10"
+                  : active
+                    ? "bg-raised"
+                    : "hover:bg-raised/50 focus:bg-raised/50"
               }`}
             >
-              <td className="max-w-0 truncate py-2 pl-4 pr-3" title={c.name}>
+              <td className="py-2 pl-4 pr-0">
+                <span
+                  // The box is not the row: ticking a company must not also
+                  // swap the detail panel out from under the operator.
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Checkbox
+                    label={`${c.name} — taslak için seç`}
+                    checked={ticked}
+                    onChange={(_, shift) => outreach.toggleRow(i, shift)}
+                  />
+                </span>
+              </td>
+              <td className="max-w-0 truncate py-2 pl-3 pr-3" title={c.name}>
                 {c.name}
               </td>
               <td className="py-2 pr-3 text-right tabular-nums text-muted">
@@ -874,11 +1132,49 @@ function Th({ className, children }: { className?: string; children: React.React
   );
 }
 
+/** How a channel reads on screen. Mirrors `settings.Channel.Label`. */
+function channelLabel(ch: OutreachChannel): string {
+  return ch === "whatsapp" ? "WhatsApp" : "E-posta";
+}
+
+function statusLabel(status: OutreachStatus | undefined): string {
+  if (status === "sent") return "gönderildi";
+  if (status === "skipped") return "atlandı";
+  return "hazır";
+}
+
+/**
+ * One chip per channel that has a draft.
+ *
+ * Two letters rather than the channel's name: this is the narrowest column on
+ * a dense table and a company can hold two of them. The full sentence is the
+ * tooltip, which is where a column this narrow has to put it.
+ */
 function DraftState({ company }: { company: LeadCompany }) {
-  if (!company.email) return <span className="text-muted">—</span>;
-  if (company.email_status === "sent") return <span className="text-ok">gönderildi</span>;
-  if (company.email_status === "skipped") return <span className="text-muted">atlandı</span>;
-  return <span className="text-electric">hazır</span>;
+  const marks = CHANNELS.map((ch) => ({ ch, draft: draftFor(company, ch) })).filter(
+    (m) => m.draft !== undefined,
+  );
+  if (marks.length === 0) return <span className="text-muted">—</span>;
+
+  return (
+    <span className="flex items-center gap-1">
+      {marks.map(({ ch, draft }) => (
+        <span
+          key={ch}
+          title={`${channelLabel(ch)} · ${statusLabel(draft?.status)}`}
+          className={`label rounded-sm border px-1.5 py-0.5 leading-none ${
+            draft?.status === "sent"
+              ? "border-ok/45 text-ok"
+              : draft?.status === "skipped"
+                ? "border-edge text-muted"
+                : "border-electric/60 text-electric"
+          }`}
+        >
+          {ch === "whatsapp" ? "WA" : "EP"}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function CompanyDetail({
@@ -891,11 +1187,14 @@ function CompanyDetail({
   onClose: () => void;
   // A run has a drafts view to jump to. The ledger does not — it is a record,
   // not a review queue — so it passes onDecide instead and the same panel ends
-  // in two buttons rather than one.
+  // in the drafts themselves rather than in a link to them.
   onOpenDrafts?: () => void;
-  onDecide?: (status: EmailStatus) => void;
+  onDecide?: (channel: OutreachChannel, status: OutreachStatus) => void;
 }) {
   const lines = contactLines(company);
+  const drafts = CHANNELS.map((ch) => ({ ch, draft: draftFor(company, ch) })).filter(
+    (d) => d.draft !== undefined,
+  );
 
   return (
     <aside className="flex w-72 shrink-0 flex-col overflow-auto border-l border-edge">
@@ -934,6 +1233,7 @@ function CompanyDetail({
             )}
           </Row>
         ))}
+        {company.email && <Row label="e-posta">{company.email}</Row>}
         {!company.website && (
           <p className="border-l-2 border-ok/50 pl-2 text-[11px] leading-relaxed text-muted">
             Bu şirketin listede web sitesi yok — aramanın aradığı şey bu.
@@ -942,27 +1242,45 @@ function CompanyDetail({
         <Row label="kaynak">{company.source || "—"}</Row>
       </dl>
 
-      {company.email && onOpenDrafts && (
+      {drafts.length > 0 && onOpenDrafts && (
         <div className="mt-auto border-t border-edge px-4 py-3">
           <Button variant="ghost" className="w-full" onClick={onOpenDrafts}>
-            Taslağı aç
+            Taslakları aç
           </Button>
         </div>
       )}
 
-      {company.email && onDecide && (
-        <div className="mt-auto space-y-2 border-t border-edge px-4 py-3">
-          <p className="max-h-40 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-muted">
-            {company.email}
-          </p>
-          <div className="flex gap-2">
-            <Button variant="ghost" className="flex-1" onClick={() => onDecide("sent")}>
-              Gönderildi
-            </Button>
-            <Button variant="ghost" className="flex-1" onClick={() => onDecide("skipped")}>
-              Atla
-            </Button>
-          </div>
+      {drafts.length > 0 && onDecide && (
+        <div className="mt-auto divide-y divide-edge border-t border-edge">
+          {drafts.map(({ ch, draft }) => (
+            <div key={ch} className="space-y-2 px-4 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="label text-muted">{channelLabel(ch)}</span>
+                <span className="label text-muted">{statusLabel(draft?.status)}</span>
+              </div>
+              <p className="max-h-40 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-muted">
+                {draft?.body}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="ghost"
+                  className="flex-1"
+                  disabled={draft?.status === "sent"}
+                  onClick={() => onDecide(ch, "sent")}
+                >
+                  Gönderildi
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="flex-1"
+                  disabled={draft?.status === "skipped"}
+                  onClick={() => onDecide(ch, "skipped")}
+                >
+                  Atla
+                </Button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </aside>
@@ -984,10 +1302,14 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 function DraftsView({
   queue,
+  counts,
+  onChannel,
   onStatusChange,
 }: {
-  queue: ReturnType<typeof draftQueue>;
-  onStatusChange: (placeID: string, status: EmailStatus) => void;
+  queue: DraftQueue;
+  counts: Record<OutreachChannel, number>;
+  onChannel: (ch: OutreachChannel) => void;
+  onStatusChange: (placeID: string, channel: OutreachChannel, status: OutreachStatus) => void;
 }) {
   const [cursor, setCursor] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -996,15 +1318,21 @@ function DraftsView({
   const listRef = useRef<HTMLDivElement>(null);
 
   const items = queue.items;
+  const channel = queue.channel;
   const current = items[Math.min(cursor, Math.max(items.length - 1, 0))] ?? null;
 
-  const mark = async (status: EmailStatus) => {
+  // Switching channel switches the whole list under the cursor, so the cursor
+  // has to go back to the top — keeping it would land the operator on the
+  // eleventh WhatsApp line because they were on the eleventh email.
+  useEffect(() => setCursor(0), [channel]);
+
+  const mark = async (status: OutreachStatus) => {
     if (!current?.company.place_id || busy) return;
     setBusy(true);
     setRowError(null);
     try {
-      await api.setEmailStatus(current.company.place_id, status);
-      onStatusChange(current.company.place_id, status);
+      await api.setOutreachStatus(current.company.place_id, channel, status);
+      onStatusChange(current.company.place_id, channel, status);
       // Marking one moves to the next: the queue is a decision list, and
       // staying on a finished item makes the operator move twice per draft.
       setCursor((c) => Math.min(c + 1, items.length - 1));
@@ -1018,7 +1346,7 @@ function DraftsView({
   const copy = async () => {
     if (!current) return;
     try {
-      await navigator.clipboard.writeText(current.company.email ?? "");
+      await navigator.clipboard.writeText(current.draft.body);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -1050,44 +1378,77 @@ function DraftsView({
     });
   }, [cursor]);
 
+  // The channel tabs sit above the queue rather than beside the view tabs: the
+  // choice is "which letters am I reading", which is a property of this pane,
+  // and it has to stay reachable when the channel it names is empty.
+  const tabs = (
+    <div className="flex shrink-0 items-center gap-1 border-b border-edge px-2 py-1.5">
+      {CHANNELS.map((ch) => (
+        <button
+          key={ch}
+          type="button"
+          onClick={() => onChannel(ch)}
+          className={`label flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 py-1.5 leading-none transition-colors ${
+            ch === channel ? "bg-raised text-mist" : "text-muted hover:text-mist"
+          }`}
+        >
+          {channelLabel(ch)}
+          <span className="tabular-nums text-muted">{counts[ch] ?? 0}</span>
+        </button>
+      ))}
+    </div>
+  );
+
   if (items.length === 0) {
     return (
-      <div className="grid flex-1 place-items-center">
-        <p className="max-w-sm p-8 text-center text-sm leading-relaxed text-muted">
-          Taslak yok. Aramayı “taslak e-posta yaz” işaretliyken çalıştırın; her şirket için bir
-          taslak yazılır ve burada tek tek gözden geçirilir.
-        </p>
+      <div className="flex min-h-0 flex-1">
+        <div className="flex w-60 shrink-0 flex-col border-r border-edge">{tabs}</div>
+        <div className="grid flex-1 place-items-center">
+          <p className="max-w-sm p-8 text-center text-sm leading-relaxed text-muted">
+            {channelLabel(channel)} kanalında taslak yok. Şirketler tablosunda yazmak istediğiniz
+            şirketleri işaretleyin, alttaki çubuktan kanalı seçip “Taslak yaz” deyin.
+          </p>
+        </div>
       </div>
     );
   }
 
+  const wa = channel === "whatsapp" ? whatsappHref(current?.company.phone) : undefined;
+  const mailto =
+    channel === "email" && current?.company.email
+      ? `mailto:${current.company.email}`
+      : undefined;
+
   return (
     <div className="flex min-h-0 flex-1 outline-none" tabIndex={0} onKeyDown={onKeyDown}>
-      <div ref={listRef} className="w-60 shrink-0 overflow-auto border-r border-edge py-1">
-        {items.map((item, i) => {
-          const active = i === cursor;
-          const status = item.company.email_status;
-          return (
-            <button
-              key={item.company.place_id || item.company.name}
-              type="button"
-              data-active={active}
-              onClick={() => setCursor(i)}
-              className={`flex w-full items-center gap-2 border-l-2 px-3 py-2 text-left transition-colors ${
-                active ? "border-electric bg-raised" : "border-transparent hover:bg-raised/60"
-              }`}
-            >
-              <span
-                className={`size-1.5 shrink-0 rounded-full ${
-                  status === "sent" ? "bg-ok" : status === "skipped" ? "bg-edge" : "bg-electric"
+      <div className="flex w-60 shrink-0 flex-col border-r border-edge">
+        {tabs}
+        <div ref={listRef} className="min-h-0 flex-1 overflow-auto py-1">
+          {items.map((item, i) => {
+            const active = i === cursor;
+            const status = item.draft.status;
+            return (
+              <button
+                key={item.company.place_id || item.company.name}
+                type="button"
+                data-active={active}
+                onClick={() => setCursor(i)}
+                className={`flex w-full items-center gap-2 border-l-2 px-3 py-2 text-left transition-colors ${
+                  active ? "border-electric bg-raised" : "border-transparent hover:bg-raised/60"
                 }`}
-              />
-              <span className={`truncate text-xs ${active ? "text-mist" : "text-muted"}`}>
-                {item.company.name}
-              </span>
-            </button>
-          );
-        })}
+              >
+                <span
+                  className={`size-1.5 shrink-0 rounded-full ${
+                    status === "sent" ? "bg-ok" : status === "skipped" ? "bg-edge" : "bg-electric"
+                  }`}
+                />
+                <span className={`truncate text-xs ${active ? "text-mist" : "text-muted"}`}>
+                  {item.company.name}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -1113,8 +1474,14 @@ function DraftsView({
             no monospace — this is something somebody is about to send. */}
         <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
           <p className="mx-auto max-w-[68ch] whitespace-pre-wrap text-sm leading-[1.7] text-text">
-            {current?.company.email}
+            {current?.draft.body}
           </p>
+          {current?.draft.truncated && (
+            <p className="mx-auto mt-3 max-w-[68ch] text-xs text-warn">
+              Bu taslak model çıktısının sınırına dayandı ve kesilmiş olabilir — göndermeden önce
+              sonunu okuyun.
+            </p>
+          )}
         </div>
 
         {/* The rule spans the pane; the controls keep the letter's measure, so
@@ -1124,20 +1491,42 @@ function DraftsView({
             <Button
               variant="ghost"
               onClick={() => void mark("sent")}
-              disabled={busy || current?.company.email_status === "sent"}
+              disabled={busy || current?.draft.status === "sent"}
             >
               Gönderildi
             </Button>
             <Button
               variant="ghost"
               onClick={() => void mark("skipped")}
-              disabled={busy || current?.company.email_status === "skipped"}
+              disabled={busy || current?.draft.status === "skipped"}
             >
               Atla
             </Button>
             <Button variant="ghost" onClick={() => void copy()}>
               {copied ? "Kopyalandı" : "Kopyala"}
             </Button>
+            {/* Nothing is sent from here — the app has no mail account and no
+                WhatsApp session. These hand the text to whatever the operator
+                already uses, which is the honest boundary: marking "gönderildi"
+                stays their decision, not a side effect of a click. */}
+            {wa && (
+              <a
+                href={wa}
+                target="_blank"
+                rel="noreferrer"
+                className="label inline-flex items-center rounded-sm border border-edge px-3.5 py-2 leading-none text-text transition-colors hover:border-muted/60 hover:bg-raised"
+              >
+                WhatsApp'ta aç
+              </a>
+            )}
+            {mailto && (
+              <a
+                href={mailto}
+                className="label inline-flex items-center rounded-sm border border-edge px-3.5 py-2 leading-none text-text transition-colors hover:border-muted/60 hover:bg-raised"
+              >
+                E-postada aç
+              </a>
+            )}
             <span className="label ml-auto text-muted">↑↓ gez · g gönderildi · a atla</span>
             {rowError && <span className="w-full text-xs text-bad">{rowError}</span>}
           </div>

@@ -5,12 +5,17 @@ menu-bar surface; the React half is a client of one HTTP surface. Neither is a
 place to put logic that belongs in Go.
 
 Two windows, one bundle: **main** (`Connection` → `Dashboard`, whose sidebar
-switches between `Workspace` and `Leadgen`) and **quick** (`QuickTask`, the
-menu-bar window). `src/main.tsx` picks the root component from the window label.
+switches between the board, `Terminals`, `Brain`, `Settings` and the modules —
+`Workspace` and `Leadgen`) and **quick** (`QuickTask`, the menu-bar window).
+`src/main.tsx` picks the root component from the window label.
 
-The app is an **accessory**: no Dock icon, a menu-bar item instead. Closing a
-window hides it; only the tray's "Quit Mimir" exits, and quitting never stops the
-daemon.
+The app is a menu-bar app, and its activation policy follows the main window:
+**accessory** (no Dock icon) whenever that window is away, **regular** while it
+is on screen. Fixed at accessory it had no menu bar at all, so a fullscreen
+window revealed nothing at the top of the screen — no clock, no menu-bar items
+(`src-tauri/src/macos.rs`). Closing a window hides it; only the tray's "Quit
+Mimir" exits, and quitting never stops the daemon — it does sign Mimir's Claude
+account out, which is a different thing and is described below.
 
 ## Rules for this directory
 
@@ -36,6 +41,13 @@ daemon.
   `internal/config`. Adding a third here would create the runtime knob SD-1 says
   we do not have, and `MIMIR_STORE_PATH` in particular is a test-only override:
   the store path is computed, not configurable.
+- **Quitting signs the Claude account out** (`daemon::sign_out`, on
+  `RunEvent::Exit`). The daemon does the same on its own shutdown and again on
+  its next start; this is the third of the three, and the only one that covers a
+  launchd-owned daemon that never stops when the window does. It is a blocking
+  `POST /accounts/reset` on the way out and its failure is swallowed — there is
+  nowhere left to show an error, and the daemon's start-up reset makes a missed
+  call harmless.
 - **REST goes through Rust, not `fetch`.** This is forced, not stylistic. A
   cross-origin `fetch` carrying `Authorization` is preflighted, and the daemon
   answers `OPTIONS` with 401 because it has no CORS headers on purpose ("No CORS
@@ -43,9 +55,16 @@ daemon.
   that guesses the port read the replies. So `daemon_request` performs the call
   from Rust, and the token stays out of the WebView for every REST path.
 - **`daemon_request` must stay a daemon proxy.** It accepts a path (not a URL),
-  GET and POST only, and attaches a live credential. Without the path check it
+  one of five verbs, and attaches a live credential. Without the path check it
   is an open proxy the WebView can point at anything on the machine's network —
-  the same lesson as `deploy/playwright-maps`'s host allowlist.
+  the same lesson as `deploy/playwright-maps`'s host allowlist. The verb list is
+  an allowlist, not a pass-through: GET, POST, DELETE (a board card can be
+  thrown away), PUT (the routes that replace a whole document — the scan policy,
+  the settings values, a rule file) and PATCH (the one that amends a card). It
+  was GET/POST/DELETE for longer than it should have been, which made
+  `editCodingTask` and `saveBrainScanPolicy` fail at the proxy with "unsupported
+  method" while the TypeScript side had already declared both — a verb added to
+  `RequestOptions` and not to the Rust match is a route that cannot be called.
 - **The WebSocket is the one thing the WebView does itself**, because a browser
   socket cannot set headers and its handshake is exempt from preflight. The
   token rides `Sec-WebSocket-Protocol` as `mimir.bearer.<token>`, never a query
@@ -71,9 +90,9 @@ daemon.
 - **The lead-gen screen mirrors the pipeline's contract, it does not reinvent
   it.** `emails` implies `gap_analysis` in `internal/leadgen`, so the "Analyze
   category gaps" checkbox is forced on and disabled whenever "Draft outreach
-  emails" is checked. Marking an email `sent`/`skipped` is optimistic: the row
-  updates locally after `POST /maps/emails/status` returns, and the server owns
-  the prompt version — the screen never sends one.
+  emails" is checked. Marking a draft `sent`/`skipped` is optimistic: the row
+  updates locally after `POST /maps/outreach/status` returns, and the server
+  owns the prompt version — the screen never sends one.
 - **The model picker is a view of `GET /llm/providers`, never a second copy of
   it.** The daemon owns the provider/model allow-list and rejects a pair that is
   not in it, so a list hard-coded here would drift the first time a generation
@@ -101,6 +120,18 @@ daemon.
   a file read once has a history of exactly what is already on screen above it.
   There is no diff — no file content is stored, and inventing one from two
   assessments would be a picture of something that never happened.
+- **AppKit gaps are `src-tauri/src/macos.rs`, and there are two.** A window only
+  enters native fullscreen when it carries `FullScreenPrimary`, which tao never
+  sets — without it the green traffic light silently falls back to zoom. And the
+  menu bar a fullscreen window reveals is the *active app's*, which an accessory
+  app does not have — hence the policy following the main window. Both are
+  reached through the NSWindow/NSApplication underneath because Tauri exposes
+  neither; `objc2-app-kit` is a macOS-only dependency and stays that narrow.
+- **A pasted image reaches the shell terminal as a keystroke, not an upload
+  (`lib/shellPaste.ts`).** xterm cannot type an image, but the pty is on this
+  same Mac and `claude` reads the system pasteboard itself on ^V — so ⌘V with an
+  image forwards that keystroke and the CLI picks the bytes up. Text pastes are
+  left to xterm: to a shell that is not reading an image, ^V is quoted-insert.
 - **Versions are pinned exactly** in `package.json` and `Cargo.toml` — no `^`,
   no `~` (SD-5). The Tauri image and library versions must match each other.
 - **`make check` stays Go-only.** The desktop gate is `make desktop-check`
@@ -137,6 +168,8 @@ the token anywhere but Tauri IPC and the socket subprotocol? Does any screen
 keep a filesystem path after registration? Does the reducer still dedupe on
 `seq` and match results by `call_id`? Does the lead-gen screen force
 `gap_analysis` on when `emails` is set, and does it ever send a prompt version?
+Does any screen offer a choice of Claude account, or open the login page itself
+instead of letting the daemon do it?
 
 ## Terminals, the board, and attachments (task-36)
 
@@ -154,6 +187,18 @@ keep a filesystem path after registration? Does the reducer still dedupe on
   and Queued accept a drop because they are decisions; Running, Done and Failed
   do not because they are facts. `allowedMove` is that rule, and its refusals
   carry a reason — a drop that silently springs back reads as a broken board.
+- **"devam et" is offered against a session id, never against a status.** A run
+  that failed before the CLI announced itself has nothing for `--resume` to
+  attach to, so `canContinue` (board) and `isResumable` (terminal) both check
+  `session_id` and the bar says "sürdürülemez" rather than showing a button that
+  would quietly start the task over. The id is learned from the first event that
+  carries one and never unset by a later event that does not — most of them do
+  not, so a plain assignment would erase it one line after it arrived.
+- **A retry says whether it will start or wait, before the click.** Capacity is
+  one run at a time, so pressing either button while something is in flight
+  lands the card in Queued. That is correct behaviour and invisible behaviour —
+  a card that jumps to Queued and sits there reads as a failure to start — so
+  `retryOutcome`/`isBusy` drive a line in the bar and a hint on the buttons.
 - **`"dragDropEnabled": false` on the main window is load-bearing.** Tauri's
   native file-drop handler otherwise swallows the event and hands back a path
   the WebView could not read anyway: there is no `fs` plugin and none is added.
@@ -169,26 +214,37 @@ keep a filesystem path after registration? Does the reducer still dedupe on
   `GET /coding-tasks/{id}`. Both are covered by `openRunStream.test.ts` — the
   socket had zero tests before, and both bugs were invisible without them.
 
-## Accounts and Recents (task-38)
+## The account and Recents (task-38, single-account since)
 
-- **An account is a credential slot, and the app says so.** Registering one is
-  pointing at a directory — the same shape as registering a project, and the
-  path leaves the app exactly once. The app never sees a credential, and
-  "unut" forgets a slot rather than logging anybody out. Do not add a login
-  flow here: signing into a slot is `CLAUDE_SECURESTORAGE_CONFIG_DIR=<dir>
-  claude auth login`, and the manager says that in plain text.
+- **There is one Claude account and the app never lets you pick.** No account
+  select in a composer, no list, no pin: `AccountSelect` is gone, and
+  `account_id` is not sent. A picker over one thing is a choice that is not
+  really on offer, and the daemon would refuse anything else anyway.
+- **It is Mimir's own credential slot, not the operator's.** That is what makes
+  signing out on quit safe — the `claude` in their own terminal is a different
+  keychain entry and keeps its login. The panel says so, because "Mimir logged
+  me out" is the wrong conclusion to leave available.
+- **Connecting is a login the daemon runs, and the app follows it.** `AccountPanel`
+  POSTs `/accounts/login`, then polls `GET /accounts/login` while the state is
+  `opening`/`waiting`/`code`. It does not open a browser itself and must not
+  start to: the daemon opens the private window, because it is the side that
+  knows the URL and owns the CLI process waiting on the callback.
+- **The panel joins a login in flight rather than starting a second.** The flow
+  lives on the daemon, so mounting the screen reads `GET /accounts/login`
+  first — two `claude auth login` processes on one slot race for the same
+  keychain entry.
+- **The `code` state is a fallback, not the normal path.** It appears only when
+  the CLI could not open a browser itself. Do not make it the primary shape of
+  the UI; the ordinary flow finishes in the browser with nothing to type.
+- **The CLI's own output is shown verbatim**, like every other daemon message.
+  A login that failed says why in words already written for a human.
 - **`claude auth status` is free, so the identity shown is live.** No API call,
-  no tokens. Caching it at registration would mean a slot whose login has
-  lapsed still reads as healthy, which is exactly the failure the row exists to
+  no tokens. Caching it at login would mean an account whose session has lapsed
+  still reads as healthy, which is exactly the failure the row exists to
   surface.
-- **Two slots can be the same person, and the rows will not say so.** A slot is
-  a directory hashed into a keychain entry name; registering one and signing it
-  into the account already in use gives two entries, two green rows, and one
-  rate limit. `identityClashes` compares the live probes and says it out loud —
-  verified on this machine, where both slots resolved to the same address.
-- **"Otomatik" is the default and stays first in the select.** A pin is the
-  exception; automatic assignment across slots is what makes a second account
-  worth registering at all.
+- **The connect flow lives on the first screen, in `HESAP`.** Nothing runs
+  without an account and the account is gone at every launch, so burying it
+  behind a tab would make the app's first state one the operator cannot leave.
 - **Recents is not a second store.** A finished run still has its transcript
   and the socket replays it, so opening one is the same operation as opening a
   live one — `recentRuns` is the board's own list minus what is already open.
@@ -228,6 +284,65 @@ keep a filesystem path after registration? Does the reducer still dedupe on
   from nothing; the daemon's default is the option that starts selected. The
   empty string still means "you decide" on the wire, for clients written before
   the picker.
+
+## Outreach and the settings screen
+
+- **Ticking companies is the point; drafting for everyone is the fallback.**
+  `POST /maps/outreach` takes place ids, so the screen's job is to let the
+  operator build that list and to say what it will cost before they spend it.
+  The search bar's "bulunan herkese e-posta taslağı yaz" checkbox still exists
+  and still means every company the search returned — it is named that way now
+  because next to a checkbox column the old label read as "draft for the ones I
+  picked".
+- **The selection is a set of place ids, never a flag on a row.** The table is
+  filtered and paged on the daemon, so a row that scrolls out of the filter is
+  still a company the operator chose. A boolean on the row would silently drop
+  those the moment the filter changed. The cost of that choice is that the
+  selection can outrun what is on screen, so the bar states the off-screen count
+  rather than hiding it — `summarize` in `lib/leadgen.ts`.
+- **The header box acts on the rows in the table, never on the ledger.** It sits
+  above those rows, and an "all" that quietly meant four thousand rows is the
+  most expensive misreading available on this screen. It is tri-state for the
+  same reason: a box that could only be on or off would show "off" while forty
+  rows below it were ticked.
+- **The bar prints messages, not companies.** One model call per company per
+  channel is what is actually spent, and `12 şirket · 24 mesaj` is the number
+  worth putting on the button. `alreadyDrafted` is what protects against paying
+  twice — not clearing the selection, which is kept on purpose because the
+  common next move is "now do WhatsApp for the same twenty".
+- **A decision is per channel.** `sent` on the email and `skipped` on the
+  WhatsApp line is an ordinary thing to decide, so the drafts view has channel
+  tabs, `draftQueue` takes a channel, and the status routes carry one.
+- **Nothing is sent from this app.** There is no mail account and no WhatsApp
+  session here. "WhatsApp'ta aç" and "E-postada aç" hand the text to whatever
+  the operator already uses; marking "gönderildi" stays their decision rather
+  than a side effect of a click. `whatsappHref` returns `undefined` for any
+  number shape it cannot be sure about — a wrong guess opens a chat with a
+  stranger, and the plain number the panel already shows is a fine fallback.
+- **Configuration lives on the settings screen, not on the screen that spends
+  it.** The model picker was on the lead-gen search bar, where it was a per-run
+  choice whose state nobody could see afterwards; which model a campaign spends
+  is a decision about the campaign. `LeadgenRequest` therefore carries no
+  `provider`/`model` at all — the daemon reads the saved default behind the
+  route (`api.leadgenSelection`), and leaving the fields off the type is what
+  stops a second picker reappearing on the search bar. The Brain scan keeps its
+  own picker: that one routes a single sweep, which is a different decision.
+- **One save for the whole settings page.** Electric is the CTA colour and a
+  screen gets one — but the real reason is that a settings page with three
+  separate saves is a page where you find out later which one you forgot. The
+  bar appears only when something is unsaved, names what it is about to write,
+  and ⌘S reaches it from inside the textarea.
+- **The rule editors say what saving costs.** A rule file is part of the
+  drafting prompt and therefore part of the cache key, so editing one
+  invalidates every draft written under the old text — including ones already
+  marked "sent". That is the honest trade (the alternative is showing a draft
+  the current rules never produced) and it is stated on the screen where the
+  edit happens, in `RULE_CACHE_WARNING`, rather than discovered afterwards.
+- **The rule file's path is shown.** The operator may well prefer their own
+  editor, and a rule file whose location is a secret is a rule file nobody
+  trusts. "Varsayılana dön" is `POST /settings/rules/reset` rather than this
+  client sending a copy of the shipped text — a client holding that copy is
+  exactly the drift the published lists exist to avoid.
 
 ## Brain tab (task-52)
 

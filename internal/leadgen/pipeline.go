@@ -14,6 +14,7 @@ import (
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/llm"
 	"github.com/logrenant/mimir/internal/maps"
+	"github.com/logrenant/mimir/internal/settings"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -67,9 +68,51 @@ type CompanyLead struct {
 
 	Category       Category `json:"category"`
 	CategoryMethod string   `json:"category_method,omitempty"`
-	Email          string   `json:"email,omitempty"`
-	EmailStatus    string   `json:"email_status,omitempty"`
-	EmailMethod    string   `json:"email_method,omitempty"`
+
+	// Email is the company's own address, found by stage 1b — where an email
+	// draft is sent, not the draft itself.
+	//
+	// The two used to share one field, and stage 4 overwrote the address with
+	// the letter: a run with contacts and emails both on ended up with no
+	// address to send to. They are separate now because they are separate
+	// things, and the drafts moved to their own slice for the same reason a
+	// company can have two of them.
+	Email string `json:"email,omitempty"`
+
+	// Drafts is the outreach written for this company, at most one per channel.
+	Drafts []Draft `json:"drafts,omitempty"`
+}
+
+// Draft is one outreach message for one company on one channel.
+type Draft struct {
+	Channel settings.Channel `json:"channel"`
+	Body    string           `json:"body"`
+	// Status is the human's decision: draft | sent | skipped. It is per channel,
+	// because sending the email and skipping the WhatsApp line is an ordinary
+	// thing to decide.
+	Status    string `json:"status,omitempty"`
+	Method    string `json:"method,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// draftFor returns the lead's draft on one channel, or nil.
+func (l *CompanyLead) draftFor(ch settings.Channel) *Draft {
+	for i := range l.Drafts {
+		if l.Drafts[i].Channel == ch {
+			return &l.Drafts[i]
+		}
+	}
+	return nil
+}
+
+// setDraft records one channel's result, replacing any earlier draft on that
+// channel so a re-draft does not leave two rows for one message.
+func (l *CompanyLead) setDraft(d Draft) {
+	if existing := l.draftFor(d.Channel); existing != nil {
+		*existing = d
+		return
+	}
+	l.Drafts = append(l.Drafts, d)
 }
 
 func leadFrom(c maps.Company) CompanyLead {
@@ -154,7 +197,7 @@ type Pipeline struct {
 	regionStore RegionStore
 	categorizer *Categorizer
 	gaps        *GapAnalyzerRunner
-	emails      *EmailRunner
+	messages    *MessageRunner
 	// contacts fills phone and email from a company's own website. Nil is a
 	// working pipeline: the export then writes what the search returned.
 	contacts ContactEnricher
@@ -181,14 +224,14 @@ func (p *Pipeline) UseLedger(l LedgerStore) { p.ledger = l }
 // NewPipeline wires the orchestrator. regionStore, categorizer, gaps and emails
 // may each be nil; the pipeline degrades the corresponding stage rather than
 // failing. The source may not: with nothing to search there is no pipeline.
-func NewPipeline(cfg config.Config, source RegionSource, rs RegionStore, cat *Categorizer, gaps *GapAnalyzerRunner, emails *EmailRunner) *Pipeline {
+func NewPipeline(cfg config.Config, source RegionSource, rs RegionStore, cat *Categorizer, gaps *GapAnalyzerRunner, messages *MessageRunner) *Pipeline {
 	return &Pipeline{
 		cfg:         cfg,
 		source:      source,
 		regionStore: rs,
 		categorizer: cat,
 		gaps:        gaps,
-		emails:      emails,
+		messages:    messages,
 	}
 }
 
@@ -215,7 +258,7 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 	// and half on another.
 	categorizer := p.categorizer.With(req.Selection)
 	gapsRunner := p.gaps.With(req.Selection)
-	emailRunner := p.emails.With(req.Selection)
+	messageRunner := p.messages.With(req.Selection)
 
 	companies, source, fromCache, notes, err := p.regionSearch(ctx, req.Query)
 	rep.Notes = append(rep.Notes, notes...)
@@ -318,10 +361,16 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 	}
 
 	// Stage 4 — one email per company that has a gap analysis for its category.
-	if req.WithEmails && emailRunner != nil {
+	//
+	// The run only ever drafts email. WhatsApp is not a checkbox on a search:
+	// a region search finds companies an operator has not looked at yet, and
+	// drafting sixty WhatsApp messages for a list nobody has read is spending
+	// tokens on a decision that has not been made. That is what DraftOutreach
+	// and the selection on the screen are for.
+	if req.WithEmails && messageRunner != nil {
 		rep.RanEmails = true
-		emailNotes := p.draftEmails(ctx, emailRunner, companies, leads, gapText)
-		rep.Notes = append(rep.Notes, emailNotes...)
+		draftNotes := p.draftMessages(ctx, messageRunner, companies, leads, gapText, settings.ChannelEmail)
+		rep.Notes = append(rep.Notes, draftNotes...)
 	}
 
 	rep.Companies = leads
@@ -361,6 +410,7 @@ func (p *Pipeline) record(ctx context.Context, req RunRequest, rep Report, leads
 			ReviewCount:    l.ReviewCount,
 			Website:        l.Website,
 			Phone:          l.Phone,
+			Email:          l.Email,
 			PrimaryType:    l.PrimaryType,
 			BusinessStatus: l.BusinessStatus,
 			Source:         l.Source,
@@ -500,10 +550,11 @@ func (p *Pipeline) analyzeGaps(ctx context.Context, runner *GapAnalyzerRunner, r
 	return reports, notes
 }
 
-// draftEmails runs stage 4 for every company whose category produced a gap
-// analysis, in bounded-concurrency batches. Writes results back into leads
-// (each goroutine touches a distinct index, so the slice needs no lock).
-func (p *Pipeline) draftEmails(ctx context.Context, runner *EmailRunner, companies []maps.Company, leads []CompanyLead, gapText map[Category]string) []string {
+// draftMessages runs stage 4 on one channel for every company whose category
+// produced a gap analysis, in bounded-concurrency batches. Writes results back
+// into leads (each goroutine touches a distinct index, so the slice needs no
+// lock).
+func (p *Pipeline) draftMessages(ctx context.Context, runner *MessageRunner, companies []maps.Company, leads []CompanyLead, gapText map[Category]string, ch settings.Channel) []string {
 	limit := p.cfg.MaxConcurrentRefines
 	if limit <= 0 {
 		limit = 1
@@ -512,6 +563,7 @@ func (p *Pipeline) draftEmails(ctx context.Context, runner *EmailRunner, compani
 	g.SetLimit(limit)
 
 	noteSlices := make([][]string, len(leads))
+	drafts := make([]*Draft, len(leads))
 
 	for i := range leads {
 		gap := gapText[leads[i].Category]
@@ -522,26 +574,144 @@ func (p *Pipeline) draftEmails(ctx context.Context, runner *EmailRunner, compani
 			if err := gctx.Err(); err != nil {
 				return err
 			}
-			res, gaps, err := runner.DraftFor(gctx, companies[i], leads[i].Category, gap)
+			res, gaps, err := runner.DraftFor(gctx, companies[i], leads[i].Category, gap, ch)
 			if err != nil {
 				return err
 			}
-			leads[i].Email = res.Email
-			leads[i].EmailStatus = res.Status
-			leads[i].EmailMethod = res.Method
 			noteSlices[i] = gaps
+			if res.Body == "" {
+				return nil
+			}
+			drafts[i] = &Draft{
+				Channel:   ch,
+				Body:      res.Body,
+				Status:    res.Status,
+				Method:    res.Method,
+				Truncated: res.Truncated,
+			}
 			return nil
 		})
 	}
 
 	var notes []string
 	if err := g.Wait(); err != nil {
-		notes = append(notes, "email drafting cancelled: "+err.Error())
+		notes = append(notes, string(ch)+" drafting cancelled: "+err.Error())
+	}
+	// Applied after the group, on this goroutine: setDraft appends to a slice
+	// that lives on the lead, and two goroutines growing two different leads'
+	// slices is safe only because nothing else reads them until here.
+	for i := range leads {
+		if drafts[i] != nil {
+			leads[i].setDraft(*drafts[i])
+		}
 	}
 	for _, ns := range noteSlices {
 		notes = append(notes, ns...)
 	}
 	return notes
+}
+
+// OutreachRequest drafts messages for a set of companies the operator picked by
+// hand, rather than for everything a search returned.
+//
+// It is the other half of the checkbox column: a region search finds companies
+// nobody has read yet, and drafting for all of them spends tokens on a decision
+// that has not been made. This starts from the decision — these companies, these
+// channels — and does the least work that answers it.
+type OutreachRequest struct {
+	// Companies are the businesses to write to, already resolved. The caller
+	// owns the lookup: the API reads them from the ledger by place_id, which is
+	// what the screen has.
+	Companies []maps.Company
+	// Categories is each company's category, positionally. A missing or empty
+	// entry is CategoryUnknown, and unknown companies are skipped — a message
+	// written from no shared pattern is a form letter.
+	Categories []Category
+	// Region is the gap-analysis and cache-key region label.
+	Region string
+	// Channels are the messages to write. Empty is email alone.
+	Channels []settings.Channel
+	// Selection is the operator's provider/model choice, as for Run.
+	Selection llm.Selection
+}
+
+// OutreachResult is what DraftOutreach produced, one entry per company that had
+// something written for it.
+type OutreachResult struct {
+	Companies []CompanyLead `json:"companies"`
+	// Categories carries the gap analyses this call produced, so the screen can
+	// show what the drafts were written from rather than asserting they were
+	// written from something.
+	Categories []CategoryReport `json:"categories"`
+	Notes      []string         `json:"notes,omitempty"`
+}
+
+// DraftOutreach writes outreach for an explicit set of companies.
+//
+// It is stages 3 and 4 without stage 1: no region search, no categorization, no
+// ledger write. The gap analysis is re-run over *this* set, which is not a
+// shortcut around the cache but the honest key — a gap analysis is a function of
+// the exact company set (see GapAnalyzerRunner), and forty companies an operator
+// picked are a different set from the two hundred a region returned.
+//
+// Degrade, never fail (SD-6): a company with no category, a category too small
+// to analyse, a failing subprocess and an unusable answer are all notes. Only a
+// cancelled context returns an error.
+func (p *Pipeline) DraftOutreach(ctx context.Context, req OutreachRequest) (OutreachResult, error) {
+	if err := ctx.Err(); err != nil {
+		return OutreachResult{}, err
+	}
+	if len(req.Companies) == 0 {
+		return OutreachResult{}, nil
+	}
+
+	channels := req.Channels
+	if len(channels) == 0 {
+		channels = []settings.Channel{settings.ChannelEmail}
+	}
+
+	gapsRunner := p.gaps.With(req.Selection)
+	messageRunner := p.messages.With(req.Selection)
+	if messageRunner == nil {
+		return OutreachResult{Notes: []string{"outreach drafting is not available on this daemon"}}, nil
+	}
+
+	out := OutreachResult{}
+	leads := make([]CompanyLead, len(req.Companies))
+	for i, c := range req.Companies {
+		leads[i] = leadFrom(c)
+		if i < len(req.Categories) && req.Categories[i] != "" {
+			leads[i].Category = req.Categories[i]
+		}
+	}
+
+	byCategory := groupByCategory(leads)
+
+	gapText := map[Category]string{}
+	if gapsRunner != nil {
+		reports, notes := p.analyzeGaps(ctx, gapsRunner, req.Region, req.Companies, byCategory)
+		out.Notes = append(out.Notes, notes...)
+		out.Categories = reports
+		for _, cr := range reports {
+			if cr.GapAnalysis != "" {
+				gapText[cr.Category] = cr.GapAnalysis
+			}
+		}
+	} else {
+		out.Categories = categoryCounts(byCategory)
+		out.Notes = append(out.Notes, "gap analysis is not available on this daemon; nothing to draft from")
+	}
+
+	// One channel at a time rather than one fan-out over the cross product: the
+	// refine semaphore is what this bound protects, and two channels running
+	// together would double what it lets through.
+	for _, ch := range channels {
+		out.Notes = append(out.Notes,
+			p.draftMessages(ctx, messageRunner, req.Companies, leads, gapText, ch)...)
+	}
+
+	out.Companies = leads
+	return out, nil
 }
 
 func groupByCategory(leads []CompanyLead) map[Category][]int {

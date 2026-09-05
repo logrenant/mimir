@@ -76,6 +76,7 @@ func newHarnessWith(t *testing.T, claudePath string, tune func(*config.Config)) 
 	cfg.TranscriptDir = filepath.Join(tmp, "transcripts")
 	cfg.AttachmentDir = filepath.Join(tmp, "attachments")
 	cfg.ClaudeCLIPath = claudePath
+	cfg.ClaudeSessionDir = filepath.Join(tmp, "claude-session")
 	cfg.CodingRunTimeout = 30 * time.Second
 	if tune != nil {
 		tune(&cfg)
@@ -100,7 +101,19 @@ func newHarnessWith(t *testing.T, claudePath string, tune func(*config.Config)) 
 
 	base, cancel := context.WithCancel(context.Background())
 	bus := events.NewBus()
-	accounts := account.NewRegistry(st)
+	accounts := account.NewRegistry(st, cfg.ClaudeSessionDir, cfg.ClaudeCLIPath)
+	// Connected, because that is the state a run happens in: the daemon
+	// refuses a task outright when nothing is. The row is written through the
+	// store rather than through the registry because connecting for real means
+	// `claude auth login` and a browser.
+	if err := st.InsertAccount(context.Background(), store.AccountRow{
+		ID:        "acct-mimir",
+		Label:     "Claude",
+		ConfigDir: cfg.ClaudeSessionDir,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("InsertAccount: %v", err)
+	}
 	h := &harness{
 		runner:    New(base, cfg, bus, reg, accounts, st),
 		bus:       bus,

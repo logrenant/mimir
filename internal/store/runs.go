@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -272,6 +273,93 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id, from, to string,
 	return n > 0, nil
 }
 
+// EditableStatuses are the states a card's own text may still be rewritten in.
+//
+// Running and completed are missing on purpose, and for the same reason: the
+// prompt of a run that is spending or has spent tokens is a record of what was
+// asked, not a field. Everything else has spent nothing yet — a backlog card is
+// intent, a queued one is intent waiting its turn, and a failed or stopped one
+// is intent that has to be corrected before it is worth another attempt.
+var EditableStatuses = []string{
+	RunStatusBacklog, RunStatusQueued, RunStatusFailed, RunStatusStopped,
+}
+
+// RunEdit is what an operator may change about a card. Every field is written,
+// so a caller sends the row it wants to exist, not a patch.
+type RunEdit struct {
+	Title       string
+	Prompt      string
+	Model       string
+	Attachments string // JSON array of attachment ids, "" when there are none
+}
+
+// EditRun rewrites what a card asks for, reporting whether the row moved.
+//
+// The status guard is in the WHERE clause rather than in a read-then-write for
+// the same reason every other transition here is: the dispatcher can claim a
+// queued run between the two, and an edit that landed on a run already talking
+// to the CLI would change the prompt out from under it. A row that has moved on
+// affects nothing, and the caller answers 409.
+func (s *Store) EditRun(ctx context.Context, id string, e RunEdit) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, unavailable(errors.New("store not open"))
+	}
+	args := []any{e.Title, e.Prompt, e.Model, e.Attachments, id}
+	placeholders := make([]string, 0, len(EditableStatuses))
+	for _, status := range EditableStatuses {
+		args = append(args, status)
+		placeholders = append(placeholders, "?")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE coding_runs SET title = ?, prompt = ?, model = ?, attachments = ?
+		 WHERE id = ? AND status IN (`+strings.Join(placeholders, ", ")+`)`, args...)
+	if err != nil {
+		return false, unavailable(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, unavailable(err)
+	}
+	return n > 0, nil
+}
+
+// RequeueRun puts a finished run back in the queue, reporting whether the row
+// moved.
+//
+// Only from a state a retry means something in: `failed` and `stopped`. The
+// same compare-and-swap discipline as UpdateRunStatus, for the same reason — an
+// operator retrying a card that has already moved on must lose, not queue a run
+// that is running.
+//
+// The session id survives, and that is the whole of the feature: it is what the
+// runner hands `claude --resume`, so the second attempt continues the first
+// instead of starting the task over. keepSession = false clears it, which is
+// the way out of a session the CLI can no longer resume.
+//
+// The error is deliberately left in place. ClaimRun clears it when the run
+// actually starts again, so until then the card still says why it failed — and
+// the runner reads it to tell the resumed session what interrupted it.
+func (s *Store) RequeueRun(ctx context.Context, id string, at time.Time, keepSession bool) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, unavailable(errors.New("store not open"))
+	}
+	set := `status = ?, queued_at = ?, ended_at = 0`
+	if !keepSession {
+		set += `, session_id = ''`
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE coding_runs SET `+set+` WHERE id = ? AND status IN (?, ?)`,
+		RunStatusQueued, unixOrZero(at), id, RunStatusFailed, RunStatusStopped)
+	if err != nil {
+		return false, unavailable(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, unavailable(err)
+	}
+	return n > 0, nil
+}
+
 // ListQueuedRuns returns the queue, oldest first.
 //
 // The dispatcher reads the queue rather than being handed its head, because
@@ -427,4 +515,46 @@ func (s *Store) ReferencedAttachments(ctx context.Context) ([]string, error) {
 		return nil, unavailable(err)
 	}
 	return out, nil
+}
+
+// ParkRun puts a run that is in flight back in the queue, reporting whether the
+// row moved.
+//
+// The one state RequeueRun cannot start from, and for a reason it cannot serve:
+// this is not a retry of something that finished, it is a run interrupted by a
+// spent token budget while it was still working. Failing it first and requeuing
+// afterwards would put a failure on the card that nothing went wrong to cause,
+// and would race the operator reading it.
+//
+// sessionID is written when it is non-empty, which is what makes the resume a
+// continuation. A run only learns its session from the CLI's first line and the
+// row does not carry it until the run ends, so a run parked mid-task has one in
+// hand that the row has never seen — dropping it here would restart the task
+// from nothing when the window rolls over.
+//
+// The reason is left on the row exactly as RequeueRun leaves an error: ClaimRun
+// clears it when the run actually starts again, so until then the card can say
+// why it is waiting, and the resumed session is told what cut it off.
+func (s *Store) ParkRun(ctx context.Context, id, sessionID string, at time.Time, reason string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, unavailable(errors.New("store not open"))
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE coding_runs SET
+			status     = ?,
+			queued_at  = ?,
+			ended_at   = 0,
+			error      = ?,
+			session_id = CASE WHEN ? = '' THEN session_id ELSE ? END
+		WHERE id = ? AND status = ?`,
+		RunStatusQueued, unixOrZero(at), reason,
+		sessionID, sessionID, id, RunStatusRunning)
+	if err != nil {
+		return false, unavailable(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, unavailable(err)
+	}
+	return n > 0, nil
 }

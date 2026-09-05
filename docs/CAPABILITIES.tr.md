@@ -156,16 +156,25 @@ olarak taşır.
 | `GET /projects` | kayıtlı proje klasörlerini listeler |
 | `POST /projects` | `{ path }` → kanonikleştir (`Abs`+`EvalSymlinks`), `/`, `$HOME` ve kara listedeki kökleri reddet, var olan bir dizin olmalı → opak bir `project_id` döner. **Asla varsayılan proje yok.** |
 | `POST /coding-tasks` | `{ project_id, prompt }` → klasör kapsamlı akışlı bir `claude` oturumu başlatır, bir `run_id` döner |
-| `GET /accounts` · `POST /accounts` · `DELETE /accounts/{id}` | Claude Code kimlik yuvaları — kimlik başına bir dizin. Taramadan gelen yuva silinemez: onun var olduğuna hesap dizini karar verir |
-| `POST /accounts/scan` | `~/.claude-accounts` yeniden okunur, bulunanlar kaydedilir (daemon açılışta da yapar) |
-| `GET /accounts/{id}/status` | bir yuva için canlı `claude auth status` — kim giriş yapmış, hangi planla. Bedava |
-| `POST /accounts/background` | `{ account_id }` → daemon'un **kendi** model çağrılarının harcayacağı yuva; boş = CLI'ın varsayılanı |
+| `GET /accounts` | bağlı Claude hesabı ya da boş liste — en fazla bir tane olur |
+| `POST /accounts/login` · `GET /accounts/login` | girişi başlat ve takip et. Daemon kendi kimlik yuvasına karşı `claude auth login` çalıştırır ve yetkilendirme sayfasını Chrome'da gizli pencerede açar; GET `opening` / `waiting` / `code` / `done` / `failed` döner |
+| `POST /accounts/login/code` | `{ code }` → CLI tarayıcıyı kendisi açamadığında düşülen kod yapıştırma yolu |
+| `POST /accounts/reset` | çıkış yap, yuvayı sil, kaydı unut. "Çıkış yap" düğmesi ve uygulamanın kapanırken çağırdığı yol |
+| `GET /accounts/{id}/status` | canlı `claude auth status` — kim giriş yapmış, hangi planla. Bedava |
 | `POST /maps/leadgen/export` | aynı gövde + `{ enrich, dir }` → `.xlsx` yazar (özet + kategori başına bir sayfa), yolunu ve sayıları döner |
 | `GET /coding-tasks/{id}` | çalıştırma meta verisi / durum / maliyet |
+| `PATCH /coding-tasks/{id}` | `{ title?, prompt?, model?, attachment_ids? }` → kartın ne istediğini yeniden yazar. Patch'tir: gönderilmeyen alana dokunulmaz. Karta henüz bir şey harcanmadıysa — `backlog`, `queued`, `failed`, `stopped` — geçerlidir; diğer hallerde 409, çünkü çalışan ya da bitmiş bir çalıştırmanın istemi harcananın kaydıdır. Görsel kart yazıldıktan çok sonra da eklenebilir; düzenlemeyle düşen görsel aynı anda geri alınır |
+| `POST /coding-tasks/queue/kick` | dispatcher'a kuyruğa yeniden bakmasını söyler. Kuyruk yalnızca iş bırakıldığında ve bir çalışma slotunu boşalttığında yoklanır, *hesap* değiştiğinde değil — yani hiçbir şey bağlı değilken kuyruğa giren kart sonsuza kadar bekler. Harcanacak kimlik hâlâ yoksa — ya da token bütçesi bitmiş, kuyruk penceresini bekliyorsa — 409 ve nedeni |
+| `GET /coding-tasks/queue/limits` | `?limit=` → kuyruğun neden ilerlemediği ve ne zaman ilerleyeceği: `holds` dispatcher'ın şu an beklediği kimlik yuvası ve yenilenme saati, `log` kalıcı kayıt — `run` (bütçenin ortasında kestiği görev, kuyruğa geri kondu), `dispatch` (kuyruktaki bir görev başlatılamadı), `resumed` (pencere yenilendi, kuyruk kendi kendine devam etti) |
+| `POST /coding-tasks/{id}/retry` | `{ fresh? }` → `failed` ya da `stopped` bir çalıştırmayı kuyruğa geri koyar. Alan yoksa ya da `false` ise satırın `session_id`'si korunur; dispatcher kartı yeniden aldığında CLI `--resume` ile açılır ve oturum kaldığı yerden sürer. `true` oturumu atar, görev baştan yapılır. Başka her durum 409 |
 | `GET /ws/runs/{id}` | WebSocket: çalıştırmanın JSONL transkriptini yeniden oynatır, sonra canlı olay veri yolunu takip eder — `RunStarted`, `TextDelta`, `ReasoningDelta`, `ToolCall`, `ToolResult`, `RunCompleted`, `RunFailed`, `rate_limit`; `Event.Seq` üzerinden birleştirilir, böylece kayıp veren bir veri yolu izleyiciye asla boşluk göstermez |
-| `POST /maps/leadgen` | `{ query, region, count, language_code, region_code, near, gap_analysis, emails, provider?, model? }` → lead-gen pipeline'ını çalıştırır (§5); yalnızca Places anahtarıyla kaydedilir. `provider`/`model`, model aşamalarının hangi katmanı harcayacağını belirler; ikisi de yoksa sınıfa göre yönlendirilir |
+| `POST /maps/leadgen` | `{ query, region, count, language_code, region_code, near, gap_analysis, emails, provider?, model? }` → lead-gen pipeline'ını çalıştırır (§5); yalnızca Places anahtarıyla kaydedilir. `provider`/`model` gönderilmezse operatörün `PUT /settings` ile kaydettiği seçim, o da yoksa sınıf yönlendirmesi devreye girer |
 | `GET /llm/providers` | `provider`/`model` alanlarının denetlendiği sağlayıcı/model izin listesi ve hiçbiri gönderilmediğinde bir çalıştırmanın alacağı varsayılan. Her daemon'da yanıtlar — masaüstündeki seçici bunun bir görünümüdür, kopyası değil |
-| `POST /maps/emails/status` | `{ place_id, status }`, status ∈ draft / sent / skipped — SQL, bir bölge yeniden çalıştırmasında `sent`/`skipped` taslağın yeniden üretilmesini engeller; yalnızca Places anahtarıyla kaydedilir |
+| `POST /maps/outreach` | `{ place_ids, channels, region?, provider?, model? }` → *seçilen* şirketlere yazar: kanal başına bir taslak (`email`, `whatsapp`). Süzgeç değil kimlik listesi alır — kısa bir dizeyle bir bölgenin tamamını harcatabilecek tek şey bir süzgeç olurdu. `place_ids` defterle çözülür ve `LeadsPageMax` ile sınırlıdır |
+| `POST /maps/outreach/status` | `{ place_id, channel, status }`, status ∈ draft / sent / skipped — SQL, bir bölge yeniden çalıştırmasında `sent`/`skipped` taslağın yeniden üretilmesini engeller. Karar kanal başınadır: e-postayı gönderip WhatsApp'ı atlamak olağan bir karardır |
+| `GET`/`PUT /settings` | Operatörün kendi ayarları: lead-gen'in model aşamalarının harcadığı varsayılan `provider`/`model`, ve her kanalın kural dosyası. `PUT` çifti aynı izin listesinden geçirir — ikisi de bir alt sürece argv olur |
+| `PUT /settings/rules` | `{ channel, body }` → o kanalın kural dosyasını değiştirir. Boş gövde sıfırlamadır, boş istem değil |
+| `POST /settings/rules/reset` | `{ channel }` → binary'nin gönderdiği varsayılan metni geri koyar. İstemcinin varsayılanın kopyasını taşımaması için bir rota |
 | `GET /maps/leads` | Lead defteri: bir koşunun bulduğu her işletme, kategorisi ve taslak durumuyla. Süzgeçler: `category`, `run_id`, `q`, `without_website`, `limit`, `offset`. Hiçbir şey harcamaz, hiçbir yerde arama yapmaz |
 | `GET /maps/leads/categories` | Kategori rayı — aynı süzgeç altında, sayfanın değil defterin tamamı üzerinden sayılır |
 | `GET /maps/leads/runs` | Koşu geçmişi: hangi arama neyi, ne zaman buldu |
@@ -198,19 +207,38 @@ düşünce/eylem akışını canlı, saniye saniye izleyin.
 - **Zarif kapanış.** SIGTERM'de daemon, çıkmadan önce devam eden çalıştırmaları
   boşaltır.
 
-**Kapasite kimlik başına bir çalıştırmadır ve kimlikler diskten gelir.** Bir
-kimlik yuvası, CLI'ın hash'leyip Keychain girdisi adına çevirdiği bir dizindir
-(`CLAUDE_SECURESTORAGE_CONFIG_DIR`): `~/.claude-accounts/<ad>` bir hesap, hiç
-dizin olmaması ise CLI'ın kendi yuvasıdır. Daemon bu ağacı açılışta tarar —
-operatörün kabuğunun (`claude-acct`, `claude-who`) zaten kullandığı kural — yani
-terminalden giriş yapılmış bir yuva, ikinci kez kaydedilmeden burada bir şerit
-olur. İki kimlik = aynı anda iki task; bir task bir yuvaya iğnelenebilir ya da
-otomatik bırakılabilir. Mimir hiçbir kimlik bilgisini okumaz, taşımaz, geçersiz
-kılmaz: yalnızca alt süreci bir yuvaya yöneltir.
+**Tek Claude hesabı, Mimir'in kendi yuvasında, ve uygulamadan uzun yaşamıyor.**
+Kimlik yuvası, CLI'ın hash'leyip Keychain girdisi adına çevirdiği bir dizindir
+(`CLAUDE_SECURESTORAGE_CONFIG_DIR`); Mimir bunu kendi store'unun yanında türetir
+ve oraya kendisi giriş yapar — yani operatörün terminaldeki oturumu değildir.
+Bağlanmak `claude auth login`'i bir pty üzerinde çalıştırır ve yetkilendirme
+sayfasını Chrome'da **gizli** pencerede açar: normal pencere tarayıcıda zaten
+açık olan Claude oturumunu taşır ve hangi hesapla bağlanıldığını hiç sormaz.
+Mimir kapandığında bu yuva kapatılır, dizin silinir, kayıt unutulur — her açılış
+bağlantısız başlar.
+
+Dolayısıyla kapasite aynı anda tek çalıştırmadır ve hiçbir hesap bağlı değilken
+oluşturulan bir task kuyruğa alınmaz, reddedilir: harcanacak kimlik yoktur ve
+CLI'ın kendi oturumuna düşmek, kuyruğu Mimir'in bilerek dokunmadığı hesap
+üzerinden boşaltmak olurdu. Mimir hiçbir kimlik bilgisini okumaz, taşımaz,
+saklamaz — onu Keychain tutar.
 
 Daemon'un kendi model çağrıları — refine, distill, recap — dispatcher'dan
-geçmez; arka plan hesabı olarak işaretlenmiş yuvayı, işaret yoksa CLI'ın
-varsayılanını harcarlar.
+geçmez ama aynı hesabı harcar: "bunu hangi hesap ödedi?" sorusunun tek yanıtı
+vardır.
+
+**Biten token bütçesi pipeline'ı durdurur, başarısız etmez.** Bir çalıştırma
+görev ortasında hesabın limitine takıldığında kart `failed` olmaz: `session_id`
+üzerinde kalarak `queued`'a döner, yuva tutulur — harcayacak şeyi kalmamış bir
+hesaba yeni iş verilmez — ve olan biten kalıcı bir loga yazılır
+(`GET /coding-tasks/queue/limits`): limite takılan çalıştırma, arkasında
+bekletilen her kart ve pencerenin yenilendiği an. Yenilenme saati için tek bir
+uyandırma kurulur — CLI'ın kendi bildirdiği saat (`rate_limit_event` ya da
+kullanım limiti mesajının `…|<unix>` eki; hiçbiri yoksa 15 dakika) — ve o an
+gelince kuyruk, her zamanki gibi pompalanır. Hiçbir şeye basılmaz; devam eden
+çalıştırma `--resume` ile kaldığı yerden sürer, görevi baştan yapmaz. Duraklama
+yeniden başlatmayı da aşar: daemon açılışta onu logdan geri kurar, bir CLI
+çağrısı harcayarak yeniden keşfetmez.
 
 Gereksinim: `$PATH` üzerinde ve giriş yapılmış `claude` CLI.
 
@@ -269,7 +297,7 @@ liste üretmedi) veya iptal edilmiş bir bağlam için hata döner. Diğer her �
 | 1 | **Bölge araması** | hayır | Bir bölgedeki her işletme. Birincil: Places API Text Search (`internal/maps`). Yedek: deterministik DOM çıkarımlı bir Playwright docker sidecar'ı (`internal/mapscrape`); id'ler ad alanına ayrılır, böylece kazınmış bir satır ücretlendirilmiş bir satırın üzerine asla yazamaz. | `companies`, `region_searches` (okumada ya hep ya hiç) |
 | 2 | **Kategorize et** | çoğunlukla hayır | Şirket başına normalleştirilmiş bir `Category`. Statik bir Google-`types[]` → kategori tablosu yaygın durumu ücretsiz yanıtlar; `claude` yalnızca belirsiz kalıntıyı, kapalı bir sözcük dağarcığına karşı, gruplar hâlinde sınıflandırır (düz metin çıktısı yok). | `company_categorization` (`LeadgenCategoryVersion` ile anahtarlanır) |
 | 3 | **Kategori başına boşluk analizi** | evet | Bir kategorideki ortak boşluklar/ihtiyaçlar; şirket başına deterministik hesaplanan beş skalerden sentezlenir (asla ham sayfa değil). SD-7 katı token tavanı. | `category_gap_analysis` (`region, category, LeadgenGapVersion, company_set_hash` ile anahtarlanır) |
-| 4 | **Erişim e-postası** | evet | Şirket başına bir taslak pazarlama e-postası; o şirketin bilgileri + kategorisinin 3. aşama boşluk analizi verilir. | `outreach_emails` (`place_id, prompt_version` ile anahtarlanır; bölge yeniden çalıştırmasının uyduğu bir `status` ile) |
+| 4 | **Erişim mesajı** | evet | Şirket ve kanal başına bir taslak; o şirketin bilgileri + kategorisinin 3. aşama boşluk analizi + o kanalın kural dosyası verilir. Kanallar: `email`, `whatsapp`. | `outreach_emails` (`place_id, channel, prompt_version` ile anahtarlanır; `prompt_version` model *ve* kural dosyasının hash'ini taşır, bölge yeniden çalıştırmasının uyduğu bir `status` ile) |
 
 ### Modeli seçmek
 
@@ -316,7 +344,8 @@ Yedi ekran:
 |---|---|
 | **Connection** | Daemon el sıkışması — sidecar'ın ayakta, kimliği doğrulanmış ve sağlıklı olduğunu doğrular. |
 | **Workspace** | Yerel klasör seçici (`NSOpenPanel`) → bir proje kaydet → bir kod görevi istemi yaz → çalıştırmayı canlı bir "terminal"de izle: metin/akıl yürütme delta'ları eklenir, araç çağrıları/sonuçları risk rozetli katlanabilir kartlar olarak görünür. |
-| **Leadgen** | Maps pipeline'ı: bir bölge arama formu, kategori başına boşluk analizi kartları ve genişletilebilir taslak e-posta ile bir şirket listesi; gönderildi / atla düğmeleri `POST /maps/emails/status`'a bağlı. `report.notes` birebir gösterilir. |
+| **Leadgen** | Maps pipeline'ı: bir bölge arama formu, kategori başına boşluk analizi kartları, ve onay kutulu bir şirket tablosu. İşaretlenen şirketler için alttaki çubuk ne harcanacağını söyler (şirket × kanal) ve `POST /maps/outreach`'i çağırır; taslaklar kanal sekmeleriyle tek tek okunur, gönderildi / atla `POST /maps/outreach/status`'a bağlıdır. `report.notes` birebir gösterilir. |
+| **Ayarlar** | Operatörün kendi ayarları tek ekranda: lead-gen'in harcayacağı varsayılan model, ve e-posta ile WhatsApp kural dosyalarının düzenleyicileri (yol, "varsayılana dön", ⌘S). Kural dosyası taslak isteminin parçası olduğu için kaydetmek eski taslakları geçersiz kılar ve ekran bunu söyler. |
 
 Paketleme: `tauri.conf.json`, sertleştirilmiş çalışma zamanı ve
 `entitlements.plist` ile `app` + `dmg` üretir. İmzalama/noterleme derleme
@@ -338,13 +367,13 @@ asla MCP tüketicisinin gördüğü bir doğruluk kaynağı değildir.
 | `crawl_pages` | ham crawl önbelleği (markdown + HTML), `sha256(url)` ile anahtarlı | `config.PageCacheTTL` |
 | `refined_pages` | rafine önbelleği (rafine metin + token tahmini) | aynı TTL; `RefinePromptVersion` yükseltmesi |
 | `projects` | kod görevi çalıştırıcısı için kanonikleştirilmiş klasör yolu | değiştirmek için yeniden seç |
-| `accounts` | kimlik yuvaları: dizin, taramadan mı geldiği, ve daemon'un kendi çağrılarının hangisini harcadığı | açılışta yeniden taranır; yalnızca ekler |
+| `accounts` | bağlı Claude hesabı: Mimir'in kendi yuva dizini | daemon açılışında ve kapanışında temizlenir — hesap uygulamadan uzun yaşamaz |
 | `coding_runs` | çalıştırma meta verisi, maliyet, oturum id'si, transkript işaretçisi | yok (geçmiş) |
 | `companies` | normalleştirilmiş Places/kazıma sonucu, `place_id` ile anahtarlı | çağıran tarafın verdiği uzun TTL (~30 gün) |
 | `region_searches` | bir bölge aramasının döndürdüğü sıralı `place_id` listesi | aynı TTL; okumada ya hep ya hiç |
 | `company_categorization` | normalleştirilmiş kategori + hangi katmanın yanıtladığı | `LeadgenCategoryVersion` yükseltmesi |
 | `category_gap_analysis` | Claude'un sentezlediği kategori başına boşluklar/ihtiyaçlar | `LeadgenGapVersion` yükseltmesi; değişen bir şirket kümesi ıskalar |
-| `outreach_emails` | taslak e-posta + `status` (draft/sent/skipped) | `LeadgenEmailVersion` yükseltmesi; "sent"/"skipped" yeniden üretimi engeller (SQL ile zorlanır) |
+| `outreach_emails` | kanal başına taslak mesaj + `status` (draft/sent/skipped) | `LeadgenEmailVersion` yükseltmesi, farklı bir model, **ya da düzenlenmiş bir kural dosyası**; "sent"/"skipped" yeniden üretimi engeller (SQL ile zorlanır) |
 | `memory_episodes` | bir damıtılmış iterasyon: deterministik olgular her zaman, kabul edilmişse kısa bir özet | `MemoryPromptVersion` yükseltmesi özetleri yeniden üretir; olgular kalır |
 | `memory_notes` | `context_remember` ile sabitlenen olgular | yok — ingest tarafından asla yeniden yazılmaz |
 | `memory_ingest_state` | her transkriptin ne kadarının ayrıştırıldığı | transkript küçüldüğünde sıfırlanır (eklenmiş değil, değiştirilmiş demektir) |

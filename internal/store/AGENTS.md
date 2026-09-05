@@ -111,6 +111,16 @@ Not paying twice for work already done — a Crawl4AI fetch already made, or a
   year must not become the largest table here, and this package has no
   background sweeper to trim it later.
 
+- **`rate_limit_log` is a record, not a cache (0021).** Three phases — a run
+  the token budget cut off, a queued task held behind it, the window rolling
+  over — appended and never updated. Durable rather than an in-memory ring
+  (which is what the brain scan's console is) because the two ends of one pause
+  can be hours and a daemon restart apart: the runner rebuilds the pauses still
+  in force from these rows at startup, and an operator asking in the morning
+  what happened overnight is asking about rows. A pause and the resume that
+  ended it are two facts about two different times; collapsing them into one
+  mutable row would lose exactly the history the table exists for.
+
 - **Migrations are append-only.** `migrations/NNNN_*.sql`, applied in lexical
   filename order and recorded in `schema_migrations`. Never edit a file that
   has shipped — add the next number. `Open` is idempotent.
@@ -180,3 +190,13 @@ step; the loser sees zero rows affected and looks again.
 
 `UpdateRunStatus` takes the state the caller believes the row is in. That guard
 is what makes two clicks on the same card resolve to one winner without a lock.
+
+`ParkRun` is the one transition that starts from `running` and ends in the
+queue: the token budget ran out mid-task. It is deliberately not `RequeueRun`
+(which starts from a terminal state, because a retry is about something that
+finished) and not `UpdateRunStatus` (which cannot carry a session id). Writing
+that session is the point: a run only learns it from the CLI's first line and
+the row does not see it until the run ends, so a run parked mid-flight is
+holding one the row has never been told — and it is what makes the attempt after
+the reset a `--resume` of the same work rather than the task done twice. An
+empty session id leaves the row's own alone.

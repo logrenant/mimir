@@ -130,6 +130,26 @@ quietly starting to spend quota.
   while the daemon was down is still recorded. The spool file is removed only
   after the ingest state is written, so a crash re-reads rather than loses.
 
+## What a scan refuses to read
+
+Two layers, in `exclude.go`, answering two different questions:
+
+- **`isSecret` is not configurable.** A scan hands file contents to an external
+  model CLI, so a `.env` that slips through has already left the machine by the
+  time anybody notices. It is a shipped denylist of credential shapes — `.env*`,
+  `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.netrc`, `kubeconfig`, `*.tfstate`,
+  `.ssh/`, `.aws/` — checked first in `scannable`, ahead of the economic
+  judgements below it. Those could be relaxed if the economics changed; this one
+  could not, so it is deliberately separate from them.
+- **`Excluder` is the operator's layer.** Absolute paths they pointed at, matched
+  on whole path components rather than string prefixes — `/a/b` excludes
+  `/a/b/c` and must never exclude `/a/bravo`. It is checked in `Scan` before the
+  `os.Stat`, because the guarantee is that the bytes are never read.
+
+Both are counted into `ScanResult.Excluded` rather than dropped silently: "Brain
+does not know about this file" and "Brain was told not to read this file" are
+answers an operator needs to be able to tell apart.
+
 ## The repository scan (task-47)
 
 `scan.go` is the one deliberately expensive thing in this package: a distil per
@@ -179,8 +199,17 @@ the distil. Either one is the shape this rewrite removed.
 ## The resident scan (task-51)
 
 `supervisor.go` is the scan with the session taken out of it: the daemon starts
-one `Supervisor`, it sweeps `cfg.BrainScanRoots` for as long as the process
+one `Supervisor`, it sweeps the operator's roots for as long as the process
 lives, and there is always an agy working.
+
+- **What it may read is asked for, not captured.** `SupervisorDeps.Policy` is a
+  function called once per sweep, so a folder added or excluded on the Brain tab
+  takes effect on the next sweep with no daemon restart. A nil `Policy` means
+  `cfg.BrainScanRoots` and no exclusions, which is what every caller had before
+  the policy existed.
+- **An empty root list pauses the loop; it does not end it.** `Run` used to
+  return when there were no roots, which made removing the last folder a one-way
+  door — only a restart brought scanning back. It now idles and re-asks.
 
 - **It is a type, not a method on `Core`.** It owns mutable runtime state —
   paused, in flight, how far — and `Core` is shared with `cmd/mimir-mcp`, a

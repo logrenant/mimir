@@ -22,7 +22,6 @@ The single source of every operational value. Enforces **SD-1**.
   | `MIMIR_MAPSCRAPE_URL` | `MapScrapeBaseURL` | `http://127.0.0.1:11236` |
   | `MIMIR_STORE_PATH` | `StorePath` | `<os.UserConfigDir()>/mimir/mimir.db` |
   | `MIMIR_CLAUDE_PROJECTS_DIR` | `ClaudeProjectsDir` | `<os.UserHomeDir()>/.claude/projects` |
-  | `MIMIR_CLAUDE_ACCOUNTS_DIR` | `ClaudeAccountsDir` | `<os.UserHomeDir()>/.claude-accounts` |
   | `MIMIR_MAPSCRAPE_COMPOSE` | `MapScrapeComposeFile` | the copy beside the installed binary, else `deploy/playwright-maps/docker-compose.yml` |
 
   There is **no** override for timeouts, concurrency limits, result caps, output
@@ -31,11 +30,11 @@ The single source of every operational value. Enforces **SD-1**.
   `MapScrape*` bounds, or any Stage-F scraper constant (`*MaxTokens`, `*MaxChars`, `GMapsPageTimeout`,
   `GMapsWaitForSelector`). Adding one is an SD-1 violation.
 
-  `ClaudeAccountsDir` reads only the `MIMIR_`-prefixed override, never the
-  shell's own `CLAUDE_ACCOUNTS_DIR`. The daemon runs under launchd, which hands
-  it `PATH` and `HOME` and nothing else, so honouring the bare variable would
-  make which accounts exist depend on who started the daemon — the one thing
-  a discovered slot must not depend on.
+  `ClaudeSessionDir` has no override at all. It is Mimir's own credential slot,
+  derived beside the store like `AttachmentDir` — the CLI hashes the path into
+  a keychain entry name, so the path *is* the identity, and a knob here would
+  let a misconfigured launch sign the operator's own terminal slot out when the
+  app quits.
 
   Note the split in the two scraper rows: the container **address** is
   overridable (a test points it at an `httptest` server), while
@@ -122,6 +121,16 @@ The single source of every operational value. Enforces **SD-1**.
   particular is the *free, self-scraped* one-business lookup and shares
   nothing with `maps_search`, which is the paid Places-API region search
   behind the credential row above.
+- **`BrainScanRoots` is a seed, no longer the answer.** It is still an SD-1
+  constant and it is still what an unconfigured machine sweeps, but the folders
+  Brain may actually read now come from `internal/settings` (`scan.json`) when
+  the operator has saved a policy. The reason it moved is the SD-1 test itself:
+  "which of my folders may this daemon read and hand to an external model" is
+  not a property of the machine and not a value a build should decide. It is
+  consent, it differs per person, and it is the one setting where being wrong
+  means a file was read that should not have been. `Load()` keeps the constant;
+  `settings.EffectiveScanPolicy(cfg.BrainScanRoots)` is what resolves the two,
+  in one place, so the screen and the scan loop cannot disagree.
 - `ClaudeModel` is a fully-qualified pinned model id
   (`claude-haiku-4-5-20251001`), never a bare alias like `haiku` (SD-5). The
   refiner is the local `claude` CLI invoked headless via `exec` — no API key,

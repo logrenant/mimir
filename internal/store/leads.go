@@ -10,7 +10,7 @@ import (
 // leadColumns is the single column list every ledger read shares, so a scan and
 // its SELECT cannot drift apart.
 const leadColumns = `place_id, name, address, latitude, longitude, rating,
-	review_count, website, phone, primary_type, business_status, source,
+	review_count, website, phone, email, primary_type, business_status, source,
 	category, category_method, first_seen_at, last_seen_at`
 
 // LeadRow is one business in the ledger. Unlike the companies cache this row
@@ -26,6 +26,9 @@ type LeadRow struct {
 	ReviewCount    int
 	Website        string
 	Phone          string
+	// Email is the address stage 1b found on the company's own site — where an
+	// email draft is actually sent. Empty is the normal state.
+	Email          string
 	PrimaryType    string
 	BusinessStatus string
 	Source         string
@@ -125,7 +128,7 @@ func (s *Store) PutLeadRun(ctx context.Context, run LeadRun, rows []LeadRow) err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO leads (`+leadColumns+`)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(place_id) DO UPDATE SET
 				name            = CASE WHEN excluded.name            <> '' THEN excluded.name            ELSE leads.name            END,
 				address         = CASE WHEN excluded.address         <> '' THEN excluded.address         ELSE leads.address         END,
@@ -135,6 +138,7 @@ func (s *Store) PutLeadRun(ctx context.Context, run LeadRun, rows []LeadRow) err
 				review_count    = CASE WHEN excluded.review_count    <> 0  THEN excluded.review_count    ELSE leads.review_count    END,
 				website         = CASE WHEN excluded.website         <> '' THEN excluded.website         ELSE leads.website         END,
 				phone           = CASE WHEN excluded.phone           <> '' THEN excluded.phone           ELSE leads.phone           END,
+				email           = CASE WHEN excluded.email           <> '' THEN excluded.email           ELSE leads.email           END,
 				primary_type    = CASE WHEN excluded.primary_type    <> '' THEN excluded.primary_type    ELSE leads.primary_type    END,
 				business_status = CASE WHEN excluded.business_status <> '' THEN excluded.business_status ELSE leads.business_status END,
 				source          = CASE WHEN excluded.source          <> '' THEN excluded.source          ELSE leads.source          END,
@@ -142,8 +146,8 @@ func (s *Store) PutLeadRun(ctx context.Context, run LeadRun, rows []LeadRow) err
 				category_method = CASE WHEN excluded.category_method <> '' THEN excluded.category_method ELSE leads.category_method END,
 				last_seen_at    = excluded.last_seen_at`,
 			r.PlaceID, r.Name, r.Address, r.Latitude, r.Longitude, r.Rating,
-			r.ReviewCount, r.Website, r.Phone, r.PrimaryType, r.BusinessStatus,
-			r.Source, r.Category, r.CategoryMethod, now, now,
+			r.ReviewCount, r.Website, r.Phone, r.Email, r.PrimaryType,
+			r.BusinessStatus, r.Source, r.Category, r.CategoryMethod, now, now,
 		); err != nil {
 			return unavailable(err)
 		}
@@ -317,21 +321,27 @@ func (s *Store) ListLeadRuns(ctx context.Context, limit int) ([]LeadRun, error) 
 	return out, nil
 }
 
-// OutreachEmailsFor resolves the draft status of many leads at once, so the
-// ledger listing can show 'sent' / 'skipped' without one query per row. Place
-// ids missing from the result simply have no draft.
-func (s *Store) OutreachEmailsFor(ctx context.Context, placeIDs []string, promptVersion string) (map[string]OutreachEmail, error) {
-	if s == nil || s.db == nil || promptVersion == "" || len(placeIDs) == 0 {
+// LeadsByPlaceID resolves an explicit set of businesses, in the order the
+// caller named them, skipping ids the ledger does not hold.
+//
+// This is what the checkbox selection reads through. It is deliberately not a
+// LeadFilter field: every other read here narrows a list the operator is
+// browsing, and this one *is* the operator's list — they picked these forty rows
+// by hand, and the answer has to be those forty rows in that order rather than
+// whatever a filter happens to match.
+func (s *Store) LeadsByPlaceID(ctx context.Context, placeIDs []string) ([]LeadRow, error) {
+	if s == nil || s.db == nil || len(placeIDs) == 0 {
 		return nil, nil
 	}
 
-	args := make([]any, 0, len(placeIDs)+1)
-	args = append(args, promptVersion)
 	holders := make([]string, 0, len(placeIDs))
+	args := make([]any, 0, len(placeIDs))
+	seen := make(map[string]bool, len(placeIDs))
 	for _, id := range placeIDs {
-		if id == "" {
+		if id == "" || seen[id] {
 			continue
 		}
+		seen[id] = true
 		holders = append(holders, "?")
 		args = append(args, id)
 	}
@@ -340,30 +350,32 @@ func (s *Store) OutreachEmailsFor(ctx context.Context, placeIDs []string, prompt
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT place_id, email, status, truncated
-		FROM outreach_emails
-		WHERE prompt_version = ? AND place_id IN (`+strings.Join(holders, ",")+`)`,
-		args...)
+		SELECT `+prefixed(leadColumns, "l")+`
+		FROM leads l
+		WHERE l.place_id IN (`+strings.Join(holders, ",")+`)`, args...)
 	if err != nil {
 		return nil, unavailable(err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	out := make(map[string]OutreachEmail, len(holders))
+	found := make(map[string]LeadRow, len(holders))
 	for rows.Next() {
-		var (
-			id        string
-			oe        OutreachEmail
-			truncated int
-		)
-		if err := rows.Scan(&id, &oe.Email, &oe.Status, &truncated); err != nil {
+		r, err := scanLead(rows.Scan)
+		if err != nil {
 			return nil, unavailable(err)
 		}
-		oe.Truncated = truncated != 0
-		out[id] = oe
+		found[r.PlaceID] = r
 	}
 	if err := rows.Err(); err != nil {
 		return nil, unavailable(err)
+	}
+
+	out := make([]LeadRow, 0, len(found))
+	for _, id := range placeIDs {
+		if r, ok := found[id]; ok {
+			out = append(out, r)
+			delete(found, id)
+		}
 	}
 	return out, nil
 }
@@ -374,7 +386,7 @@ func scanLead(scan func(dest ...any) error) (LeadRow, error) {
 		firstSeen, lastSeen int64
 	)
 	err := scan(&r.PlaceID, &r.Name, &r.Address, &r.Latitude, &r.Longitude,
-		&r.Rating, &r.ReviewCount, &r.Website, &r.Phone, &r.PrimaryType,
+		&r.Rating, &r.ReviewCount, &r.Website, &r.Phone, &r.Email, &r.PrimaryType,
 		&r.BusinessStatus, &r.Source, &r.Category, &r.CategoryMethod,
 		&firstSeen, &lastSeen)
 	if err != nil {

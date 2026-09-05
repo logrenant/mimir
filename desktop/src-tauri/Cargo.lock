@@ -2152,6 +2152,7 @@ name = "mimir-desktop"
 version = "2.7.1"
 dependencies = [
  "getrandom 0.4.3",
+ "objc2-app-kit",
  "serde",
  "serde_json",
  "tauri",

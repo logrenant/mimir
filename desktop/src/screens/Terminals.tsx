@@ -4,7 +4,7 @@ import { BrainConsole, statusOf } from "../components/BrainConsole";
 import { ShellTerminal } from "../components/ShellTerminal";
 import { useTerminals } from "../components/TerminalsProvider";
 import { api, DaemonError, type BrainScanStatus, type Run, type TerminalProfile } from "../lib/daemon";
-import { recentRuns } from "../lib/terminals";
+import { isBusy, recentRuns } from "../lib/terminals";
 import { cardTitle, isSetTime } from "../lib/board";
 
 /**
@@ -22,7 +22,7 @@ import { cardTitle, isSetTime } from "../lib/board";
  * a long history would push them off the screen.
  */
 export function Terminals() {
-  const { sessions, activeID, setActive, open, close, stop } = useTerminals();
+  const { sessions, activeID, setActive, open, close, stop, retry } = useTerminals();
 
   // The resident scan is the one job here that is not a run: no row, no
   // transcript, no socket. It gets its own row rather than a fake Session,
@@ -298,7 +298,13 @@ export function Terminals() {
         {shell ? null : brainOpen ? (
           <BrainConsole />
         ) : active ? (
-          <Terminal session={active} onStop={(id) => void stop(id)} onClose={close} />
+          <Terminal
+            session={active}
+            busy={isBusy(sessions)}
+            onStop={(id) => void stop(id)}
+            onClose={close}
+            onRetry={(id, fresh) => void retry(id, fresh)}
+          />
         ) : (
           <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 30 }}>
             <div style={{ maxWidth: 380, textAlign: "center", display: "flex", flexDirection: "column", gap: 8 }}>

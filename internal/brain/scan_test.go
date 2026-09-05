@@ -340,3 +340,87 @@ func TestScan_CarriesTheFilesShapeToTheStore(t *testing.T) {
 		}
 	}
 }
+
+// --- the scan permission surface ---------------------------------------------
+
+// An excluded path must never be opened. Asserted on the result rather than on
+// a mock, because the guarantee being made is about a file that is otherwise
+// perfectly eligible: it has to fall out of the pending set, not merely fail to
+// be distilled.
+func TestScan_ExcludedFilesAreNeverRead(t *testing.T) {
+	dir := scanRepo(t)
+	c := scanCore(t, newFakeStore(), nil)
+
+	all, err := c.Scan(context.Background(), dir, &fakeHashes{}, ScanOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if all.Eligible != 3 {
+		t.Fatalf("baseline eligible = %d, want 3", all.Eligible)
+	}
+
+	// One file by name, and one whole subtree.
+	got, err := c.Scan(context.Background(), dir, &fakeHashes{}, ScanOptions{
+		DryRun: true,
+		Exclude: NewExcluder([]string{
+			filepath.Join(dir, "README.md"),
+			filepath.Join(dir, "internal"),
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if got.Eligible != 1 {
+		t.Errorf("eligible = %d, want 1 — only main.go survives", got.Eligible)
+	}
+	if got.Excluded != 2 {
+		t.Errorf("excluded = %d, want 2", got.Excluded)
+	}
+	joined := strings.Join(got.Files, ",")
+	for _, gone := range []string{"README.md", "internal/store/brain.go"} {
+		if strings.Contains(joined, gone) {
+			t.Errorf("%s was excluded but still appears in %v", gone, got.Files)
+		}
+	}
+	if !strings.Contains(joined, "main.go") {
+		t.Errorf("main.go was not excluded but is missing from %v", got.Files)
+	}
+}
+
+// The shipped credential denylist applies with no policy configured at all —
+// that is the whole point of it being separate from the operator's list.
+func TestScan_CredentialsAreRefusedWithoutAnyPolicy(t *testing.T) {
+	dir := scanRepo(t)
+	for rel, body := range map[string]string{
+		".env":                   "STRIPE_KEY=sk_live_notreal\n",
+		"deploy/server.pem":      "-----BEGIN PRIVATE KEY-----\nnope\n",
+		"deploy/id_rsa":          "-----BEGIN OPENSSH PRIVATE KEY-----\nnope\n",
+		"infra/terraform.tfvars": "password = \"hunter2\"\n",
+	} {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c := scanCore(t, newFakeStore(), nil)
+	got, err := c.Scan(context.Background(), dir, &fakeHashes{}, ScanOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if got.Eligible != 3 {
+		t.Errorf("eligible = %d, want the same 3 as before the credentials were written; got %v",
+			got.Eligible, got.Files)
+	}
+	joined := strings.Join(got.Files, ",")
+	for _, secret := range []string{".env", "server.pem", "id_rsa", "tfvars"} {
+		if strings.Contains(joined, secret) {
+			t.Errorf("a credential reached the eligible set: %q in %v", secret, got.Files)
+		}
+	}
+}

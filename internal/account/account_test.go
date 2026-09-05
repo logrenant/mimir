@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/store"
@@ -26,125 +25,129 @@ func openTestStore(t *testing.T) *store.Store {
 	return s
 }
 
-func TestRegister_DefaultSlotHasNoDirectory(t *testing.T) {
-	r := NewRegistry(openTestStore(t))
+// Connecting records exactly one row, and it is Mimir's own slot — never the
+// CLI's default one, which is the operator's terminal login.
+func TestRecord_WritesMimirsOwnSlot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claude-session")
+	r := NewRegistry(openTestStore(t), dir, "claude")
 
-	acct, err := r.Register(context.Background(), "", "")
+	acct, err := r.record(context.Background())
 	if err != nil {
-		t.Fatalf("Register: %v", err)
+		t.Fatalf("record: %v", err)
 	}
-	if !acct.IsDefault || acct.ConfigDir != "" {
-		t.Errorf("the default slot is the absence of a directory: %+v", acct)
+	if acct.ConfigDir != dir {
+		t.Errorf("ConfigDir: got %q, want %q", acct.ConfigDir, dir)
 	}
-	if acct.Label != "Default" {
-		t.Errorf("Label: got %q, want Default", acct.Label)
+	if acct.ConfigDir == "" {
+		t.Error("an empty ConfigDir is the CLI's own slot, which Mimir must not claim")
 	}
-}
-
-// The same directory is the same keychain entry. Two rows for it would let the
-// dispatcher believe one identity could run two tasks at once — which is the
-// whole thing this package exists to prevent.
-func TestRegister_IsIdempotentByDirectory(t *testing.T) {
-	r := NewRegistry(openTestStore(t))
-	dir := filepath.Join(t.TempDir(), "slot-b")
-
-	first, err := r.Register(context.Background(), "b", dir)
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	second, err := r.Register(context.Background(), "a different label", dir)
-	if err != nil {
-		t.Fatalf("Register again: %v", err)
-	}
-	if first.ID != second.ID {
-		t.Errorf("the same directory produced two accounts: %s and %s", first.ID, second.ID)
-	}
-}
-
-func TestRegister_CreatesTheDirectoryAndRefusesAFile(t *testing.T) {
-	r := NewRegistry(openTestStore(t))
-	tmp := t.TempDir()
-
 	// The contents are irrelevant — the CLI hashes the path — so creating it
-	// is kinder than making the operator mkdir first.
-	dir := filepath.Join(tmp, "made", "up")
-	if _, err := r.Register(context.Background(), "b", dir); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
+	// is kinder than making anybody mkdir first.
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		t.Errorf("the directory was not created: %v", err)
-	}
-
-	file := filepath.Join(tmp, "not-a-dir")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if _, err := r.Register(context.Background(), "bad", file); !errors.Is(err, ErrInvalidDir) {
-		t.Errorf("want ErrInvalidDir for a file, got %v", err)
-	}
-
-	// A typo that silently became a new identity is the failure worth
-	// preventing, so a relative path is refused rather than resolved.
-	if _, err := r.Register(context.Background(), "bad", "slot-b"); !errors.Is(err, ErrInvalidDir) {
-		t.Errorf("want ErrInvalidDir for a relative path, got %v", err)
+		t.Errorf("the slot directory was not created: %v", err)
 	}
 }
 
-func TestList_IsOldestFirstSoAssignmentIsPredictable(t *testing.T) {
-	r := NewRegistry(openTestStore(t))
+// There is one account, and a second login must not produce a second row: the
+// dispatcher reads the list as capacity, and two rows would be two lanes on
+// one rate limit.
+func TestRecord_StaysOneRow(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claude-session")
+	r := NewRegistry(openTestStore(t), dir, "claude")
 	ctx := context.Background()
 
-	if _, err := r.Register(ctx, "first", ""); err != nil {
-		t.Fatalf("Register: %v", err)
+	first, err := r.record(ctx)
+	if err != nil {
+		t.Fatalf("record: %v", err)
 	}
-	time.Sleep(1100 * time.Millisecond) // created_at has second resolution
-	if _, err := r.Register(ctx, "second", filepath.Join(t.TempDir(), "b")); err != nil {
-		t.Fatalf("Register: %v", err)
+	second, err := r.record(ctx)
+	if err != nil {
+		t.Fatalf("record again: %v", err)
 	}
-
+	if first.ID != second.ID {
+		t.Errorf("two rows for one slot: %s and %s", first.ID, second.ID)
+	}
 	accounts, err := r.List(ctx)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(accounts) != 2 || accounts[0].Label != "first" {
-		t.Fatalf("order: got %+v", accounts)
+	if len(accounts) != 1 {
+		t.Errorf("List: got %d accounts, want 1", len(accounts))
 	}
 }
 
-// Forgetting a slot with work attached would strand a queue nothing can drain.
-func TestDelete_RefusesWhileWorkIsAttached(t *testing.T) {
-	st := openTestStore(t)
-	r := NewRegistry(st)
-	ctx := context.Background()
+// Nothing connected is the state every launch starts in, and the honest answer
+// for it is an empty list rather than a default slot standing in.
+func TestList_IsEmptyBeforeAnythingIsConnected(t *testing.T) {
+	r := NewRegistry(openTestStore(t), filepath.Join(t.TempDir(), "slot"), "claude")
 
-	acct, err := r.Register(ctx, "b", filepath.Join(t.TempDir(), "b"))
+	accounts, err := r.List(context.Background())
 	if err != nil {
-		t.Fatalf("Register: %v", err)
+		t.Fatalf("List: %v", err)
 	}
-	if err := st.InsertRun(ctx, store.RunRow{
-		ID: "queued-run", ProjectID: "p", Prompt: "x",
-		Status: store.RunStatusQueued, RequestedAccountID: acct.ID,
-		CreatedAt: time.Now().UTC(), QueuedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("InsertRun: %v", err)
+	if len(accounts) != 0 {
+		t.Errorf("got %+v, want nothing connected", accounts)
+	}
+	if _, ok, err := r.Current(context.Background()); err != nil || ok {
+		t.Errorf("Current: got ok=%v err=%v, want not connected", ok, err)
+	}
+}
+
+// Reset is the whole "closing Mimir resets the accounts" contract: the login is
+// signed out through the CLI, the directory that names its keychain entry goes,
+// and the row goes with it. A row left behind would advertise capacity the
+// keychain no longer backs.
+func TestReset_SignsOutRemovesTheSlotAndForgetsTheRow(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "claude-session")
+	marker := filepath.Join(tmp, "logout-ran")
+
+	// A stand-in CLI: the real one talks to the keychain, and what this has to
+	// prove is that the logout is attempted with the slot pointed at Mimir's
+	// own directory.
+	fake := filepath.Join(tmp, "fake-claude.sh")
+	script := "#!/bin/sh\n" +
+		`if [ "$1" = auth ] && [ "$2" = logout ]; then printf %s "$CLAUDE_SECURESTORAGE_CONFIG_DIR" > ` +
+		marker + "; fi\nexit 0\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := r.Delete(ctx, acct.ID); !errors.Is(err, ErrAccountInUse) {
-		t.Fatalf("want ErrAccountInUse, got %v", err)
+	r := NewRegistry(openTestStore(t), dir, fake)
+	ctx := context.Background()
+	if _, err := r.record(ctx); err != nil {
+		t.Fatalf("record: %v", err)
 	}
 
-	// Once the work is over, the slot can be forgotten. The credentials stay
-	// in the keychain: Mimir has no business logging anybody out.
-	if _, err := st.UpdateRunStatus(ctx, "queued-run",
-		store.RunStatusQueued, store.RunStatusCompleted,
-		time.Time{}, time.Now().UTC(), ""); err != nil {
-		t.Fatalf("UpdateRunStatus: %v", err)
+	if err := r.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
 	}
-	if err := r.Delete(ctx, acct.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
+
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("the logout never ran: %v", err)
 	}
-	if _, err := r.Get(ctx, acct.ID); !errors.Is(err, ErrAccountNotFound) {
-		t.Errorf("want ErrAccountNotFound, got %v", err)
+	if string(got) != dir {
+		t.Errorf("logged out of %q, want Mimir's own slot %q", got, dir)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the slot directory survived the reset: %v", err)
+	}
+	accounts, err := r.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Errorf("the row survived the reset: %+v", accounts)
+	}
+}
+
+// A relative path would be resolved against whatever directory the daemon
+// happens to be in, which is a different keychain entry every time.
+func TestEnsureDir_RefusesARelativePath(t *testing.T) {
+	r := NewRegistry(openTestStore(t), "claude-session", "claude")
+	if err := r.ensureDir(); !errors.Is(err, ErrNoSessionDir) {
+		t.Errorf("want ErrNoSessionDir, got %v", err)
 	}
 }
 

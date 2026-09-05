@@ -6,15 +6,28 @@ import {
   bucketByCategory,
   contactLines,
   describeRun,
+  draftCounts,
+  draftFor,
   draftQueue,
+  EMPTY_SELECTION,
   filterCompanies,
+  headerState,
   leadsQueryFrom,
   ledgerTotals,
+  mergeDrafts,
   railFromCounts,
+  rangeOf,
+  setMany,
   sortCompanies,
+  summarize,
+  toggleChannel,
+  toggleOne,
   totals,
+  whatsappHref,
+  withDraft,
+  withDraftStatus,
 } from "./leadgen";
-import type { LeadCategoryCount, LeadCompany, LeadgenReport } from "./daemon";
+import type { Draft, LeadCategoryCount, LeadCompany, LeadgenReport } from "./daemon";
 
 function company(over: Partial<LeadCompany> = {}): LeadCompany {
   return {
@@ -23,6 +36,10 @@ function company(over: Partial<LeadCompany> = {}): LeadCompany {
     category: "health",
     ...over,
   } as LeadCompany;
+}
+
+function draft(over: Partial<Draft> = {}): Draft {
+  return { channel: "email", body: "merhaba", ...over };
 }
 
 describe("the category rail", () => {
@@ -142,20 +159,189 @@ describe("the draft queue", () => {
   // Undecided first: a queue that keeps finished work at the top makes the
   // operator scroll past it to find the next decision.
   test("puts undecided drafts first and counts the rest", () => {
-    const q = draftQueue([
-      company({ name: "sent", email: "merhaba", email_status: "sent" }),
-      company({ name: "open", email: "merhaba" }),
-      company({ name: "skipped", email: "merhaba", email_status: "skipped" }),
-      company({ name: "no draft" }),
-    ]);
+    const q = draftQueue(
+      [
+        company({ name: "sent", drafts: [draft({ status: "sent" })] }),
+        company({ name: "open", drafts: [draft()] }),
+        company({ name: "skipped", drafts: [draft({ status: "skipped" })] }),
+        company({ name: "no draft" }),
+      ],
+      "email",
+    );
 
     expect(q.items.map((i) => i.company.name)).toEqual(["open", "sent", "skipped"]);
     expect(q.items[0].index).toBe(1);
-    expect(q).toMatchObject({ pending: 1, sent: 1, skipped: 1 });
+    expect(q).toMatchObject({ channel: "email", pending: 1, sent: 1, skipped: 1 });
   });
 
-  test("a company with no draft is not in the queue", () => {
-    expect(draftQueue([company({ name: "a", email: "   " })]).items).toHaveLength(0);
+  // A decision is per channel — sending the email and skipping the WhatsApp
+  // line is an ordinary thing to decide — so the queues must not see each
+  // other's drafts.
+  test("one channel's queue never shows the other's letters", () => {
+    const rows = [
+      company({
+        name: "both",
+        drafts: [draft({ status: "sent" }), draft({ channel: "whatsapp", body: "selam" })],
+      }),
+      company({ name: "mail only", drafts: [draft()] }),
+    ];
+
+    expect(draftQueue(rows, "whatsapp").items.map((i) => i.company.name)).toEqual(["both"]);
+    expect(draftQueue(rows, "whatsapp").items[0].draft.body).toBe("selam");
+    expect(draftQueue(rows, "email").items).toHaveLength(2);
+  });
+
+  test("a company with an empty draft body is not in the queue", () => {
+    expect(draftQueue([company({ name: "a", drafts: [draft({ body: "   " })] })], "email").items)
+      .toHaveLength(0);
+    expect(draftQueue([company({ name: "a" })], "email").items).toHaveLength(0);
+  });
+
+  test("the tab counts are per channel", () => {
+    const counts = draftCounts([
+      company({ name: "a", drafts: [draft(), draft({ channel: "whatsapp" })] }),
+      company({ name: "b", drafts: [draft()] }),
+      company({ name: "c" }),
+    ]);
+    expect(counts).toEqual({ email: 2, whatsapp: 1 });
+  });
+});
+
+describe("the selection", () => {
+  const rows = [
+    company({ name: "a", phone: "0216 111 11 11" }),
+    company({ name: "b", email: "b@x.com" }),
+    company({ name: "c" }),
+    company({ name: "d" }),
+  ];
+  const ids = rows.map((r) => r.place_id);
+
+  test("toggling adds then removes", () => {
+    const one = toggleOne(EMPTY_SELECTION, "a");
+    expect([...one]).toEqual(["a"]);
+    expect([...toggleOne(one, "a")]).toEqual([]);
+  });
+
+  // The header box acts on what is in the table, never on the whole ledger:
+  // "all" that quietly meant four thousand rows is the most expensive
+  // misreading available on this screen.
+  test("the header box reports none, some and all over the visible rows", () => {
+    expect(headerState(EMPTY_SELECTION, ids)).toBe("none");
+    expect(headerState(new Set(["a"]), ids)).toBe("some");
+    expect(headerState(new Set(ids), ids)).toBe("all");
+    // A row ticked under an earlier filter does not make this page "all".
+    expect(headerState(new Set([...ids, "offscreen"]), ids)).toBe("all");
+    expect(headerState(new Set(["offscreen"]), ids)).toBe("none");
+  });
+
+  test("an empty table has an empty header box, not a full one", () => {
+    expect(headerState(new Set(["a"]), [])).toBe("none");
+  });
+
+  test("a range runs in either direction and includes both ends", () => {
+    expect(rangeOf(ids, 1, 3)).toEqual(["b", "c", "d"]);
+    expect(rangeOf(ids, 3, 1)).toEqual(["b", "c", "d"]);
+    expect(rangeOf(ids, 2, 2)).toEqual(["c"]);
+    expect(rangeOf(ids, -1, 2)).toEqual([]);
+  });
+
+  test("setMany ticks and unticks a whole span at once", () => {
+    const all = setMany(EMPTY_SELECTION, ids, true);
+    expect(all.size).toBe(4);
+    expect([...setMany(all, ["b", "c"], false)].sort()).toEqual(["a", "d"]);
+  });
+
+  // The selection outliving the filter is the whole reason it is a set of ids
+  // rather than a flag on the rendered row — and the bar has to say so, or the
+  // operator sends to fewer companies than they ticked.
+  test("summarize counts what is off-filter rather than hiding it", () => {
+    const sum = summarize(new Set(["a", "b", "gone"]), rows, ["email"]);
+    expect(sum).toMatchObject({ total: 3, visible: 2, offscreen: 1, withPhone: 1, withEmail: 1 });
+  });
+
+  test("the cost is companies × channels, not companies", () => {
+    expect(summarize(new Set(["a", "b"]), rows, ["email"]).messages).toBe(2);
+    expect(summarize(new Set(["a", "b"]), rows, ["email", "whatsapp"]).messages).toBe(4);
+    // No channel is still one message per company on the button, because the
+    // button is disabled there — a zero would read as "this is free".
+    expect(summarize(new Set(["a"]), rows, []).messages).toBe(1);
+  });
+
+  test("already-drafted counts only the channels about to be spent on", () => {
+    const drafted = [company({ name: "a", drafts: [draft({ channel: "whatsapp" })] })];
+    expect(summarize(new Set(["a"]), drafted, ["email"]).alreadyDrafted).toBe(0);
+    expect(summarize(new Set(["a"]), drafted, ["whatsapp"]).alreadyDrafted).toBe(1);
+  });
+
+  // The daemon drafts one channel at a time in the order it is given; a set has
+  // no order, so the toggle has to put it back.
+  test("channels keep the daemon's order however they were ticked", () => {
+    expect(toggleChannel(["email"], "whatsapp")).toEqual(["email", "whatsapp"]);
+    expect(toggleChannel(["whatsapp"], "email")).toEqual(["email", "whatsapp"]);
+    expect(toggleChannel(["email", "whatsapp"], "email")).toEqual(["whatsapp"]);
+  });
+});
+
+describe("writing drafts back", () => {
+  test("a re-draft replaces its channel and leaves the other alone", () => {
+    const before = company({
+      name: "a",
+      drafts: [draft({ body: "eski" }), draft({ channel: "whatsapp", body: "selam" })],
+    });
+
+    const after = withDraft(before, draft({ body: "yeni" }));
+
+    expect(draftFor(after, "email")?.body).toBe("yeni");
+    expect(draftFor(after, "whatsapp")?.body).toBe("selam");
+    expect(after.drafts).toHaveLength(2);
+  });
+
+  test("a decision marks one channel only", () => {
+    const before = company({
+      name: "a",
+      drafts: [draft(), draft({ channel: "whatsapp" })],
+    });
+
+    const after = withDraftStatus(before, "email", "sent");
+
+    expect(draftFor(after, "email")?.status).toBe("sent");
+    expect(draftFor(after, "whatsapp")?.status).toBeUndefined();
+  });
+
+  // A run answers with the companies it wrote for, which is a subset of the
+  // table: everything else has to survive untouched, including drafts on the
+  // channel this run did not ask for.
+  test("merging a run touches only the rows it answered for", () => {
+    const rows = [
+      company({ name: "a", drafts: [draft({ channel: "whatsapp", body: "selam" })] }),
+      company({ name: "b" }),
+    ];
+
+    const merged = mergeDrafts(rows, [
+      { ...company({ name: "a" }), drafts: [draft({ body: "yeni" })], email: "a@x.com" },
+    ]);
+
+    expect(draftFor(merged[0], "email")?.body).toBe("yeni");
+    expect(draftFor(merged[0], "whatsapp")?.body).toBe("selam");
+    expect(merged[0].email).toBe("a@x.com");
+    expect(merged[1]).toBe(rows[1]);
+  });
+});
+
+describe("the WhatsApp address", () => {
+  // A wrong number here opens a chat with a stranger, so anything but the two
+  // shapes Google Maps actually returns for Turkey is undefined — the panel
+  // already shows the plain number, which is a perfectly good fallback.
+  test("accepts the national and the +90 forms", () => {
+    expect(whatsappHref("0216 123 45 67")).toBe("https://wa.me/902161234567");
+    expect(whatsappHref("+90 532 123 45 67")).toBe("https://wa.me/905321234567");
+  });
+
+  test("refuses anything it cannot be sure about", () => {
+    expect(whatsappHref(undefined)).toBeUndefined();
+    expect(whatsappHref("")).toBeUndefined();
+    expect(whatsappHref("444 0 216")).toBeUndefined();
+    expect(whatsappHref("+1 415 555 0132")).toBeUndefined();
   });
 });
 

@@ -44,6 +44,11 @@ type ScanOptions struct {
 	// started by hand is where a first mount gets to spend a different budget
 	// than the background loop does.
 	Selection llm.Selection
+
+	// Exclude is the operator's "not this one" list, as absolute paths. The
+	// zero value excludes nothing, so a caller that has no policy — cmd/mimir-
+	// scan, the MCP tool — is unchanged by this field existing.
+	Exclude Excluder
 }
 
 // ScanResult is what one pass did, and what is left.
@@ -65,10 +70,17 @@ type ScanResult struct {
 	// is page images, or a machine with no poppler. It is deliberately not
 	// Failed: Failed is what tells the supervisor the provider is down, and a
 	// scanned manual must not look like agy being signed out.
-	Unreadable int  `json:"unreadable,omitempty"`
-	Remaining  int  `json:"remaining"`
-	Eligible   int  `json:"eligible_total"`
-	DryRun     bool `json:"dry_run,omitempty"`
+	Unreadable int `json:"unreadable,omitempty"`
+
+	// Excluded counts files a rule refused before they were opened: the
+	// operator's own list, or the shipped credential denylist. Reported rather
+	// than silently dropped, because "Brain does not know about this file" and
+	// "Brain was told not to read this file" are answers an operator needs to
+	// be able to tell apart when a document they expected is missing.
+	Excluded  int  `json:"excluded,omitempty"`
+	Remaining int  `json:"remaining"`
+	Eligible  int  `json:"eligible_total"`
+	DryRun    bool `json:"dry_run,omitempty"`
 
 	Files []string `json:"files,omitempty"`
 
@@ -148,6 +160,14 @@ func (c *Core) Scan(ctx context.Context, projectPath string, hashes HashStore, o
 			return res, ctx.Err()
 		}
 		full := filepath.Join(projectPath, rel)
+
+		// Before the stat, and well before contentOf: the whole value of a
+		// refusal here is that the bytes are never read, so it has to come
+		// ahead of everything that reads them.
+		if opts.Exclude.Excludes(full) {
+			res.Excluded++
+			continue
+		}
 
 		info, err := os.Stat(full)
 		if err != nil || info.IsDir() || info.Size() == 0 {
@@ -350,6 +370,15 @@ func isRepo(dir string) bool {
 func scannable(rel string) bool {
 	base := path.Base(rel)
 	ext := strings.ToLower(path.Ext(rel))
+
+	// First, and separately from everything below it. The rest of this function
+	// is an economic judgement — a lock file is not worth a model call — and
+	// could be relaxed if the economics changed. This one is not: a credential
+	// handed to a distil is a credential that has left the machine, and no
+	// saving makes that worth doing. See exclude.go.
+	if isSecret(rel) {
+		return false
+	}
 
 	for _, seg := range strings.Split(rel, "/") {
 		if skipDir(seg) || seg == "testdata" || seg == "__snapshots__" {

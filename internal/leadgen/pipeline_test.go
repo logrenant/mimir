@@ -12,6 +12,7 @@ import (
 	"github.com/logrenant/mimir/internal/maps"
 	"github.com/logrenant/mimir/internal/refine"
 	"github.com/logrenant/mimir/internal/regionsearch"
+	"github.com/logrenant/mimir/internal/settings"
 	"github.com/logrenant/mimir/internal/store"
 )
 
@@ -106,9 +107,9 @@ func wiredPipeline(t *testing.T) (*Pipeline, *fakeScraper, *fakeAnalyzer, *fakeD
 
 	cat := New(cfg, &fakeClassifier{}, newFakeStore())
 	gaps := NewGapAnalyzer(cfg, analyzer, newFakeGapStore())
-	emails := NewEmailRunner(cfg, drafter, newFakeEmailStore())
+	messages := NewMessageRunner(cfg, drafter, newFakeMessageStore())
 
-	p := NewPipeline(cfg, regionsearch.Standard(regionsearch.Sources{Sidecar: searcher}), &fakeRegionStore{}, cat, gaps, emails)
+	p := NewPipeline(cfg, regionsearch.Standard(regionsearch.Sources{Sidecar: searcher}), &fakeRegionStore{}, cat, gaps, messages)
 	return p, searcher, analyzer, drafter
 }
 
@@ -150,8 +151,12 @@ func TestPipeline_FullRun(t *testing.T) {
 		if l.Category != CategoryHealth {
 			t.Fatalf("company %s categorized %q, want health", l.PlaceID, l.Category)
 		}
-		if l.Email == "" || l.EmailStatus == "" {
-			t.Fatalf("company %s has no email: %+v", l.PlaceID, l)
+		mail := l.draftFor(settings.ChannelEmail)
+		if mail == nil || mail.Body == "" || mail.Status == "" {
+			t.Fatalf("company %s has no email draft: %+v", l.PlaceID, l)
+		}
+		if l.draftFor(settings.ChannelWhatsApp) != nil {
+			t.Fatalf("a search must not draft WhatsApp: %+v", l.Drafts)
 		}
 	}
 	if len(rep.Categories) != 1 || rep.Categories[0].Category != CategoryHealth {

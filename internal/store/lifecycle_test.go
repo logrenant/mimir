@@ -178,6 +178,90 @@ func TestUpdateRunStatus_OnlyMovesFromTheExpectedState(t *testing.T) {
 	}
 }
 
+// A retried card goes back into the queue carrying its session, because the
+// session is what lets the second attempt continue the first.
+func TestRequeueRun_KeepsTheSessionAndTheReason(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	ended := time.Now().UTC().Add(-time.Minute)
+	if err := s.InsertRun(ctx, RunRow{
+		ID: "broke", ProjectID: "p", Prompt: "do it", Status: RunStatusFailed,
+		SessionID: "sess-1", Error: "the claude CLI exited with an error",
+		CreatedAt: ended, StartedAt: ended, EndedAt: ended,
+	}); err != nil {
+		t.Fatalf("InsertRun: %v", err)
+	}
+
+	moved, err := s.RequeueRun(ctx, "broke", time.Now().UTC(), true)
+	if err != nil || !moved {
+		t.Fatalf("RequeueRun: moved=%v err=%v", moved, err)
+	}
+
+	row, found, err := s.GetRun(ctx, "broke")
+	if err != nil || !found {
+		t.Fatalf("GetRun: found=%v err=%v", found, err)
+	}
+	if row.Status != RunStatusQueued || row.QueuedAt.IsZero() {
+		t.Errorf("a retried run must be queued with a queue time: %+v", row)
+	}
+	if !row.EndedAt.IsZero() {
+		t.Errorf("a run that is going to run again has not ended: %v", row.EndedAt)
+	}
+	if row.SessionID != "sess-1" {
+		t.Errorf("SessionID: got %q, want sess-1 — the retry could not resume", row.SessionID)
+	}
+	// Left for ClaimRun to clear: until it actually starts again, the card is
+	// still the place the operator reads why it stopped.
+	if row.Error == "" {
+		t.Error("the failure reason was dropped before the run restarted")
+	}
+}
+
+// The escape hatch for a session the CLI can no longer resume.
+func TestRequeueRun_FreshDropsTheSession(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	if err := s.InsertRun(ctx, RunRow{
+		ID: "broke", ProjectID: "p", Prompt: "do it", Status: RunStatusStopped,
+		SessionID: "sess-1", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("InsertRun: %v", err)
+	}
+
+	if moved, err := s.RequeueRun(ctx, "broke", time.Now().UTC(), false); err != nil || !moved {
+		t.Fatalf("RequeueRun: moved=%v err=%v", moved, err)
+	}
+	row, _, err := s.GetRun(ctx, "broke")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if row.SessionID != "" {
+		t.Errorf("SessionID: got %q, want empty — a fresh attempt must not resume", row.SessionID)
+	}
+}
+
+// Only a run that failed or was stopped has something to pick up. Anything else
+// would either duplicate work or queue a run that is already in flight.
+func TestRequeueRun_RefusesEveryOtherState(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	for _, status := range []string{
+		RunStatusBacklog, RunStatusQueued, RunStatusRunning, RunStatusCompleted,
+	} {
+		insertRun(t, s, status, status, time.Now().UTC())
+		moved, err := s.RequeueRun(ctx, status, time.Now().UTC(), true)
+		if err != nil {
+			t.Fatalf("RequeueRun %s: %v", status, err)
+		}
+		if moved {
+			t.Errorf("a %s run must not be requeued", status)
+		}
+	}
+}
+
 // The new columns and scanRun are positional; a round trip is what catches one
 // of them drifting from the other.
 func TestRunRow_CarriesTheBoardColumns(t *testing.T) {
@@ -245,5 +329,88 @@ func TestListRunsByProject_SurfacesBacklogTasks(t *testing.T) {
 	}
 	if len(rows) != 2 || rows[0].ID != "fresh" {
 		t.Fatalf("a new backlog task must come first, got %+v", rows)
+	}
+}
+
+// A card's own text is editable exactly where nothing has been spent on it.
+func TestEditRun_RewritesACardThatHasSpentNothing(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	if err := s.InsertRun(ctx, RunRow{
+		ID: "card", ProjectID: "p", Title: "eski", Prompt: "eski istek",
+		Status: RunStatusBacklog, Model: "sonnet", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("InsertRun: %v", err)
+	}
+
+	moved, err := s.EditRun(ctx, "card", RunEdit{
+		Title: "yeni", Prompt: "yeni istek", Model: "opus", Attachments: `["a1"]`,
+	})
+	if err != nil || !moved {
+		t.Fatalf("EditRun: moved=%v err=%v", moved, err)
+	}
+
+	row, found, err := s.GetRun(ctx, "card")
+	if err != nil || !found {
+		t.Fatalf("GetRun: found=%v err=%v", found, err)
+	}
+	if row.Title != "yeni" || row.Prompt != "yeni istek" || row.Model != "opus" {
+		t.Errorf("the edit did not land: %+v", row)
+	}
+	if row.Attachments != `["a1"]` {
+		t.Errorf("Attachments: got %q", row.Attachments)
+	}
+	if row.Status != RunStatusBacklog {
+		t.Errorf("an edit must not move the card: got %q", row.Status)
+	}
+}
+
+// Running and completed are the two states where the prompt is a record of what
+// was spent rather than a field, so the write has to lose.
+func TestEditRun_RefusesARunThatIsSpendingOrHasSpent(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	for _, status := range []string{RunStatusRunning, RunStatusCompleted} {
+		if err := s.InsertRun(ctx, RunRow{
+			ID: status, ProjectID: "p", Prompt: "as asked", Status: status,
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("InsertRun: %v", err)
+		}
+		moved, err := s.EditRun(ctx, status, RunEdit{Prompt: "rewritten"})
+		if err != nil {
+			t.Fatalf("EditRun %s: %v", status, err)
+		}
+		if moved {
+			t.Errorf("editing a %s run must not move the row", status)
+		}
+		row, _, err := s.GetRun(ctx, status)
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		if row.Prompt != "as asked" {
+			t.Errorf("%s: the prompt was rewritten under the run: %q", status, row.Prompt)
+		}
+	}
+}
+
+// A failed card is the one an operator most wants to fix before trying again.
+func TestEditRun_AllowsTheStatesAFixIsWorthMaking(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	for _, status := range EditableStatuses {
+		if err := s.InsertRun(ctx, RunRow{
+			ID: status, ProjectID: "p", Prompt: "wrong", Status: status,
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("InsertRun: %v", err)
+		}
+		moved, err := s.EditRun(ctx, status, RunEdit{Prompt: "right"})
+		if err != nil || !moved {
+			t.Fatalf("EditRun %s: moved=%v err=%v", status, moved, err)
+		}
 	}
 }

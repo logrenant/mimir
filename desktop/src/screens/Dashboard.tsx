@@ -11,26 +11,30 @@ import {
   api,
   DaemonError,
   status as daemonStatus,
+  type CodingModel,
   type Diagnostics,
   type DiagnosticsDependency,
-  type Account,
+  type Run,
 } from "../lib/daemon";
 import {
   actionsFor,
   allowedMove,
   BOARD_COLUMNS,
+  canContinue,
+  canEdit,
   cardTitle,
   columnOf,
   elapsedLabel,
   formatRelativeTime,
   groupRuns,
   isSetTime,
+  isStalled,
+  retryOutcome,
   type ColumnID,
 } from "../lib/board";
 import { Wordmark } from "../components/brand";
-import { loadAttachments, type Attached } from "../components/TaskComposer";
-import { useAccounts } from "../components/AccountsProvider";
-import { modelLabel, useModels } from "../components/ModelPicker";
+import { loadAttachments, TaskComposer, type Attached } from "../components/TaskComposer";
+import { modelLabel, ModelSelect, useModels } from "../components/ModelPicker";
 import { useTerminals } from "../components/TerminalsProvider";
 import { useRuns, runTime, type BoardRun } from "../components/RunsProvider";
 import { MODULES, type ModuleDef } from "../lib/modules";
@@ -39,6 +43,7 @@ import { useDiagnostics } from "../components/DiagnosticsPanel";
 import { Home } from "./Home";
 import { Leadgen } from "./Leadgen";
 import { Brain } from "./Brain";
+import { Settings } from "./Settings";
 import { Terminals } from "./Terminals";
 import { Workspace } from "./Workspace";
 
@@ -76,8 +81,10 @@ function navDotStyle(on: boolean): CSSProperties {
 
 // Brain sits with Genel/Board/Terminals rather than under MODÜLLER: it is not
 // a module the daemon happens to expose, it is the store everything else
-// writes into.
-type Screen = "home" | "board" | "terminals" | "brain" | "module";
+// writes into. Settings sits there for the mirror-image reason: it is not a
+// thing the daemon does, it is what the operator has told it to do — and it
+// governs modules rather than being one.
+type Screen = "home" | "board" | "terminals" | "brain" | "settings" | "module";
 
 export function Dashboard() {
   const [screen, setScreen] = useState<Screen>("home");
@@ -120,6 +127,7 @@ export function Dashboard() {
   const goBoard = () => setScreen("board");
   const goTerminals = () => setScreen("terminals");
   const goBrain = () => setScreen("brain");
+  const goSettings = () => setScreen("settings");
   const goModule = (mod: ModuleDef) => {
     setActiveModule(mod);
     setScreen("module");
@@ -142,6 +150,7 @@ export function Dashboard() {
           onGoBoard={goBoard}
           onGoTerminals={goTerminals}
           onGoBrain={goBrain}
+          onGoSettings={goSettings}
           onGoModule={goModule}
           onOpenDiagnostics={openDiagnostics}
         />
@@ -151,6 +160,7 @@ export function Dashboard() {
           {screen === "board" && <BoardScreen onGoTerminals={goTerminals} />}
           {screen === "terminals" && <Terminals />}
           {screen === "brain" && <Brain />}
+          {screen === "settings" && <Settings />}
           {screen === "module" && <ModuleScreen mod={activeModule} onGoHome={goHome} onGoTerminals={goTerminals} />}
         </div>
       </div>
@@ -226,6 +236,7 @@ function Sidebar({
   onGoBoard,
   onGoTerminals,
   onGoBrain,
+  onGoSettings,
   onGoModule,
   onOpenDiagnostics,
 }: {
@@ -236,6 +247,7 @@ function Sidebar({
   onGoBoard: () => void;
   onGoTerminals: () => void;
   onGoBrain: () => void;
+  onGoSettings: () => void;
   onGoModule: (mod: ModuleDef) => void;
   onOpenDiagnostics: () => void;
 }) {
@@ -264,6 +276,10 @@ function Sidebar({
           <button type="button" onClick={onGoBrain} style={css(navStyle(screen === "brain"))}>
             <span style={navDotStyle(screen === "brain")} />
             Brain
+          </button>
+          <button type="button" onClick={onGoSettings} style={css(navStyle(screen === "settings"))}>
+            <span style={navDotStyle(screen === "settings")} />
+            Ayarlar
           </button>
         </div>
 
@@ -322,22 +338,18 @@ const COLUMN_COLOR: Record<ColumnID, string> = {
 
 function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
   const terminals = useTerminals();
-  const { accounts } = useAccounts();
   const { models } = useModels();
   const { runs, error, loading, refresh } = useRuns();
   const [selected, setSelected] = useState<BoardRun | null>(null);
+  // Opening a card to read it and opening it to change it are the same overlay
+  // and two intents: the card body opens the first, "düzenle" the second.
+  const [editingCard, setEditingCard] = useState(false);
   const [composing, setComposing] = useState(false);
   const [dragged, setDragged] = useState<BoardRun | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const grouped = useMemo(() => groupRuns(runs ?? []), [runs]);
-
-  // Only worth naming when there is more than one identity to tell apart.
-  const accountLabels = useMemo(() => {
-    if (!accounts || accounts.length < 2) return null;
-    return new Map(accounts.map((a: Account) => [a.id, a.label]));
-  }, [accounts]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -369,6 +381,45 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
       terminals.open(run);
     });
 
+  // Whether a retry will start now or wait. Read once per render rather than
+  // per card, because it is a property of the board, not of any one card.
+  const busy = retryOutcome(runs) === "queued";
+
+  /**
+   * Continue (fresh = false) and start over (fresh = true).
+   *
+   * The terminal is opened either way: the card leaves the Failed column the
+   * moment this returns, and an operator who pressed a button and watched the
+   * card vanish has nowhere to look for what happened next.
+   */
+  const retryCard = (run: BoardRun, fresh: boolean) =>
+    act(async () => {
+      await api.retryCodingTask(run.id, fresh);
+      terminals.open(run);
+      say(
+        busy
+          ? "Kuyruğa alındı — çalışan task bitince başlayacak."
+          : fresh
+            ? "Baştan başlatılıyor."
+            : "Kaldığı yerden devam ediyor.",
+      );
+    });
+
+  /**
+   * "Kuyruğu yokla": ask the dispatcher to look at the queue again.
+   *
+   * The daemon pumps its queue when work is released and when a run frees its
+   * slot, never when the account changes — so a card queued while nothing was
+   * connected sits there after the login that could start it. When there is
+   * still nothing to start with, the daemon says so and `act` shows it, which
+   * is the answer the operator was actually looking for.
+   */
+  const kickQueue = () =>
+    act(async () => {
+      await api.kickQueue();
+      say("Kuyruk yoklandı — sıradaki kart başlayabiliyorsa başlıyor.");
+    });
+
   const onDrop = (column: ColumnID) => {
     const run = dragged;
     setDragged(null);
@@ -378,6 +429,13 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
     const move = allowedMove(from, column);
     if (!move.allowed) {
       if (move.reason) say(move.reason);
+      return;
+    }
+    if (move.action === "retry") {
+      // Dragged back into the queue: continue where there is a session to
+      // continue, start over where there is not — the choice the two buttons
+      // on the card make explicit, made here from the same fact.
+      void retryCard(run, !canContinue(run));
       return;
     }
     void act(async () => {
@@ -469,15 +527,26 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
                     key={run.id}
                     run={run as BoardRun}
                     now={now}
-                    accountLabels={accountLabels}
                     modelName={modelLabel(models, run.model)}
-                    onOpen={() => setSelected(run as BoardRun)}
+                    onOpen={() => {
+                      setSelected(run as BoardRun);
+                      setEditingCard(false);
+                    }}
+                    onEdit={() => {
+                      setSelected(run as BoardRun);
+                      setEditingCard(true);
+                    }}
                     onDragStart={() => setDragged(run as BoardRun)}
                     onDragEnd={() => setDragged(null)}
+                    busy={busy}
                     onRun={() => void runCard(run as BoardRun)}
                     onStop={() => void act(() => api.stopCodingTask(run.id))}
                     onDelete={() => void act(() => api.deleteCodingTask(run.id))}
                     onTerminal={() => watch(run as BoardRun)}
+                    onContinue={() => void retryCard(run as BoardRun, false)}
+                    onRetry={() => void retryCard(run as BoardRun, true)}
+                    onKick={() => void kickQueue()}
+                    stalled={isStalled(run, runs, now)}
                   />
                 ))}
               </div>
@@ -498,7 +567,16 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
       {selected && (
         <RunDetailOverlay
           run={selected}
+          models={models}
+          editing={editingCard}
+          onEditingChange={setEditingCard}
           onClose={() => setSelected(null)}
+          onSaved={(updated) => {
+            // Kept open on the card that was just saved rather than closed:
+            // the operator is usually still reading what they changed.
+            setSelected({ ...updated, projectName: selected.projectName });
+            void refresh();
+          }}
           onTerminal={() => {
             watch(selected);
             setSelected(null);
@@ -512,8 +590,8 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
 function RunCard({
   run,
   now,
-  accountLabels,
   modelName,
+  busy,
   onOpen,
   onDragStart,
   onDragEnd,
@@ -521,12 +599,18 @@ function RunCard({
   onStop,
   onDelete,
   onTerminal,
+  onContinue,
+  onRetry,
+  onKick,
+  onEdit,
+  stalled,
 }: {
   run: BoardRun;
   now: number;
-  accountLabels: Map<string, string> | null;
   /** Which model this card will spend, or did. Empty when nothing is pinned. */
   modelName: string;
+  /** Whether something is already running, which is what makes a retry wait. */
+  busy: boolean;
   onOpen: () => void;
   onDragStart: () => void;
   onDragEnd: () => void;
@@ -534,18 +618,29 @@ function RunCard({
   onStop: () => void;
   onDelete: () => void;
   onTerminal: () => void;
+  onContinue: () => void;
+  onRetry: () => void;
+  onKick: () => void;
+  onEdit: () => void;
+  /** Queued, with nothing running and nothing having moved it for a while. */
+  stalled: boolean;
 }) {
   const actions = actionsFor(run.status);
-  const draggable = run.status === "backlog" || run.status === "queued";
+  // Everything a drag can act on: the two operator columns, and a failure that
+  // can be picked back up by dropping it in Queued.
+  const draggable =
+    run.status === "backlog" ||
+    run.status === "queued" ||
+    run.status === "failed" ||
+    run.status === "stopped";
   const when = runTime(run);
-
-  // Which identity: the one it ran on once it has, the pin before that, and
-  // "otomatik" when it is neither — which is the default.
-  const accountLabel = accountLabels
-    ? (accountLabels.get(run.account_id ?? "") ??
-       accountLabels.get(run.requested_account_id ?? "") ??
-       (run.requested_account_id ? "bilinmeyen hesap" : "otomatik"))
-    : null;
+  const resumable = canContinue(run);
+  // The hint is where "it will wait" is said. Saying it on the button label
+  // would make the two buttons change width as another card starts and stops.
+  const waits = busy ? " — şu an bir task çalışıyor, kuyruğa alınır" : "";
+  const continueHint = `Oturumu kaldığı yerden sürdürür (--resume)${waits}`;
+  const kickHint = "Kuyruğu yeniden yoklar. Başlamıyorsa nedenini söyler — çoğunlukla bağlı hesap yoktur.";
+  const retryHint = `Oturumu atar, görevi baştan çalıştırır${waits}`;
 
   return (
     <HoverDiv
@@ -586,13 +681,42 @@ function RunCard({
         <span>{run.projectName}</span>
         {modelName && <span>· {modelName}</span>}
         {when && <span>· {formatRelativeTime(when)}</span>}
-        {accountLabel && <span>· {accountLabel}</span>}
       </div>
+
+      {/* Said on the card rather than in a toast: this is the state the card is
+          in, and it is still in it after the toast has gone. */}
+      {stalled && (
+        <p style={{ margin: 0, font: "400 10px/1.4 ui-monospace,Menlo,monospace", color: "#e5a23d" }}>
+          kuyrukta bekliyor, çalışan yok — “kuyruğu yokla” nedenini söyler
+        </p>
+      )}
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
         {actions.includes("run") && <CardButton tone="accent" onClick={onRun}>▶ run</CardButton>}
+        {actions.includes("kick") && (
+          <CardButton tone={stalled ? "accent" : undefined} onClick={onKick} title={kickHint}>
+            kuyruğu yokla
+          </CardButton>
+        )}
         {actions.includes("stop") && <CardButton tone="bad" onClick={onStop}>stop</CardButton>}
         {actions.includes("dequeue") && <CardButton onClick={onStop}>kuyruktan çıkar</CardButton>}
+        {/* Continue is offered only when there is a session to resume; without
+            one the card would promise to carry on and quietly start over. */}
+        {actions.includes("continue") && resumable && (
+          <CardButton tone="accent" onClick={onContinue} title={continueHint}>
+            ▶ devam et
+          </CardButton>
+        )}
+        {actions.includes("retry") && (
+          <CardButton onClick={onRetry} title={retryHint}>
+            baştan dene
+          </CardButton>
+        )}
+        {actions.includes("edit") && (
+          <CardButton onClick={onEdit} title="Başlığı, isteği, modeli ve görselleri değiştirir">
+            düzenle
+          </CardButton>
+        )}
         {actions.includes("terminal") && <CardButton onClick={onTerminal}>terminal</CardButton>}
         {actions.includes("delete") && <CardButton onClick={onDelete}>sil</CardButton>}
       </div>
@@ -604,10 +728,12 @@ function CardButton({
   children,
   onClick,
   tone,
+  title,
 }: {
   children: ReactNode;
   onClick: () => void;
   tone?: "accent" | "bad";
+  title?: string;
 }) {
   const color = tone === "accent" ? "#2547e8" : tone === "bad" ? "#e5484d" : "#8a9099";
   return (
@@ -615,32 +741,111 @@ function CardButton({
       base={`background:none;border:1px solid ${tone ? color : "#24272d"};border-radius:4px;padding:3px 7px;cursor:pointer;font:400 10px/1 ui-monospace,Menlo,monospace;color:${color}`}
       hover="background:#1c1f24"
       onClick={onClick}
+      title={title}
     >
       {children}
     </HoverButton>
   );
 }
 
+/**
+ * One card, opened.
+ *
+ * It reads and it edits, because those are the same card: a board where
+ * changing a title means deleting the task and writing it again is a board that
+ * makes the operator do the computer's job. What may be changed is the daemon's
+ * rule, not this component's — `canEdit` mirrors store.EditableStatuses — and
+ * the daemon still refuses with a 409 if the dispatcher claimed the card while
+ * this form was open, which is why the failure is shown here rather than
+ * assumed away.
+ */
 function RunDetailOverlay({
   run,
+  models,
+  editing,
+  onEditingChange,
   onClose,
   onTerminal,
+  onSaved,
 }: {
   run: BoardRun;
+  models: CodingModel[] | null;
+  editing: boolean;
+  onEditingChange: (next: boolean) => void;
   onClose: () => void;
   onTerminal: () => void;
+  onSaved: (updated: Run) => void;
 }) {
   const [attachments, setAttachments] = useState<Attached[]>([]);
+  const [title, setTitle] = useState(run.title ?? "");
+  const [prompt, setPrompt] = useState(run.prompt);
+  const [model, setModel] = useState(run.model ?? "");
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const editable = canEdit(run.status);
+
+  // The form follows the card. It is re-seeded when the card itself changes —
+  // a save returns a new row, and a poll can bring one in underneath — rather
+  // than on every render, so typing is never overwritten mid-word.
+  useEffect(() => {
+    setTitle(run.title ?? "");
+    setPrompt(run.prompt);
+    setModel(run.model ?? "");
+    setProblem(null);
+  }, [run.id, run.title, run.prompt, run.model]);
 
   useEffect(() => {
-    if (!run.attachments || run.attachments.length === 0) return;
+    if (!run.attachments || run.attachments.length === 0) {
+      setAttachments([]);
+      return;
+    }
     void loadAttachments(run.attachments).then(setAttachments);
   }, [run.attachments]);
+
+  const dirty =
+    title.trim() !== (run.title ?? "").trim() ||
+    prompt.trim() !== run.prompt.trim() ||
+    model !== (run.model ?? "") ||
+    attachments.map((a) => a.id).join(",") !== (run.attachments ?? []).join(",");
+
+  const save = async () => {
+    if (!prompt.trim()) return;
+    setSaving(true);
+    setProblem(null);
+    try {
+      const updated = await api.editCodingTask(run.id, {
+        title: title.trim(),
+        prompt: prompt.trim(),
+        model,
+        attachment_ids: attachments.map((a) => a.id),
+      });
+      onSaved(updated);
+      onEditingChange(false);
+    } catch (err) {
+      setProblem(err instanceof DaemonError ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancel = () => {
+    setTitle(run.title ?? "");
+    setPrompt(run.prompt);
+    setModel(run.model ?? "");
+    setProblem(null);
+    if (run.attachments && run.attachments.length > 0) {
+      void loadAttachments(run.attachments).then(setAttachments);
+    } else {
+      setAttachments([]);
+    }
+    onEditingChange(false);
+  };
 
   const rows: [string, string][] = [
     ["proje", run.projectName],
     ["durum", run.status],
-    ["model", run.model ?? "—"],
+    ["model", modelLabel(models, run.model) || run.model || "—"],
     ["oturum", run.session_id ?? "—"],
     ["maliyet", run.cost_usd ? `$${run.cost_usd.toFixed(4)}` : "—"],
     ["tur", run.num_turns ? String(run.num_turns) : "—"],
@@ -658,6 +863,15 @@ function RunDetailOverlay({
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ font: "400 11px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}>{run.id}</span>
           <div style={{ flex: 1 }} />
+          {editable && !editing && (
+            <HoverButton
+              base="background:none;border:1px solid #24272d;border-radius:5px;padding:4px 9px;cursor:pointer;font:400 10.5px/1 ui-monospace,Menlo,monospace;color:#8a9099"
+              hover="border-color:#343841;color:#eef0f2"
+              onClick={() => onEditingChange(true)}
+            >
+              düzenle
+            </HoverButton>
+          )}
           <HoverButton
             base="background:none;border:1px solid #24272d;border-radius:5px;padding:4px 9px;cursor:pointer;font:400 10.5px/1 ui-monospace,Menlo,monospace;color:#8a9099"
             hover="border-color:#343841;color:#eef0f2"
@@ -670,27 +884,81 @@ function RunDetailOverlay({
           </HoverButton>
         </div>
 
-        <h2 style={{ margin: 0, font: "500 14px/1.4 ui-sans-serif,system-ui", color: "#eef0f2" }}>{cardTitle(run)}</h2>
+        {editable && editing ? (
+          <>
+            <label style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
+              <span className="label" style={{ color: "#6b7079" }}>MODEL</span>
+              <ModelSelect models={models} value={model} onChange={setModel} disabled={saving} />
+            </label>
 
-        <pre style={{ margin: 0, font: "400 11.5px/1.6 ui-monospace,Menlo,monospace", color: "#8a9099", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-          {run.prompt}
-        </pre>
+            {/* The same composer the new-task form uses, so an image added
+                after the fact arrives the way the first ones did: paste, drop
+                or pick. */}
+            <TaskComposer
+              title={title}
+              onTitleChange={setTitle}
+              prompt={prompt}
+              onPromptChange={setPrompt}
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              disabled={saving}
+              rows={8}
+              onSubmit={() => void save()}
+            />
 
-        {attachments.length > 0 && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {attachments.map((att) => (
-              <img
-                key={att.id}
-                src={att.previewURI}
-                alt={att.filename}
-                style={{ width: 92, height: 92, objectFit: "cover", borderRadius: 6, border: "1px solid #24272d" }}
-              />
-            ))}
-          </div>
-        )}
+            {problem && (
+              <p style={{ margin: 0, font: "400 11px/1.5 ui-monospace,Menlo,monospace", color: "#e5484d" }}>{problem}</p>
+            )}
 
-        {run.error && (
-          <p style={{ margin: 0, font: "400 11.5px/1.6 ui-monospace,Menlo,monospace", color: "#e5484d", whiteSpace: "pre-wrap" }}>{run.error}</p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <HoverButton
+                base="background:#2547e8;border:none;border-radius:5px;padding:7px 13px;cursor:pointer;font:500 11.5px/1 ui-sans-serif,system-ui;color:#eef0f2"
+                hover="background:#1d3ac4"
+                disabled={saving || !dirty || !prompt.trim()}
+                onClick={() => void save()}
+              >
+                {saving ? "kaydediliyor…" : "Kaydet"}
+              </HoverButton>
+              <HoverButton
+                base="background:none;border:1px solid #24272d;border-radius:5px;padding:7px 13px;cursor:pointer;font:450 11.5px/1 ui-sans-serif,system-ui;color:#8a9099"
+                hover="border-color:#343841;color:#eef0f2"
+                disabled={saving}
+                onClick={cancel}
+              >
+                Vazgeç
+              </HoverButton>
+              <span style={{ font: "400 10.5px/1.4 ui-monospace,Menlo,monospace", color: "#4f545e" }}>
+                {run.status === "queued"
+                  ? "kuyrukta — başlarsa kaydetme reddedilir"
+                  : "⌘↵ ile kaydet"}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 style={{ margin: 0, font: "500 14px/1.4 ui-sans-serif,system-ui", color: "#eef0f2" }}>{cardTitle(run)}</h2>
+
+            <pre style={{ margin: 0, font: "400 11.5px/1.6 ui-monospace,Menlo,monospace", color: "#8a9099", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              {run.prompt}
+            </pre>
+
+            {attachments.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {attachments.map((att) => (
+                  <img
+                    key={att.id}
+                    src={att.previewURI}
+                    alt={att.filename}
+                    style={{ width: 92, height: 92, objectFit: "cover", borderRadius: 6, border: "1px solid #24272d" }}
+                  />
+                ))}
+              </div>
+            )}
+
+            {run.error && (
+              <p style={{ margin: 0, font: "400 11.5px/1.6 ui-monospace,Menlo,monospace", color: "#e5484d", whiteSpace: "pre-wrap" }}>{run.error}</p>
+            )}
+          </>
         )}
 
         <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "5px 14px" }}>

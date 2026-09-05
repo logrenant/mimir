@@ -3,6 +3,9 @@ import type { Run, RunEvent } from "./daemon";
 import {
   appendEvent,
   formatEventLine,
+  isBusy,
+  isResumable,
+  isRetryable,
   MAX_LINES,
   newSession,
   openSession,
@@ -176,5 +179,66 @@ describe("tailLines", () => {
     const tail = tailLines(s, 3);
     expect(tail).toHaveLength(3);
     expect(tail[2]).toBe(s.lines[s.lines.length - 1]);
+  });
+});
+
+describe("recovering a session from the terminal bar", () => {
+  test("the session id is learned from the event that announces it", () => {
+    const s = appendEvent(session(), event({ kind: "run.started", seq: 1, session_id: "sess-9" }));
+    expect(s.sessionID).toBe("sess-9");
+  });
+
+  test("a later event without one does not erase it", () => {
+    let s = appendEvent(session(), event({ kind: "run.started", seq: 1, session_id: "sess-9" }));
+    s = appendEvent(s, event({ kind: "text.delta", seq: 2, text: "hello" }));
+    s = appendEvent(s, event({ kind: "run.failed", seq: 3, error: "connection reset" }));
+    expect(s.sessionID).toBe("sess-9");
+  });
+
+  test("a run cut off mid-flight is retryable, and resumable once it has spoken", () => {
+    let s = appendEvent(session(), event({ kind: "run.started", seq: 1, session_id: "sess-9" }));
+    s = appendEvent(s, event({ kind: "run.failed", seq: 2, error: "connection reset" }));
+    expect(isRetryable(s)).toBe(true);
+    expect(isResumable(s)).toBe(true);
+  });
+
+  test("a run that died before saying who it was can only be started over", () => {
+    const s = appendEvent(session(), event({ kind: "run.failed", seq: 1, error: "claude: not found" }));
+    expect(isRetryable(s)).toBe(true);
+    expect(isResumable(s)).toBe(false);
+  });
+
+  test("a finished run is not offered either", () => {
+    let s = appendEvent(session(), event({ kind: "run.started", seq: 1, session_id: "sess-9" }));
+    s = appendEvent(s, event({ kind: "run.completed", seq: 2 }));
+    expect(isRetryable(s)).toBe(false);
+    expect(isResumable(s)).toBe(false);
+  });
+
+  test("a stopped run is the one most likely to be picked up again", () => {
+    let s = appendEvent(session(), event({ kind: "run.started", seq: 1, session_id: "sess-9" }));
+    s = appendEvent(s, event({ kind: "run.stopped", seq: 2 }));
+    expect(isResumable(s)).toBe(true);
+  });
+
+  test("a run already in flight is what makes a retry wait", () => {
+    const running = session();
+    const failed = appendEvent(session(), event({ kind: "run.failed", seq: 1, error: "x" }));
+    expect(isBusy([running, failed])).toBe(true);
+    expect(isBusy([failed])).toBe(false);
+    expect(isBusy([])).toBe(false);
+  });
+
+  test("re-opening a tab after a retry takes the board's newer session id", () => {
+    const open = openSession({}, { id: "run-1", project_id: "p", prompt: "do it", status: "failed" } as Run);
+    const again = openSession(open, {
+      id: "run-1",
+      project_id: "p",
+      prompt: "do it",
+      status: "queued",
+      session_id: "sess-2",
+    } as Run);
+    expect(again["run-1"].sessionID).toBe("sess-2");
+    expect(again["run-1"].status).toBe("queued");
   });
 });

@@ -4,6 +4,223 @@ Bu dosya [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) biçimini,
 sürüm numaraları [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 kuralını izler.
 
+## [Yayımlanmadı]
+
+**Taslak yazmak artık "bulunan herkese" değil, işaretlediklerinize — iki kanala,
+kendi yazdığınız kurallarla. Model seçimi ve kural dosyaları arama çubuğundan
+çıkıp kendi ayar ekranına taşındı.**
+
+### Eklendi
+
+- **Şirket tablosunda onay kutusu sütunu.** Seçim `place_id` kümesidir, satırın
+  üzerindeki bir bayrak değil: tablo daemon tarafında süzülüp sayfalandığı için
+  süzgeçten çıkan bir satır hâlâ operatörün seçtiği şirkettir, ve bayrak olsaydı
+  süzgeç değiştiği anda sessizce düşerdi. Bunun bedeli seçimin ekranı aşabilmesi,
+  o yüzden alttaki çubuk "3 tanesi bu süzgeçte görünmüyor" diye açıkça söylüyor.
+  Başlıktaki kutu üç durumlu (hiçbiri / bir kısmı / hepsi) ve **yalnızca tablodaki
+  satırlara** dokunuyor — sessizce dört bin satır demek olan bir "hepsi" bu
+  ekrandaki en pahalı yanlış anlama olurdu. Shift-tıklama aralık seçiyor, boşluk
+  tuşu satırı işaretliyor, Enter satırı açıyor.
+- **`POST /maps/outreach`** — süzgeç değil, kimlik listesi alır. Aradaki fark
+  ekranın tamamını belirliyor: arama "bana şirket bul", bu "şunlara yaz"
+  demektir. Bir süzgeç, kısa bir dizeyle bir bölgenin tamamını harcatabilirdi ve
+  operatör bunun kaç şirket olduğunu önceden göremezdi. Alttaki çubuk şirket
+  değil **mesaj** sayısı yazıyor (şirket × kanal), çünkü harcanan o.
+- **İki kanal: e-posta ve WhatsApp.** Taslaklar kanal başına saklanıyor ve karar
+  da kanal başına: e-postayı gönderip WhatsApp mesajını atlamak olağan bir
+  karardır. Taslak ekranı kanal sekmeleriyle okunuyor; "WhatsApp'ta aç" ve
+  "E-postada aç" metni operatörün zaten kullandığı uygulamaya veriyor —
+  uygulamanın kendi posta hesabı ya da WhatsApp oturumu yok, ve "gönderildi"
+  bir tıklamanın yan etkisi değil operatörün kararı olarak kalıyor.
+- **Kanal başına bir kural dosyası** (`internal/settings/rules/*.md`), taslak
+  istemine olduğu gibi ekleniyor. Dosya diskte duruyor, yolu ekranda yazıyor —
+  konumu sır olan bir kural dosyasına kimse güvenmez — ve kendi düzenleyicinizde
+  de açabilirsiniz. Kural dosyası istemin parçası olduğu için **önbellek
+  anahtarının da parçası**: düzenlediğinizde eski kurallarla yazılmış taslaklar
+  geçersiz olur, "gönderildi" işaretlenmiş olanlar dahil. Dürüst takas bu —
+  alternatifi, güncel kuralların hiç üretmediği bir mektubu göstermek olurdu — ve
+  ekran bunu düzenlemenin yapıldığı yerde söylüyor.
+- **Ayarlar ekranı.** Model seçimi ve iki kural dosyası tek bir ekranda, tek bir
+  kaydetme çubuğuyla: neyin kaydedilmediğini adıyla söylüyor, ⌘S metin
+  kutusunun içinden erişiyor. Üç ayrı kaydet düğmesi olan bir ayar sayfası,
+  hangisini unuttuğunuzu sonradan öğrendiğiniz sayfadır.
+
+### Değişti
+
+- **Model seçimi arama çubuğundan kalktı.** Bir çalıştırmanın hangi modeli
+  harcadığı kampanyaya ait bir karardır, tek bir aramaya değil — ve arama
+  çubuğundaki seçici, durumunu sonradan kimsenin göremediği bir seçimdi. Artık
+  ayar ekranında duruyor, `POST /maps/leadgen` hiç `provider`/`model`
+  göndermiyor ve daemon kaydedilmiş varsayılanı kendisi okuyor
+  (`api.leadgenSelection`); hiçbir şey kaydedilmemişse sınıf yönlendirmesi, yani
+  bu ekran yokken her çalıştırmanın yaptığı şey. Brain taramasının kendi
+  seçicisi duruyor: o tek bir tarama turunu yönlendiriyor, ayrı bir karar.
+- Arama çubuğundaki kutu artık **"bulunan herkese e-posta taslağı yaz"** diyor.
+  Onay kutulu bir sütunun yanında eski etiket "seçtiklerime yaz" gibi okunuyordu.
+
+### Düzeltildi
+
+- **`daemon_request` PUT ve PATCH'i reddediyordu.** Rust tarafındaki verb
+  izin listesi GET/POST/DELETE'te kalmıştı, oysa TypeScript tarafı ikisini de
+  çoktan tanımlamıştı: `editCodingTask` (kart düzenleme) ve
+  `saveBrainScanPolicy` (tarama politikası) çağrıldıklarında proxy'den
+  "unsupported method" alıyordu. Beş verb de artık listede.
+
+### Kaldırıldı
+
+- `POST /maps/emails/status` (yerine `POST /maps/outreach/status`);
+  `LeadCompany.email_status`/`email_method` alanları — taslak durumu artık
+  `drafts[]` içinde, kanal başına.
+
+**Brain'in neyi okuyabileceği artık bir ayar, bir sabit değil — ve hangi
+dosyaları hiç okuyamayacağı bir ayar bile değil.**
+
+### Eklendi
+
+- **Taranan klasörler operatörün.** `~/development` ve `~/Documents` bir Go
+  sabitiydi; "bu daemon hangi klasörlerimi okuyabilir?" sorusunun cevabı dosya
+  düzenleyip yeniden derlemekti. Artık Brain sekmesinde yerel klasör seçiciyle
+  ekleniyor ve çıkarılıyor (`GET`/`PUT /brain/scan/policy`,
+  `POST /brain/scan/policy/reset`). Sabit yerinde duruyor ama artık *tohum*:
+  hiç kaydetmemiş bir makine tam olarak eskisi gibi tarıyor.
+- **Hariç tutma listesi.** Bir dosya ya da bir klasör — klasör tüm alt ağacını
+  kapsıyor. Eşleşme yol *bileşeni* üzerinden, dize öneki üzerinden değil:
+  `/a/b` `/a/b/c`'yi kapsıyor, `/a/bravo`'yu kapsamıyor. Hariç tutulan yol
+  `os.Stat`'tan önce eleniyor — verilen güvence baytların hiç okunmaması.
+- **Politika her turda yeniden okunuyor.** Bir klasör eklendiğinde ya da hariç
+  tutulduğunda bir sonraki tur ona uyuyor; daemon yeniden başlatılmıyor. Kök
+  listesini boşaltmak da artık tek yönlü bir kapı değil: döngü bitmiyor,
+  bekliyor.
+
+### Güvenlik
+
+- **Kimlik dosyaları artık hiç okunmuyor, hiçbir ayara bakılmadan.** Bir tarama
+  dosya içeriğini harici bir model CLI'ının stdin'ine yazıyor, yani gözden kaçan
+  bir `.env` fark edildiğinde makineyi çoktan terk etmiş oluyor. `.env*`,
+  `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.netrc`, `.pgpass`, `kubeconfig`,
+  `*.tfstate`, `service-account*.json`, `.ssh/`, `.aws/`, `.gnupg/` ve
+  benzerleri `scannable`'ın **ilk** kuralında eleniyor.
+
+  Önceki tek engel `.gitignore`'du (`git ls-files --exclude-standard`) ve o
+  engel repo olmayan dizinlerde — yani `~/Documents` taramasında — hiç devrede
+  değildi. Bu denylist operatörün listesinden ayrı ve kasten
+  yapılandırılamaz: hariç tutma listesi boşaltılabilir, bu boşaltılamaz.
+
+  Denylist'in sıradan işi düşürmediği de test altında: `docs/secrets.md`,
+  `internal/keyboard.go`, `src/environment.ts` taranmaya devam ediyor.
+
+**Token limiti bittiğinde iş kaybolmuyor: koşan görev kuyruğa geri konuyor,
+kuyruk duruyor, olan biten kalıcı bir loga yazılıyor ve limit yenilendiği anda
+geliştirme pipeline'ı kendi kendine yeniden başlıyor.**
+
+### Eklendi
+
+- **Harcanmış token bütçesi artık bir duraklama, hata değil.** Bir çalıştırma
+  görev ortasında limite takıldığında `failed` olmuyor: oturum kimliğiyle
+  birlikte `queued`'a geri konuyor (`store.ParkRun`), böylece limit dönünce
+  `--resume` ile kaldığı yerden devam ediyor — baştan başlamıyor. Kartın
+  üzerinde neden beklediği ve saat kaçta devam edeceği yazıyor.
+- **Kuyruk, bütçesi bitmiş yuvaya iş vermiyor.** Dispatcher o yuvayı boş
+  saymıyor; sırada bekleyen kart, aynı cevabı bir kez daha almak için bir CLI
+  çağrısı harcamıyor.
+- **Kalıcı rate-limit logu** (`rate_limit_log` tablosu, migration 0021). Üç
+  faz: `run` (bir çalıştırma limite takıldı ve kuyruğa döndü), `dispatch`
+  (kuyruktaki bir görev başlatılamadı) ve `resumed` (pencere yenilendi, kuyruk
+  yeniden başladı). Bellekteki bir halka tampon değil tablo, çünkü iki uç
+  arasında saatler ve bir daemon yeniden başlatması olabiliyor: sabah "gece ne
+  oldu?" diye soran operatör satır okuyor.
+- **Limit yenilenince pipeline kendi kendine başlıyor.** Duraklama, CLI'ın
+  kendi verdiği `resetsAt` değerine (ya da `…|<unix>` ekiyle gelen kullanım
+  limiti cümlesine) kurulmuş tek bir uyandırma; o an gelince kuyruk her zamanki
+  `pump` ile yeniden pompalanıyor. Hiçbir şeye basılmıyor, hiçbir döngü
+  beklemiyor. CLI hiç saat vermediyse `CodingLimitRecheck` (15 dk) kadar
+  bekleniyor — bu bir tahmin ve öyle davranılıyor.
+- **Duraklama yeniden başlatmayı aşıyor.** Daemon açılışta logdan hâlâ süren
+  duraklamaları geri kuruyor, yoksa her yeniden başlatma logun zaten bildiği
+  şeyi bir CLI çağrısı harcayarak yeniden keşfederdi.
+- **`GET /coding-tasks/queue/limits`** — şu an neyin beklendiği (`holds`) ve
+  logun kendisi. `POST /coding-tasks/queue/kick` artık bütçe bittiğinde 409 ile
+  kuyruğun kaçta kendi kendine devam edeceğini söylüyor.
+
+### Değişti
+
+- **Başarısız bir `result` satırı artık CLI'ın kendi cümlesini kartın üzerine
+  yazıyor**, `error_during_execution` gibi bir kategori adını değil. Kullanım
+  limiti mesajı da zaten orada duyuruluyor.
+
+## [2.12.0] — 2026-09-04
+
+**Mimir'in tek bir Claude hesabı var, o hesap Mimir'in kendi kimlik yuvasında
+duruyor, ve uygulama kapanınca oturum kapanıyor.**
+
+### Değişti
+
+- **Çok hesaplı yuva kaydı kalktı.** `~/.claude-accounts` taraması, hesap
+  ekleme/unutma, hesap seçici, "otomatik — ilk boşalan hesap" ve iki yuvanın
+  aynı kimliğe düştüğünü söyleyen çakışma uyarısı gitti. Kapasite artık aynı
+  anda tek çalıştırma: bir kimlik zaten tek rate limit'ti, ikinci yuva onu
+  ikiye bölmüyordu.
+- **Hesap artık Mimir'in kendi yuvası.** `config.ClaudeSessionDir` store'un
+  yanında türetiliyor (`MIMIR_*` override'ı yok) ve CLI'a
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` olarak bu veriliyor. Operatörün
+  terminaldeki `claude` oturumu ayrı bir Keychain girdisi olarak duruyor ve
+  Mimir'in çıkışından etkilenmiyor — bu ayrım olmasa "kapanınca sıfırla"
+  operatörü kendi terminalinden atardı.
+- **Daemon'un kendi model çağrıları da aynı hesabı harcıyor.** refine, distill
+  ve recap artık CLI'ın varsayılan oturumunu değil bağlı hesabı kullanıyor;
+  "bunu hangi hesap ödedi?" sorusunun tek yanıtı var. Hiçbir hesap bağlı
+  değilken bu çağrılar CLI'ın kendi hatasıyla başarısız oluyor — sessizce başka
+  bir kimliğe düşmüyor.
+- **Kabuk profilleri tek profile indi.** `salihdevran` / `eziode` yerine tek bir
+  `claude`, ve o kabuk Mimir'in yuvasına yönlendirilmiş halde açılıyor.
+
+### Eklendi
+
+- **Hesap bağlamak artık bir giriş akışı.** `POST /accounts/login` daemon'da
+  `claude auth login`'i bir pty üzerinde başlatıyor, yetkilendirme adresini
+  çıktısından okuyup **Chrome'da gizli pencerede** açıyor; `GET /accounts/login`
+  akışı takip ediyor. Normal pencere tarayıcıda zaten açık olan Claude oturumunu
+  taşıyor ve hangi hesapla bağlanıldığını hiç sormuyor — gizli pencerenin sebebi
+  bu.
+- **CLI'ın kendi tarayıcı açışı bir PATH shim'i ile susturuluyor** (yalnız o alt
+  süreç için, `exit 0`). Shim'in *başarılı* olması önemli: CLI tarayıcının
+  açıldığına inandığında `http://localhost:<port>/callback` yönlendirmesini
+  seçiyor, yani giriş tarayıcıda bitince hiçbir şey yazmak gerekmiyor.
+  Açamadığına inandığında kod yapıştırma yoluna düşüyor — o yol da destekleniyor
+  (`POST /accounts/login/code`), ama olağan yol değil.
+- **`POST /accounts/reset`** — çıkış yap, yuva dizinini sil, kaydı unut. Hem
+  arayüzdeki "çıkış yap" düğmesi, hem masaüstü kabuğunun kapanırken çağırdığı
+  yol. Daemon aynı sıfırlamayı kendi kapanışında **ve** açılışında da yapıyor:
+  öldürülen bir daemon kapanış yarısını hiç çalıştıramıyor, launchd'nin
+  daemon'u ise uygulama kapanınca durmuyor.
+- **Yarıda kalan bir çalışma kaldığı yerden sürdürülebiliyor.** İnternet
+  koptuğunda ya da bir conflict'e çarpıldığında çalışma `failed` olarak
+  bitiyordu ve tek çare görevi baştan vermekti — yapılmış işin tamamı çöpe
+  gidiyordu. `POST /coding-tasks/{id}/retry` kartı kuyruğa geri koyuyor:
+  gövdesiz çağrı (**devam et**) satırın `session_id`'sini koruyor, dispatcher
+  kartı yeniden aldığında CLI `--resume` ile açılıyor ve oturum kaldığı yerden
+  sürüyor. `{"fresh":true}` (**baştan dene**) oturumu atıyor — CLI'ın artık
+  sürdüremediği bir oturumdan çıkış yolu, tercih değil.
+  - Sürdürülen oturuma kesintinin **nedeni** de veriliyor, görevle birlikte:
+    `--resume` uzun ve yarım bir tool çağrısında bitmiş olabilen bir transcript
+    oynatıyor, hedefin tekrar söylenmesi oturumun yanlış ipin ucuna
+    yapışmasını engelliyor.
+  - `init`'ten sonra çöken bir çalışma da artık oturumunu saklıyor. Sürdürecek
+    tek şey oydu; kaybedilseydi her çökme görevi sıfırdan başlatırdı.
+  - Board'da **failed** ve **durduruldu** kartlarında iki düğme, terminalin üst
+    çubuğunda da aynı ikisi. Sürdürülecek bir oturum yoksa "devam et" hiç
+    çıkmıyor: kaldığı yerden devam etmeyi vaat edip sessizce baştan başlamaktansa
+    sürdürülemez demek daha dürüst.
+  - Kapasite tek çalıştırma olduğu için, o an bir task koşuyorsa iki düğme de
+    kartı **kuyruğa** alıyor — ve arayüz bunu tıklamadan önce söylüyor.
+
+### Kaldırıldı
+
+- `POST /accounts`, `DELETE /accounts/{id}`, `POST /accounts/scan`;
+  `account.Discover` / `Sync` / `Register` / `Delete`; `config.ClaudeAccountsDir`
+  ve `MIMIR_CLAUDE_ACCOUNTS_DIR`; arayüzdeki `AccountSelect` ve
+  `identityClashes`.
+
 ## [2.11.1] — 2026-09-03
 
 **İki hesap aynı anda açık kalıyor, ve `claude` artık her seferinde yeniden

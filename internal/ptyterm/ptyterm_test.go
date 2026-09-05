@@ -37,33 +37,57 @@ func waitFor(t *testing.T, out <-chan []byte, seed []byte, want string) string {
 }
 
 func TestProfileByName(t *testing.T) {
-	// The two identities the operator picks between. Named explicitly rather
-	// than ranged over, so adding a profile does not silently weaken the test.
-	for _, want := range []Profile{
-		{Name: "salihdevran", Command: "claude"},
-		{Name: "eziode", Command: "claude-acct eziode"},
-	} {
-		got, ok := ProfileByName(want.Name)
-		if !ok {
-			t.Fatalf("ProfileByName(%q) not found", want.Name)
-		}
-		if got != want {
-			t.Errorf("ProfileByName(%q) = %+v; want %+v", want.Name, got, want)
-		}
+	reg := NewRegistry(t.TempDir())
+
+	// One profile, because Mimir has one account. Named explicitly rather than
+	// ranged over, so adding a second does not silently weaken the test.
+	want := Profile{Name: "claude", Command: "claude"}
+	got, ok := reg.ProfileByName(want.Name)
+	if !ok {
+		t.Fatalf("ProfileByName(%q) not found", want.Name)
+	}
+	if got != want {
+		t.Errorf("ProfileByName(%q) = %+v; want %+v", want.Name, got, want)
+	}
+	if profiles := reg.Profiles(); len(profiles) != 1 || profiles[0] != want {
+		t.Errorf("Profiles() = %+v; want exactly %+v", profiles, want)
 	}
 
-	// An unknown name must not fall back: opening a session as a different
-	// identity would spend the wrong account.
-	if _, ok := ProfileByName("nobody"); ok {
-		t.Error("ProfileByName(nobody) = ok; want not found")
+	// The operator's own credential slots used to be listed here by name.
+	// Offering one again would spend an account Mimir does not manage and
+	// cannot sign out.
+	for _, gone := range []string{"salihdevran", "eziode", "nobody"} {
+		if _, ok := reg.ProfileByName(gone); ok {
+			t.Errorf("ProfileByName(%q) = ok; want not found", gone)
+		}
 	}
+}
+
+// Every shell this registry starts spends Mimir's account, not whichever slot
+// the operator's own .zshrc would have selected.
+func TestShellIsPointedAtMimirsSlot(t *testing.T) {
+	slot := t.TempDir()
+	reg := NewRegistry(slot)
+	t.Cleanup(reg.CloseAll)
+
+	s, err := reg.Attach(Profile{
+		Name:    "probe",
+		Command: `echo SLOT=$CLAUDE_SECURESTORAGE_CONFIG_DIR`,
+	}, Size{Rows: 30, Cols: 120})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	seed, out, detach := s.Attach()
+	defer detach()
+	waitFor(t, out, seed, "SLOT="+slot)
 }
 
 // The claim the whole package rests on: the shell reads the operator's rc
 // files, so what they defined there exists. A non-interactive shell would skip
 // .zshrc and report "command not found" for a function they use every day.
 func TestAttachRunsInteractiveLoginShell(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(t.TempDir())
 	t.Cleanup(reg.CloseAll)
 
 	s, err := reg.Attach(Profile{
@@ -86,7 +110,7 @@ func TestAttachRunsInteractiveLoginShell(t *testing.T) {
 // reach the *same* one — otherwise the second profile hangs up the first, and
 // every relaunched `claude` re-asks for workspace trust.
 func TestDetachLeavesTheShellRunning(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(t.TempDir())
 	t.Cleanup(reg.CloseAll)
 
 	profile := Profile{Name: "keeper", Command: "echo FIRST_LINE"}
@@ -130,10 +154,11 @@ func TestDetachLeavesTheShellRunning(t *testing.T) {
 	waitFor(t, out2, nil, "SECOND_LINE")
 }
 
-// Both accounts open at once is the feature the operator asked for, so it gets
-// its own test rather than being implied by the registry's map.
-func TestTwoProfilesRunAtOnce(t *testing.T) {
-	reg := NewRegistry()
+// Sessions are keyed by name and independent of one another. There is one
+// profile on offer today, but the registry's map is what keeps a shell
+// reachable after its viewer left, so it is tested directly.
+func TestTwoSessionsRunAtOnce(t *testing.T) {
+	reg := NewRegistry(t.TempDir())
 	t.Cleanup(reg.CloseAll)
 
 	a, err := reg.Attach(Profile{Name: "acct-a", Command: "echo AAA_READY"}, Size{Rows: 24, Cols: 80})
@@ -172,7 +197,7 @@ func TestTwoProfilesRunAtOnce(t *testing.T) {
 }
 
 func TestKillEndsTheSessionAndForgetsIt(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(t.TempDir())
 	t.Cleanup(reg.CloseAll)
 
 	profile := Profile{Name: "doomed"}
@@ -211,7 +236,7 @@ func TestKillEndsTheSessionAndForgetsIt(t *testing.T) {
 // A zero size is clamped rather than refused, so a client that has not measured
 // its viewport yet still gets a usable terminal.
 func TestResizeAndCloseAreSafe(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(t.TempDir())
 	t.Cleanup(reg.CloseAll)
 
 	s, err := reg.Attach(Profile{Name: "sizing"}, Size{})
@@ -234,7 +259,7 @@ func TestResizeAndCloseAreSafe(t *testing.T) {
 // output. The UI holds one socket per profile, so two viewers of one shell
 // would only ever be two copies of the same screen.
 func TestSecondAttachReplacesTheFirst(t *testing.T) {
-	reg := NewRegistry()
+	reg := NewRegistry(t.TempDir())
 	t.Cleanup(reg.CloseAll)
 
 	s, err := reg.Attach(Profile{Name: "single"}, Size{Rows: 24, Cols: 80})

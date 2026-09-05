@@ -25,18 +25,21 @@ type ptyClientMessage struct {
 	Cols uint16 `json:"cols"`
 }
 
-// handleTerminalProfiles lists the identities a session can be opened as, and
-// says which of them has a shell running right now.
+// handleTerminalProfiles lists what a session can be opened as — one entry,
+// Mimir's own Claude account — and says whether it has a shell running.
 //
 // A GET rather than a constant compiled into the app: the picker and the shell
-// that actually runs the command must not be able to disagree about what
-// "eziode" means, and one of them has to be the authority.
+// that actually runs the command must not be able to disagree about which
+// account gets spent, and one of them has to be the authority.
 func (s *Server) handleTerminalProfiles(w http.ResponseWriter, r *http.Request) {
+	if s.terminals == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"profiles": []any{}})
+		return
+	}
+
 	live := map[string]bool{}
-	if s.terminals != nil {
-		for _, name := range s.terminals.Live() {
-			live[name] = true
-		}
+	for _, name := range s.terminals.Live() {
+		live[name] = true
 	}
 
 	type view struct {
@@ -44,8 +47,9 @@ func (s *Server) handleTerminalProfiles(w http.ResponseWriter, r *http.Request) 
 		Command string `json:"command"`
 		Running bool   `json:"running"`
 	}
-	out := make([]view, 0, len(ptyterm.Profiles))
-	for _, p := range ptyterm.Profiles {
+	profiles := s.terminals.Profiles()
+	out := make([]view, 0, len(profiles))
+	for _, p := range profiles {
 		out = append(out, view{Name: p.Name, Command: p.Command, Running: live[p.Name]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": out})
@@ -84,7 +88,7 @@ func (s *Server) handleTerminalPTY(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, "profile is required")
 		return
 	}
-	profile, ok := ptyterm.ProfileByName(name)
+	profile, ok := s.terminals.ProfileByName(name)
 	if !ok {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
 			"unknown terminal profile "+strconv.Quote(name))
@@ -208,7 +212,7 @@ func (s *Server) handleKillTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("profile")
-	if _, ok := ptyterm.ProfileByName(name); !ok {
+	if _, ok := s.terminals.ProfileByName(name); !ok {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
 			"unknown terminal profile "+strconv.Quote(name))
 		return

@@ -40,6 +40,8 @@
 | [task-65](task-65-chat-archive.md) | done | The chat archive: Claude Code, Terminals and agy conversations stored verbatim, searchable, model-free. |
 | [task-67](task-67-file-versions.md) | done | File version history: what a scanned file used to mean, and a scan that says out loud when it re-read one. |
 | [task-68](task-68-desktop-versions.md) | done | Desktop: the node version timeline. |
+| [task-69](task-69-scan-permissions.md) | done | Scan permissions: the operator owns the roots and the exclusion list; credential files are never read, whatever the policy says. |
+| [task-70](task-70-outreach-and-settings.md) | done | Outreach for the companies the operator ticked, on two channels, under rule files they wrote — and a settings screen that owns the model choice the search bar used to. |
 
 They are split by file, not by package: the odd-numbered tasks own
 `internal/**` and `cmd/**`, the even-numbered ones own `desktop/**`, so a

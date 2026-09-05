@@ -4,9 +4,8 @@
 // The distinction matters more than it sounds. The coding runner spawns
 // `claude -p` headless and pipes its stdout: that is a report of a session, and
 // nothing in it can be typed into. Everything the operator configured for their
-// shell — oh-my-zsh, its plugins, the prompt, aliases, and the `claude-acct`
-// function that selects a credential slot — exists only inside an interactive
-// login shell, and a pipe never starts one.
+// shell — oh-my-zsh, its plugins, the prompt and their aliases — exists only
+// inside an interactive login shell, and a pipe never starts one.
 //
 // So this package starts the same process Terminal.app starts: `$SHELL -l -i`
 // on a pty. Anything the operator's zsh does in their own window, it does here,
@@ -22,9 +21,9 @@
 // This is not a refinement, it is the difference between the feature working
 // and not. When the pty was owned by the websocket, opening the second profile
 // unmounted the first viewer, which closed its socket, which SIGHUP'd that
-// shell — so two accounts could never be open at once, and every `claude`
-// launched in a killed session lost the workspace-trust answer the operator had
-// just given, which is why it asked again every single time.
+// shell — so a terminal could not survive a trip to another screen, and every
+// `claude` launched in a killed session lost the workspace-trust answer the
+// operator had just given, which is why it asked again every single time.
 package ptyterm
 
 import (
@@ -37,16 +36,17 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
+
+	"github.com/logrenant/mimir/internal/account"
 )
 
 // Profile is a named way to open a session, as a line typed at the prompt.
 //
-// The command is typed rather than exec'd because the two are not equivalent:
-// `claude-acct` is a shell function defined in the operator's .zshrc, so it has
-// no binary to exec — only an interactive shell that has sourced that file can
-// run it. Typing it also means what the operator sees in the scrollback is the
-// command they would have written themselves, which is the point of the
-// feature: no hidden wrapper, nothing to keep in sync with their shell.
+// The command is typed rather than exec'd so that what the operator sees in the
+// scrollback is the command they would have written themselves: no hidden
+// wrapper, and nothing to keep in sync with their shell. It also means the line
+// runs in an interactive shell that has read .zshrc, which is where anything
+// they have defined for `claude` lives.
 type Profile struct {
 	// Name is what the picker shows, what a client sends back, and the key the
 	// Registry holds the session under.
@@ -56,32 +56,14 @@ type Profile struct {
 	Command string `json:"command"`
 }
 
-// Profiles are the identities a session can be opened as.
+// ClaudeProfile is the only profile there is: Mimir's one Claude account.
 //
-// They are declared here rather than derived from the account registry on
-// purpose. The registry answers "which credential slots exist on disk", which
-// is a different question: both discovered slots resolve to the same login, and
-// the operator's shell already owns the mapping from a name to the command that
-// selects it. Deriving these would mean re-deciding, in Go, something .zshrc
-// has already decided — and getting it wrong silently.
-var Profiles = []Profile{
-	// The default keychain slot, which is what a bare `claude` spends.
-	{Name: "salihdevran", Command: "claude"},
-	{Name: "eziode", Command: "claude-acct eziode"},
-}
-
-// ProfileByName looks up a profile. The bool is false for an unknown name,
-// which a caller should treat as a bad request rather than falling back: the
-// operator picked an identity, and quietly opening a different one would spend
-// the wrong account.
-func ProfileByName(name string) (Profile, bool) {
-	for _, p := range Profiles {
-		if p.Name == name {
-			return p, true
-		}
-	}
-	return Profile{}, false
-}
+// There used to be one per credential slot on the machine, named after the
+// operator's shell aliases. Mimir now has a single account of its own, so a
+// list of identities here would be a list of one thing pretending to be a
+// choice — and the identities it named were the operator's, which Mimir must
+// not spend at all.
+var ClaudeProfile = Profile{Name: "claude", Command: "claude"}
 
 // Size is a terminal's dimensions in character cells.
 type Size struct {
@@ -154,13 +136,13 @@ func shellPath() string {
 //
 // The shell is started `-l -i` — login and interactive — because those two
 // flags are what decide which rc files are read, and therefore whether
-// oh-my-zsh and `claude-acct` exist at all. A non-interactive shell skips
-// .zshrc entirely, which is why running the command through `zsh -c` would
-// report "command not found" for a function the operator uses every day.
+// oh-my-zsh and the operator's own aliases exist at all. A non-interactive
+// shell skips .zshrc entirely, which is why running the command through
+// `zsh -c` would report "command not found" for a function they use every day.
 //
 // Unexported: a session that no Registry owns is a shell nobody can find again
 // and nobody will ever close.
-func start(profile Profile, size Size) (*Session, error) {
+func start(profile Profile, size Size, sessionDir string) (*Session, error) {
 	shell := shellPath()
 
 	// argv[0] with a leading dash is the convention a login shell is
@@ -172,7 +154,7 @@ func start(profile Profile, size Size) (*Session, error) {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		cmd.Dir = home
 	}
-	cmd.Env = environ()
+	cmd.Env = environ(sessionDir)
 
 	// Setsid: the shell must be the session leader of its own session for the
 	// pty to become its controlling terminal. Without one, job control is off
@@ -345,12 +327,36 @@ func (s *Session) Close() error {
 // whatever is already running under that name, which is what makes both
 // terminals stay open while the operator looks at one of them.
 type Registry struct {
+	// sessionDir is Mimir's credential slot. Every shell started here is
+	// pointed at it, so a `claude` typed in this terminal spends the account
+	// the app is connected as and not whichever one the operator's own shell
+	// would have picked.
+	sessionDir string
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 }
 
-func NewRegistry() *Registry {
-	return &Registry{sessions: map[string]*Session{}}
+func NewRegistry(sessionDir string) *Registry {
+	return &Registry{sessionDir: sessionDir, sessions: map[string]*Session{}}
+}
+
+// Profiles is what a session may be opened as: one entry, always.
+//
+// A method rather than a package variable because the picker and the shell that
+// runs the command must not be able to disagree, and the shell is this
+// registry's.
+func (r *Registry) Profiles() []Profile { return []Profile{ClaudeProfile} }
+
+// ProfileByName looks up a profile. The bool is false for an unknown name,
+// which a caller should treat as a bad request rather than falling back:
+// quietly opening a different session than the one asked for is how a terminal
+// ends up spending an account nobody chose.
+func (r *Registry) ProfileByName(name string) (Profile, bool) {
+	if name == ClaudeProfile.Name {
+		return ClaudeProfile, true
+	}
+	return Profile{}, false
 }
 
 // Attach returns the live session for a profile, starting one if there is none.
@@ -374,7 +380,7 @@ func (r *Registry) Attach(profile Profile, size Size) (*Session, error) {
 		}
 	}
 
-	s, err := start(profile, size)
+	s, err := start(profile, size, r.sessionDir)
 	if err != nil {
 		return nil, err
 	}
@@ -469,8 +475,12 @@ func clampDim(v, fallback uint16) uint16 {
 // nested in anything — it is a login shell, it re-reads the operator's rc files
 // from scratch, and stripping what their terminal would have had is what would
 // make it differ from their terminal.
-func environ() []string {
-	out := os.Environ()
+func environ(sessionDir string) []string {
+	// account.Environ points the slot at Mimir's own directory and strips the
+	// session variables of whatever launched the daemon — without that a
+	// `claude` typed here would believe it was resuming the Claude Code
+	// session that started the daemon.
+	out := account.Environ(os.Environ(), sessionDir)
 
 	// TERM is what curses and every prompt read to decide what they may draw.
 	// A pty with no TERM leaves them assuming "dumb": no colour, no cursor

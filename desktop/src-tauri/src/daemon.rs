@@ -278,10 +278,11 @@ fn call_daemon(
     let url = format!("{}{}", endpoint.base_url, path);
     let auth = format!("Bearer {}", endpoint.token);
 
-    // GET, POST and DELETE, because those are the only verbs the daemon's
-    // routes answer to — DELETE since a board card can be thrown away. An
-    // allowlist here rather than a pass-through keeps this from becoming a
-    // general HTTP client the WebView can steer.
+    // The five verbs the daemon's routes answer to, and no more: DELETE since a
+    // board card can be thrown away, PUT for the routes that replace a whole
+    // document (the scan policy, the settings values, a rule file), PATCH for
+    // the one that amends a card. An allowlist here rather than a pass-through
+    // keeps this from becoming a general HTTP client the WebView can steer.
     let result = match (method.to_ascii_uppercase().as_str(), body) {
         ("GET", _) => agent.get(&url).header("Authorization", &auth).call(),
         ("POST", Some(payload)) => agent
@@ -290,6 +291,21 @@ fn call_daemon(
             .header("Content-Type", "application/json")
             .send(payload),
         ("POST", None) => agent.post(&url).header("Authorization", &auth).send_empty(),
+        ("PUT", Some(payload)) => agent
+            .put(&url)
+            .header("Authorization", &auth)
+            .header("Content-Type", "application/json")
+            .send(payload),
+        ("PUT", None) => agent.put(&url).header("Authorization", &auth).send_empty(),
+        ("PATCH", Some(payload)) => agent
+            .patch(&url)
+            .header("Authorization", &auth)
+            .header("Content-Type", "application/json")
+            .send(payload),
+        ("PATCH", None) => agent
+            .patch(&url)
+            .header("Authorization", &auth)
+            .send_empty(),
         ("DELETE", _) => agent.delete(&url).header("Authorization", &auth).call(),
         (other, _) => return Err(format!("unsupported method {other}")),
     };
@@ -709,6 +725,8 @@ fn mint_token() -> Result<String, getrandom::Error> {
 /// HTTP server down on SIGTERM and waits for in-flight coding runs, and
 /// skipping it would orphan a process holding the store's write lock.
 pub fn shutdown(app: &AppHandle) {
+    sign_out(app);
+
     let state = app.state::<DaemonState>();
     if let Some(child) = state.take_child() {
         let pid = child.pid();
@@ -721,6 +739,24 @@ pub fn shutdown(app: &AppHandle) {
         std::thread::sleep(Duration::from_millis(400));
         let _ = child.kill();
     }
+}
+
+/// Signs Mimir's Claude account out on the way out of the app.
+///
+/// Quitting Mimir resets its account — that is the contract, and it has to hold
+/// in attached mode too, where the daemon belongs to launchd and keeps running
+/// after this window is gone. The daemon signs out on its own shutdown and
+/// again on its next start, so this is the third of three: the one that covers
+/// a daemon which never stops.
+///
+/// Failures are swallowed on purpose. This runs while the app is closing, there
+/// is nowhere left to show an error, and the daemon's own start-up reset is
+/// what makes a missed call harmless.
+fn sign_out(app: &AppHandle) {
+    let Status::Ready(endpoint) = status_snapshot(app) else {
+        return;
+    };
+    let _ = call_daemon(&endpoint, "POST", "/accounts/reset", None);
 }
 
 #[cfg(unix)]

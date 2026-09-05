@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LineKind, Session } from "../lib/terminals";
-import { sessionText } from "../lib/terminals";
+import { isResumable, isRetryable, sessionText } from "../lib/terminals";
 
 /**
  * One job's console.
@@ -28,12 +28,21 @@ const MONO = "400 11.5px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace";
 
 export function Terminal({
   session,
+  busy,
   onStop,
   onClose,
+  onRetry,
 }: {
   session: Session;
+  /**
+   * Whether another run is in flight. It does not disable anything — a retry is
+   * still accepted — it changes what the bar promises will happen, because the
+   * queue is where the card will land rather than straight into execution.
+   */
+  busy: boolean;
   onStop: (runID: string) => void;
   onClose: (runID: string) => void;
+  onRetry: (runID: string, fresh: boolean) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   // Following is the default and scrolling up is how you leave it: a terminal
@@ -42,6 +51,11 @@ export function Terminal({
   const [copied, setCopied] = useState(false);
 
   const live = session.status === "running" || session.status === "queued";
+  // A run that ended without finishing — a dropped connection and a conflict
+  // both arrive here — is the one the recovery buttons are for.
+  const recoverable = isRetryable(session);
+  const resumable = isResumable(session);
+  const waits = busy ? " · şu an başka bir task çalışıyor, kuyruğa alınır" : "";
 
   useEffect(() => {
     if (!following) return;
@@ -67,6 +81,10 @@ export function Terminal({
 
   return (
     <div style={{ height: "100%", display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0 }}>
+      {/* Bar and banner are one grid row: the banner comes and goes, and a
+          conditional child of the grid itself would renumber the rows under
+          the scroller every time it did. */}
+      <div>
       <div
         style={{
           display: "flex",
@@ -93,10 +111,42 @@ export function Terminal({
         >
           {session.title}
         </span>
-        <span style={{ font: "400 11px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}>
-          {session.status}
-        </span>
+        <StatusBadge status={session.status} />
         <div style={{ flex: 1 }} />
+
+        {/* The recovery pair, first in the row because on a failed run it is
+            the only thing anybody came to this bar to press. */}
+        {recoverable && (
+          <>
+            {resumable ? (
+              <BarButton
+                tone="accent"
+                onClick={() => onRetry(session.runID, false)}
+                title={`Oturumu kaldığı yerden sürdürür (--resume)${waits}`}
+              >
+                ▶ devam et
+              </BarButton>
+            ) : (
+              // No session id means nothing to resume — the run died before the
+              // CLI said who it was. Saying so beats a button that would
+              // silently start over under a label promising otherwise.
+              <span
+                style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}
+                title="Bu çalışma kendini tanıtmadan bitti, sürdürülecek bir oturum yok."
+              >
+                sürdürülemez
+              </span>
+            )}
+            <BarButton
+              onClick={() => onRetry(session.runID, true)}
+              title={`Oturumu atar, görevi baştan çalıştırır${waits}`}
+            >
+              baştan dene
+            </BarButton>
+            <BarDivider />
+          </>
+        )}
+
         {!following && (
           <BarButton
             onClick={() => {
@@ -114,7 +164,25 @@ export function Terminal({
             stop
           </BarButton>
         )}
+        <BarDivider />
         <BarButton onClick={() => onClose(session.runID)}>kapat</BarButton>
+      </div>
+
+      {/* Said once, under the bar, rather than on each button: it is a fact
+          about the machine right now, not about either choice. */}
+      {recoverable && busy && (
+        <div
+          style={{
+            padding: "6px 14px",
+            borderBottom: "1px solid #24272d",
+            background: "#131519",
+            font: "400 10.5px/1.5 ui-monospace,Menlo,monospace",
+            color: "#e5a23d",
+          }}
+        >
+          şu an başka bir task çalışıyor — buradan başlatılan iş kuyruğa alınır
+        </div>
+      )}
       </div>
 
       <div
@@ -185,30 +253,71 @@ export function StatusDot({ status }: { status: string }) {
   return <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }} />;
 }
 
+/** The run's state as a word, boxed in its own colour. */
+function StatusBadge({ status }: { status: string }) {
+  const color =
+    status === "running"
+      ? "#2547e8"
+      : status === "queued"
+        ? "#e5a23d"
+        : status === "completed"
+          ? "#c6f04a"
+          : status === "failed"
+            ? "#e5484d"
+            : "#6b7079";
+  return (
+    <span
+      style={{
+        font: "400 9.5px/1 ui-monospace,Menlo,monospace",
+        color,
+        border: `1px solid ${color}40`,
+        borderRadius: 3,
+        padding: "3px 5px",
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        flexShrink: 0,
+      }}
+    >
+      {status}
+    </span>
+  );
+}
+
+/** Separates what acts on the run from what acts on the view. */
+function BarDivider() {
+  return <span style={{ width: 1, height: 14, background: "#24272d", flexShrink: 0 }} />;
+}
+
 function BarButton({
   children,
   onClick,
   tone,
+  title,
 }: {
   children: React.ReactNode;
   onClick: () => void;
-  tone?: "bad";
+  tone?: "bad" | "accent";
+  title?: string;
 }) {
   const [hovered, setHovered] = useState(false);
+  const color = tone === "bad" ? "#e5484d" : tone === "accent" ? "#2547e8" : "#8a9099";
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         background: hovered ? "#1c1f24" : "none",
-        border: `1px solid ${tone === "bad" ? "#e5484d" : "#24272d"}`,
+        border: `1px solid ${tone ? color : "#24272d"}`,
         borderRadius: 5,
         padding: "3px 8px",
         cursor: "pointer",
         font: "400 10.5px/1 ui-monospace,Menlo,monospace",
-        color: tone === "bad" ? "#e5484d" : "#8a9099",
+        color,
+        whiteSpace: "nowrap",
+        flexShrink: 0,
       }}
     >
       {children}

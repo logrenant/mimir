@@ -39,6 +39,15 @@ export type Session = {
   lastSeq: number;
   /** Set when the socket closed for a reason worth showing. */
   closedReason: string | null;
+  /**
+   * The CLI's own session id, once it has announced one.
+   *
+   * Carried here because it is the difference between the two buttons in the
+   * terminal's bar: `--resume` needs it, and a run that died before saying
+   * anything has none — so "devam et" can only be offered against this, never
+   * against the status alone.
+   */
+  sessionID: string;
 };
 
 /** Scrollback ceiling. A long run is thousands of lines; the tail is the part
@@ -54,6 +63,7 @@ export function newSession(run: Run): Session {
     lines: [],
     lastSeq: 0,
     closedReason: null,
+    sessionID: run.session_id ?? "",
   };
 }
 
@@ -160,9 +170,18 @@ function statusFromEvent(event: RunEvent, current: RunStatus): RunStatus {
 export function appendEvent(session: Session, event: RunEvent): Session {
   if (event.seq <= session.lastSeq) return session;
 
+  // Never unset: the id arrives on `run.started` and is absent from most
+  // events after it, so a plain assignment would erase it one line later.
+  const sessionID = event.session_id?.trim() || session.sessionID;
+
   const line = formatEventLine(event);
   if (!line) {
-    return { ...session, lastSeq: event.seq, status: statusFromEvent(event, session.status) };
+    return {
+      ...session,
+      lastSeq: event.seq,
+      sessionID,
+      status: statusFromEvent(event, session.status),
+    };
   }
 
   let lines = session.lines;
@@ -181,6 +200,7 @@ export function appendEvent(session: Session, event: RunEvent): Session {
     ...session,
     lines,
     lastSeq: event.seq,
+    sessionID,
     status: statusFromEvent(event, session.status),
   };
 }
@@ -190,12 +210,44 @@ export function sessionText(session: Session): string {
   return session.lines.map((l) => l.text).join("\n");
 }
 
+/**
+ * Whether this session is one the operator can act on to make it go again.
+ *
+ * A dropped connection and a merge conflict both land here: the run ends
+ * `failed` with whatever the CLI said, and the work it already did is still in
+ * the session the daemon wrote down. That is the case the bar exists for.
+ */
+export function isRetryable(session: Session): boolean {
+  return session.status === "failed" || session.status === "stopped";
+}
+
+/** Whether `--resume` has something to attach to. See Session.sessionID. */
+export function isResumable(session: Session): boolean {
+  return isRetryable(session) && session.sessionID.trim() !== "";
+}
+
+/**
+ * Whether a retry pressed right now would wait rather than start.
+ *
+ * Capacity is one run at a time, so a second run released while one is in
+ * flight sits in Queued until the first is done. The bar says so before the
+ * click rather than leaving the operator to infer it from a tab that did
+ * nothing.
+ */
+export function isBusy(sessions: Session[]): boolean {
+  return sessions.some((s) => s.status === "running");
+}
+
 export type SessionMap = Record<string, Session>;
 
 /** Opens a session, or leaves an existing one alone so its scrollback survives. */
 export function openSession(sessions: SessionMap, run: Run): SessionMap {
   if (sessions[run.id]) {
-    return { ...sessions, [run.id]: { ...sessions[run.id], status: run.status } };
+    const open = sessions[run.id];
+    return {
+      ...sessions,
+      [run.id]: { ...open, status: run.status, sessionID: run.session_id || open.sessionID },
+    };
   }
   return { ...sessions, [run.id]: newSession(run) };
 }

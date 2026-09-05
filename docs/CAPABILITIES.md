@@ -154,17 +154,26 @@ subprotocol.
 | `GET /diagnostics` | daemon health + store status + project count + `places_configured` + coding-run stats (total / running / failed / summed `cost_usd`) + the MCP `diagnostics` payload |
 | `GET /projects` | list registered project folders |
 | `POST /projects` | `{ path }` → canonicalize (`Abs`+`EvalSymlinks`), reject `/`, `$HOME`, denylisted roots, must be an existing dir → returns an opaque `project_id`. **No default project ever.** |
-| `GET /accounts` · `POST /accounts` · `DELETE /accounts/{id}` | the Claude Code credential slots — one directory per identity. A discovered slot cannot be deleted: the accounts directory decides it exists |
-| `POST /accounts/scan` | re-read `~/.claude-accounts` and register what it holds (the daemon also does this at startup) |
-| `GET /accounts/{id}/status` | live `claude auth status` for one slot — who is signed in, and on what plan. Costs nothing |
-| `POST /accounts/background` | `{ account_id }` → which slot the daemon's **own** model calls spend; empty means the CLI's default |
+| `GET /accounts` | the connected Claude account, or an empty list — there is at most one |
+| `POST /accounts/login` · `GET /accounts/login` | start the login and follow it. The daemon runs `claude auth login` against its own credential slot and opens the authorization page in a private Chrome window; the GET reports `opening` / `waiting` / `code` / `done` / `failed` |
+| `POST /accounts/login/code` | `{ code }` → the paste-a-code fallback, for when the CLI could not open a browser itself |
+| `POST /accounts/reset` | sign out, remove the slot, forget the row. The "çıkış yap" button, and what the desktop shell calls on its way out |
+| `GET /accounts/{id}/status` | live `claude auth status` — who is signed in, and on what plan. Costs nothing |
 | `POST /coding-tasks` | `{ project_id, prompt, account_id? }` → starts a folder-scoped streaming `claude` session, returns a `run_id` |
 | `GET /coding-tasks/{id}` | run metadata / status / cost |
+| `PATCH /coding-tasks/{id}` | `{ title?, prompt?, model?, attachment_ids? }` → rewrites what a card asks for. A patch: an absent field is untouched. Allowed while the card has spent nothing — `backlog`, `queued`, `failed`, `stopped` — and a 409 otherwise, because the prompt of a running or finished run is the record of what was asked. Images may be attached long after the card was written; one dropped by an edit is reclaimed there and then |
+| `POST /coding-tasks/queue/kick` | asks the dispatcher to look at the queue again. The queue is pumped when work is released and when a run frees its slot, never when the *account* changes — so a card queued while nothing was connected would wait forever. 409 with the reason when there is still no identity to spend, or when the token budget is spent and the queue is waiting for its window |
+| `GET /coding-tasks/queue/limits` | `?limit=` → why the queue is not moving and when it will be: `holds` is the credential slot the dispatcher is waiting on right now with its reset time, `log` is the durable record — `run` (a task the budget cut off, put back in the queue), `dispatch` (a queued task that could not be claimed), `resumed` (the window rolled over and the queue restarted itself) |
+| `POST /coding-tasks/{id}/retry` | `{ fresh? }` → puts a `failed` or `stopped` run back in the queue. Omitted or `false` keeps the row's `session_id`, so the dispatcher re-launches the CLI with `--resume` and the session carries on from where it broke; `true` drops the session and does the task over. Any other state is a 409 |
 | `GET /ws/runs/{id}` | WebSocket: replays the run's JSONL transcript, then follows the live event bus — `RunStarted`, `TextDelta`, `ReasoningDelta`, `ToolCall`, `ToolResult`, `RunCompleted`, `RunFailed`, `rate_limit`; stitched on `Event.Seq` so a lossy bus never shows a hole |
-| `POST /maps/leadgen` | `{ query, region, count, language_code, region_code, near, gap_analysis, emails, provider?, model? }` → runs the lead-gen pipeline (§5). **No Google credential needed** — the free scrape is the primary source. `provider`/`model` override which tier the model stages spend; omit both to route by class |
+| `POST /maps/leadgen` | `{ query, region, count, language_code, region_code, near, gap_analysis, emails, provider?, model? }` → runs the lead-gen pipeline (§5). **No Google credential needed** — the free scrape is the primary source. `provider`/`model` override which tier the model stages spend; omit both and the operator's saved default (`PUT /settings`) answers, or class routing if they saved none |
 | `POST /maps/leadgen/export` | the same body plus `{ enrich, dir }` → writes an `.xlsx` (summary sheet + one per category) and returns its path and counts |
 | `GET /llm/providers` | the provider/model allow-list the `provider`/`model` fields are checked against, plus what a run gets when it sends neither. Answers on any daemon — the desktop picker is a view of this, not a copy of it |
-| `POST /maps/emails/status` | `{ place_id, status }` where status ∈ draft / sent / skipped — SQL blocks regeneration of a `sent`/`skipped` draft on a region re-run |
+| `POST /maps/outreach` | `{ place_ids, channels, region?, provider?, model? }` → writes to the companies the operator *picked*: one draft per channel (`email`, `whatsapp`). It takes ids, not a filter — a filter is the one thing that would let a short string spend a region's worth of tokens. The ids are resolved against the ledger and capped at `LeadsPageMax` |
+| `POST /maps/outreach/status` | `{ place_id, channel, status }` where status ∈ draft / sent / skipped — SQL blocks regeneration of a `sent`/`skipped` draft on a region re-run. The decision is per channel: sending the email and skipping the WhatsApp line is an ordinary thing to decide |
+| `GET`/`PUT /settings` | The operator's own configuration: the default `provider`/`model` lead-gen's model stages spend, and each channel's rule file. `PUT` runs the pair through the same allow-list — both strings become argv to a subprocess |
+| `PUT /settings/rules` | `{ channel, body }` → replaces one channel's rule file. An empty body is a reset, not an empty prompt |
+| `POST /settings/rules/reset` | `{ channel }` → puts the shipped default back. A route, so no client has to hold a copy of the default |
 | `GET /maps/leads` | the lead ledger: every business a run has ever returned, with its category and the status of its outreach draft. Filters: `category`, `run_id`, `q`, `without_website`, `limit`, `offset`. Costs nothing and searches nothing |
 | `GET /maps/leads/categories` | the category rail, counted over the whole ledger under the same filter |
 | `GET /maps/leads/runs` | the run history: which search found what, and when |
@@ -196,19 +205,38 @@ second-by-second.
 - **Graceful shutdown.** On SIGTERM the daemon drains in-flight runs before
   exiting.
 
-**Capacity is one run per identity, and the identities come from disk.** A
-credential slot is a directory the CLI hashes into a keychain entry name
-(`CLAUDE_SECURESTORAGE_CONFIG_DIR`), so `~/.claude-accounts/<name>` is an
-account and no directory at all is the CLI's own. The daemon scans that tree at
-startup — the same convention the operator's shell (`claude-acct`, `claude-who`)
-already uses — so a slot signed in from the terminal is a lane here without
-being registered twice. Two identities means two tasks at once; a task may pin
-one or leave it automatic. Mimir never reads, moves or invalidates a
-credential: it only points a subprocess at a slot.
+**One Claude account, in a slot of Mimir's own, and it does not survive a
+quit.** A credential slot is a directory the CLI hashes into a keychain entry
+name (`CLAUDE_SECURESTORAGE_CONFIG_DIR`); Mimir derives one beside its store and
+signs into it itself, so it is never the operator's terminal login. Connecting
+runs `claude auth login` on a pty and opens the authorization page in a private
+Chrome window — private because a normal one carries whatever Claude session the
+browser already has and would never ask which account is connecting. Closing
+Mimir signs that slot out, removes it, and forgets the row, so every launch
+starts unconnected.
+
+Capacity is therefore one run at a time, and a task created with nothing
+connected is refused rather than queued: there would be no identity to spend,
+and falling back to the CLI's own login would drain the queue through the
+account Mimir deliberately does not touch. Mimir never reads, moves or stores a
+credential — the keychain keeps it.
 
 The daemon's own model calls — refine, distil, recap — are not dispatched runs,
-so they spend the slot marked as the background account, or the CLI's default
-when none is marked.
+but they spend the same account: "which account paid for this?" has one answer.
+
+**A spent token budget pauses the pipeline; it does not fail it.** When a run
+hits the account's limit mid-task the card is not marked `failed`: it goes back
+to `queued` carrying its `session_id`, the slot is held so nothing else is
+dispatched into an account with nothing to spend, and every step is written to a
+durable log (`GET /coding-tasks/queue/limits`) — the run that ran out, each
+queued task held behind it, and the moment the window rolled over. One wake-up
+is armed for the reset time the CLI itself reported (its `rate_limit_event`, or
+the `…|<unix>` suffix on its usage-limit message; 15 minutes when it reported
+neither), and when it fires the queue is pumped exactly as any other release
+pumps it. Nobody presses anything, and the resumed run continues under
+`--resume` rather than starting the task over. The pause outlives a restart: the
+daemon rebuilds it from the log at startup rather than rediscovering it by
+spending another CLI invocation.
 
 Needs: the `claude` CLI on `$PATH` and logged in.
 
@@ -265,7 +293,7 @@ or a cancelled context. Everything else is a `Report.Notes` string.
 | 1 | **Region search** | no | Every business in a region. Primary: Places API Text Search (`internal/maps`). Fallback: a Playwright docker sidecar with deterministic DOM extraction (`internal/mapscrape`), ids namespaced so a scraped row can never overwrite a billed one. | `companies`, `region_searches` (all-or-nothing on read) |
 | 2 | **Categorize** | mostly no | A normalized `Category` per company. A static Google-`types[]` → category table answers the common case for free; `claude` classifies only the ambiguous residue, in batches, against a closed vocabulary (no prose out). | `company_categorization` (keyed by `LeadgenCategoryVersion`) |
 | 3 | **Per-category gap analysis** | yes | The common gaps/needs across a category, synthesized from five deterministically-computed scalars per company (never a raw page). SD-7 hard token ceiling. | `category_gap_analysis` (keyed by `region, category, LeadgenGapVersion, company_set_hash`) |
-| 4 | **Outreach email** | yes | One drafted marketing email per company, fed that company's facts + its category's stage-3 gap analysis. | `outreach_emails` (keyed by `place_id, prompt_version`, with a `status` the region re-run respects) |
+| 4 | **Outreach message** | yes | One draft per company per channel, fed that company's facts + its category's stage-3 gap analysis + that channel's rule file. Channels: `email`, `whatsapp`. | `outreach_emails` (keyed by `place_id, channel, prompt_version` — the version carries both the model and the rule file's hash — with a `status` the region re-run respects) |
 
 `Pipeline.Run` always does stages 1–2. Stage 3 runs when `gap_analysis: true`;
 stage 4 when `emails: true` (which implies gap analysis). The two model phases
@@ -309,7 +337,8 @@ Seven screens:
 |---|---|
 | **Connection** | The daemon handshake — confirms the sidecar is up, authenticated, and healthy. |
 | **Workspace** | Native folder picker (`NSOpenPanel`) → register a project → type a coding-task prompt → watch the run stream in a live "terminal": text/reasoning deltas append, tool calls/results render as collapsible cards with a risk badge. |
-| **Leadgen** | The Maps pipeline: a region search form, per-category gap-analysis cards, and a company list with an expandable draft email and mark-sent / mark-skip buttons wired to `POST /maps/emails/status`. `report.notes` is shown verbatim. |
+| **Leadgen** | The Maps pipeline: a region search form, per-category gap-analysis cards, and a company table with a checkbox column. The bar under the ticked rows states what a draft run will spend (companies × channels) and calls `POST /maps/outreach`; the drafts are then read one at a time behind channel tabs, with mark-sent / mark-skip wired to `POST /maps/outreach/status`. `report.notes` is shown verbatim. |
+| **Settings** | The operator's own configuration on one screen: the default model lead-gen spends, and editors for the email and WhatsApp rule files (path, "restore the default", ⌘S). A rule file is part of the drafting prompt, so saving one invalidates the drafts written under the old text — the screen says so. |
 
 Packaging: `tauri.conf.json` builds `app` + `dmg` with a hardened runtime and
 `entitlements.plist`. Signing/notarization are env-driven at build time
@@ -329,13 +358,13 @@ both binaries share one DB file. Migrations are embedded and append-only. It is 
 | `crawl_pages` | raw crawl cache (markdown + HTML), keyed by `sha256(url)` | `config.PageCacheTTL` |
 | `refined_pages` | refine cache (refined text + token estimate) | same TTL; `RefinePromptVersion` bump |
 | `projects` | canonicalized folder path for the coding-task runner | re-pick to change |
-| `accounts` | credential slots: the directory, whether a scan found it, and which one the daemon's own calls spend | rescanned at startup; adds only |
+| `accounts` | the connected Claude account: Mimir's own slot directory | cleared at daemon start and stop — the account never outlives the app |
 | `coding_runs` | run metadata, cost, session id, transcript pointer | none (history) |
 | `companies` | normalized Places/scrape result, keyed by `place_id` | caller-supplied long TTL (~30d) |
 | `region_searches` | the ordered `place_id` list a region search returned | same TTL; all-or-nothing on read |
 | `company_categorization` | normalized category + which tier answered | `LeadgenCategoryVersion` bump |
 | `category_gap_analysis` | Claude-synthesized gaps/needs per category | `LeadgenGapVersion` bump; a changed company set misses |
-| `outreach_emails` | drafted email + `status` (draft/sent/skipped) | `LeadgenEmailVersion` bump; "sent"/"skipped" blocks regeneration (SQL-enforced) |
+| `outreach_emails` | drafted message per channel + `status` (draft/sent/skipped) | `LeadgenEmailVersion` bump, a different model, **or an edited rule file**; "sent"/"skipped" blocks regeneration (SQL-enforced) |
 | `memory_episodes` | one distilled iteration: deterministic facts always, a short recap when one was accepted | `MemoryPromptVersion` bump re-derives recaps; facts survive |
 | `memory_notes` | facts pinned through `context_remember` | none — never rewritten by an ingest |
 | `memory_ingest_state` | how far each transcript has been parsed | reset when a transcript shrinks (replaced, not appended) |
