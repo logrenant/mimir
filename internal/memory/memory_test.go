@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -399,6 +400,24 @@ type countingArchive struct {
 	calls atomic.Int32
 	rows  []store.ChatTurnRow
 	err   error
+
+	// The catch-up half: what it was asked to rewind, and what it will say is
+	// missing. Empty by default, so an archive under test is one that has
+	// nothing to catch up on.
+	missing []string
+	rewound []string
+}
+
+func (a *countingArchive) SourcesMissingArchive(_ context.Context, limit int) ([]string, error) {
+	if limit < len(a.missing) {
+		return a.missing[:limit], nil
+	}
+	return a.missing, nil
+}
+
+func (a *countingArchive) RewindIngest(_ context.Context, sourcePath string) error {
+	a.rewound = append(a.rewound, sourcePath)
+	return nil
 }
 
 func (a *countingArchive) PutChatTurn(_ context.Context, t store.ChatTurnRow) error {
@@ -490,4 +509,45 @@ func TestIngest_WithoutAnArchiveStillStoresEpisodes(t *testing.T) {
 	if stats.Episodes != 1 {
 		t.Fatalf("want 1 episode, got %d", stats.Episodes)
 	}
+}
+
+// The catch-up: transcripts read before the archive existed are sent back
+// through the reader, once, and only while there is something to catch up on.
+func TestCatchUpArchive_RewindsWhatWasMissedAndStops(t *testing.T) {
+	h := newHarness(t)
+	archive := &countingArchive{missing: []string{"/t/a.jsonl", "/t/b.jsonl"}}
+	h.mem.UseArchive(archive)
+	ctx := context.Background()
+
+	h.mem.catchUpArchive(ctx, slog.Default())
+	if len(archive.rewound) != 2 {
+		t.Fatalf("rewound %v, want both transcripts", archive.rewound)
+	}
+
+	// A second pass while the query still names them — a transcript whose
+	// every episode is a tool-only exchange would do exactly this — must not
+	// rewind them again, or the loop never ends.
+	h.mem.catchUpArchive(ctx, slog.Default())
+	if len(archive.rewound) != 2 {
+		t.Errorf("rewound %v; a transcript must be rewound at most once per run", archive.rewound)
+	}
+}
+
+// Nothing missing costs one query and no writes.
+func TestCatchUpArchive_DoesNothingWhenThereIsNoDebt(t *testing.T) {
+	h := newHarness(t)
+	archive := &countingArchive{}
+	h.mem.UseArchive(archive)
+
+	h.mem.catchUpArchive(context.Background(), slog.Default())
+	if len(archive.rewound) != 0 {
+		t.Errorf("rewound %v with nothing missing", archive.rewound)
+	}
+}
+
+// A memory with no archive is the memory as it was before task-65, and must not
+// reach for one.
+func TestCatchUpArchive_IsInertWithoutAnArchive(t *testing.T) {
+	h := newHarness(t)
+	h.mem.catchUpArchive(context.Background(), slog.Default())
 }

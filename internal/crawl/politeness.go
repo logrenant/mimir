@@ -31,7 +31,7 @@ func (c *Client) waitPolite(ctx context.Context, targetURL string) error {
 	politeMu.Lock()
 	lastHit, ok := politeHosts[host]
 	now := time.Now()
-	
+
 	var delay time.Duration
 	if ok {
 		elapsed := now.Sub(lastHit)
@@ -53,6 +53,6 @@ func (c *Client) waitPolite(ctx context.Context, targetURL string) error {
 			// Waited politely
 		}
 	}
-	
+
 	return nil
 }

@@ -22,16 +22,33 @@ back.
 
 ## The lifecycle
 
-**A launch starts signed out, always.** `Reset` runs at daemon startup, at
-daemon shutdown, and on `POST /accounts/reset` — which is both the app's
-"çıkış yap" button and what the desktop shell calls on its way out. Three
-places for one guarantee, because each covers a way the others are missed: a
-daemon that was killed never ran its shutdown half, and a launchd-owned daemon
-does not stop when the app quits.
+**The slot outlives the app; signing out is an act, not a side effect.**
+Connecting is a one-time thing. Quitting Mimir leaves the slot directory and the
+keychain entry alone, so the operator signs in once and stays signed in across
+launches and reboots. `Reset` — logout, directory, row — runs only on
+`POST /accounts/reset`, which is the app's "çıkış yap" button and also how the
+operator switches to a different Anthropic account.
+
+This used to be the other way round, and the reversal was deliberate: `Reset`
+ran at startup, at shutdown and from the shell's `RunEvent::Exit`, and the cost
+was a login on every single launch. Nothing about the safety story depended on
+it — the slot is Mimir's own either way, and the operator's terminal login is a
+different keychain entry that was never in reach.
+
+**A launch reconciles rather than resets.** `Restore` runs at daemon startup and
+asks `Probe` who is in the slot, because a login can lapse or be revoked between
+launches and a row the keychain no longer backs would advertise capacity that is
+not there. Three answers, three actions:
+
+| `Probe` says | `Restore` does | Why |
+|---|---|---|
+| `LoggedIn` | `record` — keep the slot, ensure the row | Idempotent by directory, so it also repairs a lost database |
+| not logged in, no `Error` | full `Reset` | The CLI answered: the slot is empty, and the directory is a handle to nothing |
+| `Error` set | forget the row, **keep the directory** | "We could not ask" is not "nobody is there". The directory is the only thing that can address the keychain entry again — removing it would orphan a good login for good |
 
 **Connecting is a login, not a registration.** `StartLogin` runs `claude auth
 login` on a pty — over pipes the CLI takes its non-interactive path and there
-is nothing to complete — and opens the authorization page in a private Chrome
+is nothing to complete — and opens the authorization page in a *private* Chrome
 window. The row in the store is written only once the login has landed and
 `Probe` confirms it; a row with no login behind it would advertise capacity the
 keychain does not back.
@@ -82,9 +99,10 @@ keychain does not back.
 
 ## Testing
 
-No keychain and no real CLI. `Probe` and `logout` are exercised against shell
-stubs — one that prints not-JSON, one that exits non-zero, one that records the
-slot it was pointed at. The login flow is tested where it is deterministic: the
+No keychain and no real CLI. `Probe`, `logout` and `Restore` are exercised
+against shell stubs — one that prints not-JSON, one that exits non-zero, one
+that records the slot it was pointed at, and `statusStub` for the three answers
+`Restore` branches on. The login flow is tested where it is deterministic: the
 URL is read out of the exact escape sequences the CLI paints it with, and
 `loginEnviron` is a pure function that must put the shim ahead of `/usr/bin`.
 
@@ -92,7 +110,12 @@ URL is read out of the exact escape sequences the CLI paints it with, and
 
 - Any path to a credential slot other than `cfg.ClaudeSessionDir` — above all
   an empty `ConfigDir`, which is the operator's own login.
-- A `Reset` that stops short of all three of logout, directory and row.
+- A `Reset` that stops short of all three of logout, directory and row — it is
+  now also the account-switch path, and a leftover would connect the next login
+  as the account the operator just asked to leave.
+- A `Reset` creeping back into a startup or shutdown path. Quitting is not
+  signing out; `Restore` is what a launch runs.
+- A `Restore` that removes the slot directory on a probe it could not run.
 - A row written before `Probe` confirmed the login.
 - A `List` that invents an account when none is connected.
 - A browser shim that fails instead of exiting 0, or a flow that lets the CLI

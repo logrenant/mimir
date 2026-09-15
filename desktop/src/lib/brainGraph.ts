@@ -34,7 +34,9 @@ export type LayoutOptions = {
   /** The *world* the graph is laid out in, which is not the viewport. */
   width: number;
   height: number;
-  /** Ticks to run before the picture is considered settled. */
+  /** Ticks to run before the picture is considered settled. Defaults to
+   * `ticksFor(count)`, which is the full budget for a small graph and less for
+   * one large enough that the extra ticks only cost time. */
   ticks?: number;
   /** Seed for the initial scatter. The same graph must draw the same twice. */
   seed?: number;
@@ -222,8 +224,75 @@ export function layout(
   edges: BrainGraphEdge[],
   opts: LayoutOptions,
 ): LayoutNode[] {
+  const run = startLayout(nodes, edges, opts);
+  // No budget: this is the batch form, for tests and for callers small enough
+  // that the whole simulation fits inside one frame.
+  while (run.advance(Infinity));
+  return run.nodes;
+}
+
+/**
+ * A layout in progress.
+ *
+ * `nodes` is the live array — the same objects, moved in place — so a renderer
+ * can hold it once and draw whatever the simulation has reached.
+ */
+export type LayoutRun = {
+  readonly nodes: LayoutNode[];
+  /** 0 to 1, for a caller that wants to say how far along this is. */
+  readonly progress: number;
+  readonly done: boolean;
+  /**
+   * Runs ticks until `budgetMs` of wall clock has passed, then returns whether
+   * there is more to do. Always runs at least one tick, so a budget smaller
+   * than a single tick makes slow progress rather than none.
+   */
+  advance(budgetMs: number): boolean;
+};
+
+/**
+ * ticksFor is the tick budget a graph of this size actually gets.
+ *
+ * The physics is linear in the node count per tick, so a fixed budget means
+ * the *cost* of settling grows with the graph while the *benefit* does not:
+ * fifteen hundred nodes at three hundred and twenty ticks measured at twelve
+ * seconds of blocked main thread, and the last two hundred of those ticks
+ * moved nothing anybody could see. Small graphs keep the full budget, because
+ * for them it is free and it is what makes a twenty-node picture crisp.
+ */
+export function ticksFor(count: number): number {
+  if (count <= 0) return 0;
+  return Math.max(MIN_TICKS, Math.min(MAX_TICKS, Math.round(TICK_BUDGET / count)));
+}
+
+const MAX_TICKS = 320;
+const MIN_TICKS = 120;
+/** Chosen so anything up to ~190 nodes keeps the full 320 ticks. */
+const TICK_BUDGET = 60_000;
+
+/** performance.now where it exists, Date.now where it does not — the second
+ * only matters for a caller that passes no budget at all. */
+const now = (): number =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+
+/**
+ * startLayout is the same simulation as `layout`, handed back one step at a
+ * time.
+ *
+ * The Brain tab needs this because the batch form ran inside a render: opening
+ * the tab on a real knowledge base blocked the main thread long enough that
+ * macOS suspended the WebView behind the window and did not always bring it
+ * back — a blank window, from a picture that was merely slow. Yielding between
+ * chunks costs a few frames and keeps the page answering.
+ */
+export function startLayout(
+  nodes: BrainGraphNode[],
+  edges: BrainGraphEdge[],
+  opts: LayoutOptions,
+): LayoutRun {
   const placed = seedLayout(nodes, edges, opts);
-  if (placed.length === 0) return placed;
 
   const index = new Map(placed.map((n) => [n.id, n]));
   // Edges whose endpoints are not both present are dropped rather than
@@ -234,23 +303,45 @@ export function layout(
     .filter((l): l is { a: LayoutNode; b: LayoutNode; w: number } => !!l.a && !!l.b);
 
   const area = opts.width * opts.height;
-  const k = Math.sqrt(area / placed.length);
-  const ticks = opts.ticks ?? 320;
+  const k = Math.sqrt(area / Math.max(placed.length, 1));
+  const total = placed.length === 0 ? 0 : (opts.ticks ?? ticksFor(placed.length));
   let temperature = Math.min(opts.width, opts.height) / 8;
-  const cooling = temperature / (ticks + 1);
+  const cooling = temperature / (total + 1);
 
-  for (let step = 0; step < ticks; step++) {
-    repel(placed, k, opts);
-    attract(links, k);
-    move(placed, temperature, opts);
-    temperature = Math.max(temperature - cooling, 0.2);
-  }
-  // The forces settle the *structure*; they do not guarantee that two dots are
-  // not on top of each other, and two overlapping dots are one dot as far as a
-  // reader is concerned. A few passes of plain separation afterwards cost
-  // nothing and are what makes the picture countable.
-  separate(placed, k);
-  return placed;
+  let step = 0;
+  let settled = placed.length === 0;
+
+  return {
+    nodes: placed,
+    get progress() {
+      return total === 0 ? 1 : Math.min(step / total, 1);
+    },
+    get done() {
+      return settled;
+    },
+    advance(budgetMs: number): boolean {
+      if (settled) return false;
+      const started = now();
+      do {
+        repel(placed, k, opts);
+        attract(links, k);
+        move(placed, temperature, opts);
+        temperature = Math.max(temperature - cooling, 0.2);
+        step++;
+      } while (step < total && now() - started < budgetMs);
+
+      if (step >= total) {
+        // The forces settle the *structure*; they do not guarantee that two
+        // dots are not on top of each other, and two overlapping dots are one
+        // dot as far as a reader is concerned. A few passes of plain
+        // separation afterwards cost nothing and are what makes the picture
+        // countable.
+        separate(placed, k);
+        settled = true;
+      }
+      return !settled;
+    },
+  };
 }
 
 /** separate pushes overlapping nodes apart, using the same grid as the
@@ -421,19 +512,82 @@ export function hitTest(nodes: LayoutNode[], x: number, y: number): LayoutNode |
  * is actually about is one body of knowledge with a few kinds of thing in it.
  * So the kinds are separated by *role* — Electric for what the operator writes,
  * Lime for what the machine recorded, Mist for the files — and by weight.
+ *
+ * A symbol sits inside a file, so it is the file's grey a step darker rather
+ * than a colour of its own: the two belong together, and the layer they came
+ * from is not the interesting thing about them.
  */
 export type KindStyle = { fill: string; label: string };
 
+/**
+ * The four, as the canvas needs them.
+ *
+ * The comment above has said "four colours" since this file was written, while
+ * the table below it carried eight literals — `#5c626b`, `#6f7b3f`, `#5b74f0`
+ * and `#4f545e` among them, none of which exists in `index.css`. Deriving each
+ * fill instead of typing it makes the claim true by construction: there is
+ * nowhere here to put a fifth hue.
+ *
+ * Literals rather than `var(--color-*)` because a 2D canvas resolves neither
+ * custom properties nor `color-mix`; these are the same values `@theme`
+ * declares, and `brainGraph.test.ts` holds the two in agreement.
+ */
+export const CARBON = "#101114";
+export const MIST = "#eef0f2";
+export const ELECTRIC = "#2547e8";
+export const LIME = "#c6f04a";
+
+/** `color` at `alpha`, as the `rgba()` string a canvas stroke needs. */
+export function alpha(color: string, a: number): string {
+  const ch = (at: number) => parseInt(color.slice(at, at + 2), 16);
+  return `rgba(${ch(1)},${ch(3)},${ch(5)},${a})`;
+}
+
+/** `amount` of `color` over `onto`, as `#rrggbb`. */
+export function mix(color: string, onto: string, amount: number): string {
+  const channel = (hex: string, at: number) => parseInt(hex.slice(at, at + 2), 16);
+  const out = [1, 3, 5]
+    .map((at) => Math.round(channel(onto, at) + amount * (channel(color, at) - channel(onto, at))))
+    .map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0"))
+    .join("");
+  return `#${out}`;
+}
+
+/**
+ * kindStyle maps a node kind onto the brand's four colours.
+ *
+ * The obvious thing is a hue per kind, the way every knowledge-graph screenshot
+ * does it. The brand system says four colours and no fifth (desktop/AGENTS.md),
+ * and it is right for the same reason it is right everywhere else in this app:
+ * eight hues would say "these categories are unrelated", when what the picture
+ * is actually about is one body of knowledge with a few kinds of thing in it.
+ *
+ * So the kinds are separated by *role*, and within a role by weight:
+ *
+ *   Mist      what is on disk    — a file, and a symbol inside one
+ *   Lime      what the machine recorded — a session, and the commit it left
+ *   Electric  what a person decided     — a decision, and the research behind it
+ *
+ * A symbol sits inside a file, so it is the file's grey a step darker rather
+ * than a colour of its own: the two belong together, and the layer they came
+ * from is not the interesting thing about them. The same reasoning pairs
+ * commit with session and research with decision — in each pair the second is
+ * the same hue, stepped back. Toward Carbon for Mist and Lime, which are light
+ * enough to lose; toward Mist for Electric, which is already dark and would
+ * sink below the edges it has to sit above.
+ */
 const KIND_STYLES: Record<string, KindStyle> = {
-  file: { fill: "#8a9099", label: "dosya" },
-  session: { fill: "#c6f04a", label: "oturum" },
-  commit: { fill: "#6f7b3f", label: "commit" },
-  decision: { fill: "#2547e8", label: "karar" },
-  research: { fill: "#5b74f0", label: "araştırma" },
-  note: { fill: "#eef0f2", label: "not" },
+  file: { fill: mix(MIST, CARBON, 0.55), label: "dosya" },
+  symbol: { fill: mix(MIST, CARBON, 0.34), label: "sembol" },
+  session: { fill: LIME, label: "oturum" },
+  commit: { fill: mix(LIME, CARBON, 0.65), label: "commit" },
+  decision: { fill: ELECTRIC, label: "karar" },
+  research: { fill: mix(ELECTRIC, MIST, 0.62), label: "araştırma" },
+  note: { fill: MIST, label: "not" },
 };
 
-const UNKNOWN_KIND: KindStyle = { fill: "#4f545e", label: "diğer" };
+/** Quieter than anything named, because an unclassified node is not a finding. */
+const UNKNOWN_KIND: KindStyle = { fill: mix(MIST, CARBON, 0.24), label: "diğer" };
 
 export function kindStyle(kind: string): KindStyle {
   return KIND_STYLES[kind] ?? UNKNOWN_KIND;
@@ -451,6 +605,20 @@ export function kindLegend(): { kind: string; style: KindStyle }[] {
  * node labelled is the screenshot everyone has seen and nobody can read — and
  * at this density even the hubs overwrite each other.
  */
+/**
+ * The order `visibleLabels` wants: most connected first, so that when two
+ * labels collide the hub is the one kept.
+ *
+ * Separated from `visibleLabels` because the caller redraws on every pan and
+ * the order only changes when the picture does — sorting inside meant sorting
+ * the whole graph once per frame to answer a question whose answer had not
+ * moved.
+ */
+export function byDegree(nodes: LayoutNode[]): LayoutNode[] {
+  return [...nodes].sort((a, b) => b.degree - a.degree);
+}
+
+/** `nodes` must already be in `byDegree` order — see there. */
 export function visibleLabels(
   nodes: LayoutNode[],
   view: View,
@@ -463,9 +631,7 @@ export function visibleLabels(
   const out: { node: LayoutNode; x: number; y: number }[] = [];
   const boxes: { x1: number; y1: number; x2: number; y2: number }[] = [];
 
-  // Most connected first: when two labels collide, the hub is the one worth
-  // keeping.
-  for (const n of [...nodes].sort((a, b) => b.degree - a.degree)) {
+  for (const n of nodes) {
     if (out.length >= max) break;
     const p = worldToScreen(view, n.x, n.y);
     if (p.x < -40 || p.y < -20 || p.x > viewportW + 40 || p.y > viewportH + 20) continue;

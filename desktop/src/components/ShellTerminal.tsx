@@ -2,6 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal as Xterm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { Button } from "./ui/button";
+
+/**
+ * One `@theme` colour, as the string xterm needs.
+ *
+ * xterm paints to a canvas and cannot read a custom property, so the value has
+ * to be resolved once here. Resolving it beats restating it: this file used to
+ * hold four literals that had drifted from the tokens they were copies of.
+ */
+function token(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
 import { endpoint, ptyWSURL, type TerminalProfile } from "../lib/daemon";
 import { clipboardOf, shellPasteInput } from "../lib/shellPaste";
 
@@ -50,10 +62,13 @@ export function ShellTerminal({ profile }: { profile: TerminalProfile }) {
       // Matches the app's console palette so the terminal does not read as a
       // pasted-in widget.
       theme: {
-        background: "#0d0f12",
-        foreground: "#eef0f2",
-        cursor: "#c6f04a",
-        selectionBackground: "#2547e8",
+        // Read off the document rather than restated here. This block was the
+        // application's fifth colour source, and its "terminal black"
+        // (#0d0f12) did not match either of the two other consoles.
+        background: token("--color-sunken"),
+        foreground: token("--color-text"),
+        cursor: token("--color-lime"),
+        selectionBackground: token("--color-electric"),
       },
       // Enough history that a long build's output is still reachable, but
       // bounded: xterm keeps every line in memory.
@@ -150,31 +165,22 @@ export function ShellTerminal({ profile }: { profile: TerminalProfile }) {
   }, [profile.name, attempt]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {error ? (
-        <div style={{ color: "#e5484d", fontSize: 12, padding: "6px 10px" }}>{error}</div>
-      ) : null}
-      {closed && !error ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px" }}>
-          <span style={{ color: "#8a9099", fontSize: 12 }}>oturum kapandı</span>
-          <button
-            type="button"
-            onClick={() => setAttempt((n) => n + 1)}
-            style={{
-              background: "none",
-              border: "1px solid #24272d",
-              borderRadius: 2,
-              color: "#eef0f2",
-              cursor: "pointer",
-              fontSize: 11,
-              padding: "2px 8px",
-            }}
-          >
-            yeniden başlat
-          </button>
+    <div className="flex h-full min-h-0 flex-col bg-sunken">
+      {error && (
+        <div className="border-b border-edge bg-panel px-4 py-2.5 font-mono text-xs text-bad">
+          {error}
         </div>
-      ) : null}
-      <div ref={hostRef} style={{ flex: 1, minHeight: 0, padding: "4px 6px" }} />
+      )}
+      {closed && !error && (
+        <div className="flex h-12 items-center gap-3 border-b border-edge bg-panel px-4">
+          <span className="text-base text-muted">Oturum kapandı</span>
+          <div className="flex-1" />
+          <Button size="sm" variant="ghost" icon="refresh" onClick={() => setAttempt((n) => n + 1)}>
+            Yeniden başlat
+          </Button>
+        </div>
+      )}
+      <div ref={hostRef} className="min-h-0 flex-1 px-3 py-2.5" />
     </div>
   );
 }

@@ -10,6 +10,15 @@ import {
   modelDraftFrom,
   modelForProvider,
   type ModelDraft,
+  isSelectable,
+  availabilityNote,
+  modelsFor,
+  classesDirty,
+  classDraftFrom,
+  type ClassDraft,
+  dirtySections,
+  sectionLabel,
+  SETTINGS_SECTIONS,
 } from "./settings";
 import type { LLMProviderList, OutreachRule, SettingsView } from "./daemon";
 
@@ -50,6 +59,8 @@ function view(over: Partial<SettingsView> = {}): SettingsView {
     provider: "",
     model: "",
     routed: { provider: "claude", model: "claude-opus-5" },
+    distill: {},
+    reason: {},
     rules: [rule(), rule({ channel: "whatsapp", label: "WhatsApp" })],
     ...over,
   };
@@ -74,17 +85,81 @@ describe("the rule editors", () => {
     const drafts = draftsFrom(view().rules);
     const model: ModelDraft = { provider: "", model: "", saved: { provider: "", model: "" } };
 
-    expect(anyDirty(drafts, model)).toBe(false);
-    expect(anyDirty([drafts[0], { ...drafts[1], body: "# yeni" }], model)).toBe(true);
+    expect(anyDirty(drafts, model, clean)).toBe(false);
+    expect(anyDirty([drafts[0], { ...drafts[1], body: "# yeni" }], model, clean)).toBe(true);
   });
 
   test("anyDirty also sees an unsaved model choice", () => {
     const drafts = draftsFrom(view().rules);
     expect(
-      anyDirty(drafts, { provider: "agy", model: "gemini-3.1-pro-high", saved: { provider: "", model: "" } }),
+      anyDirty(
+        drafts,
+        { provider: "agy", model: "gemini-3.1-pro-high", saved: { provider: "", model: "" } },
+        clean,
+      ),
+    ).toBe(true);
+  });
+
+  // The regression. The save bar armed on `anyDirty || classesDirty` while
+  // `save()` branched on `modelDirty` alone, so editing only a class default
+  // wrote nothing and then said "Kaydedildi." The two rules are one function
+  // now, and this is the test that keeps them one.
+  test("anyDirty sees a class default nobody else was watching", () => {
+    const drafts = draftsFrom(view().rules);
+    const model: ModelDraft = { provider: "", model: "", saved: { provider: "", model: "" } };
+
+    expect(
+      anyDirty(drafts, model, {
+        distill: { provider: "gemini", model: "gemini-2.5-flash" },
+        reason: {},
+        saved: { distill: {}, reason: {} },
+      }),
     ).toBe(true);
   });
 });
+
+describe("classesDirty", () => {
+  test("an untouched pair is not a change", () => {
+    expect(classesDirty(clean)).toBe(false);
+    expect(
+      classesDirty({
+        distill: { provider: "agy", model: "x" },
+        reason: {},
+        saved: { distill: { provider: "agy", model: "x" }, reason: {} },
+      }),
+    ).toBe(false);
+  });
+
+  // Undefined and "" are the same absence. Treating them as different would
+  // arm the save bar on a page nobody touched.
+  test("an absent field and an empty one are the same absence", () => {
+    expect(
+      classesDirty({
+        distill: { provider: "", model: "" },
+        reason: {},
+        saved: { distill: {}, reason: {} },
+      }),
+    ).toBe(false);
+  });
+
+  test("either class counts", () => {
+    expect(
+      classesDirty({
+        distill: {},
+        reason: { provider: "claude", model: "claude-opus-5" },
+        saved: { distill: {}, reason: {} },
+      }),
+    ).toBe(true);
+  });
+
+  test("classDraftFrom seeds both halves from the daemon's answer", () => {
+    const d = classDraftFrom(view({ distill: { provider: "agy", model: "m" } }));
+    expect(d.distill.provider).toBe("agy");
+    expect(classesDirty(d)).toBe(false);
+  });
+});
+
+const clean: ClassDraft = { distill: {}, reason: {}, saved: { distill: {}, reason: {} } };
 
 describe("the model choice", () => {
   test("switching provider names that provider's default explicitly", () => {
@@ -121,6 +196,23 @@ describe("the model choice", () => {
 });
 
 describe("what a run will spend, in words", () => {
+  // The crash. A provider whose models are discovered rather than pinned
+  // publishes none, so `models` is absent — and `provider?.models.find(...)`
+  // compiled, shipped, and took the settings screen down the first time a class
+  // default named ollama.
+  test("a provider with no pinned model list does not crash the line", () => {
+    const discovered: LLMProviderList = {
+      routed: { provider: "agy", model: "x" },
+      providers: [{ id: "ollama", label: "Ollama", default_model: "qwen3:8b" }],
+    };
+    const got = describeSelection(
+      view({ provider: "ollama", model: "qwen3:8b" }),
+      discovered,
+    );
+    expect(got).toContain("Ollama");
+    expect(got).toContain("qwen3:8b");
+  });
+
   // The empty selection is not "no model", it is the daemon's own class
   // routing — a blank field there would read as unconfigured.
   test("no choice names the routing that answers instead", () => {
@@ -164,5 +256,114 @@ describe("how a rule file reads under its tab", () => {
 
   test("no rule yet renders nothing rather than a placeholder", () => {
     expect(describeRule(undefined)).toBe("");
+  });
+});
+
+describe("isSelectable", () => {
+  // A provider whose CLI is not installed is not a choice, it is a failure with
+  // an extra click in front of it.
+  test("a provider that is not installed cannot be picked", () => {
+    const available = [
+      { provider: "gemini", model: "g", installed: true, signed_in: false, probed: false, structured_output: false, agentic: true },
+      { provider: "codex", model: "c", installed: false, signed_in: false, probed: false, structured_output: false, agentic: true },
+    ];
+    expect(isSelectable(available, "gemini")).toBe(true);
+    expect(isSelectable(available, "codex")).toBe(false);
+  });
+
+  // Absent availability is a daemon with no router wired, which is not the same
+  // as "nothing is installed" — a whole picker must not go dark over a missing
+  // field.
+  test("no availability at all leaves everything selectable", () => {
+    expect(isSelectable(undefined, "gemini")).toBe(true);
+  });
+});
+
+describe("availabilityNote", () => {
+  test("says what is wrong, in the CLI's own words", () => {
+    const available = [
+      { provider: "gemini", model: "g", installed: true, signed_in: false, probed: true, detail: "Please set an Auth method", structured_output: false, agentic: true },
+      { provider: "codex", model: "c", installed: false, signed_in: false, probed: false, structured_output: false, agentic: true },
+      { provider: "agy", model: "a", installed: true, signed_in: true, probed: true, structured_output: true, agentic: false },
+    ];
+    expect(availabilityNote(available, "codex")).toBe("kurulu değil");
+    expect(availabilityNote(available, "gemini")).toBe("Please set an Auth method");
+    expect(availabilityNote(available, "agy")).toBe("");
+  });
+
+  // Not knowing is not the same as knowing it is broken: before a probe there
+  // is nothing to report about a login.
+  test("says nothing about a login nobody has tested", () => {
+    const available = [
+      { provider: "gemini", model: "g", installed: true, signed_in: false, probed: false, structured_output: false, agentic: true },
+    ];
+    expect(availabilityNote(available, "gemini")).toBe("");
+  });
+});
+
+describe("modelsFor", () => {
+  const providers = {
+    routed: { provider: "agy", model: "x" },
+    providers: [
+      { id: "ollama", label: "Ollama", default_model: "qwen3:8b", models: [] },
+      { id: "claude", label: "Claude", default_model: "s", models: [{ id: "s", label: "Sonnet 5" }] },
+    ],
+  };
+
+  // A provider whose models are files on this machine publishes an empty
+  // catalogue on purpose; the real list is what the daemon found.
+  test("discovered models win over an empty catalogue", () => {
+    const available = [
+      { provider: "ollama", model: "qwen3:8b", installed: true, signed_in: true, probed: false, structured_output: false, agentic: false, models: ["qwen3:8b", "gpt-oss:20b"] },
+    ];
+    expect(modelsFor(providers, available, "ollama").map((m) => m.id)).toEqual([
+      "qwen3:8b",
+      "gpt-oss:20b",
+    ]);
+  });
+
+  test("a pinned catalogue is used when there is nothing to discover", () => {
+    expect(modelsFor(providers, [], "claude").map((m) => m.label)).toEqual(["Sonnet 5"]);
+  });
+});
+
+describe("the section rail", () => {
+  // A rail hides what is not on screen, so it has to mark what it hid. Without
+  // this an edit in a scrolled-away section is invisible until it is lost.
+  test("marks the section that holds the unsaved change", () => {
+    const drafts = draftsFrom(view().rules);
+    const model: ModelDraft = { provider: "", model: "", saved: { provider: "", model: "" } };
+
+    expect(dirtySections(drafts, model, clean)).toEqual([]);
+
+    expect(
+      dirtySections(drafts, { ...model, provider: "agy", model: "x" }, clean),
+    ).toEqual(["routing"]);
+
+    expect(
+      dirtySections(drafts, model, {
+        distill: { provider: "gemini" },
+        reason: {},
+        saved: { distill: {}, reason: {} },
+      }),
+    ).toEqual(["routing"]);
+
+    expect(
+      dirtySections([drafts[0], { ...drafts[1], body: "# yeni" }], model, clean),
+    ).toEqual(["rules"]);
+  });
+
+  // Connections write immediately, so they can never be unsaved. A rail dot
+  // there would be a dot that never clears.
+  test("connections are never marked, because that card owns its own writes", () => {
+    const drafts = draftsFrom(view().rules);
+    const model: ModelDraft = { provider: "agy", model: "x", saved: { provider: "", model: "" } };
+    expect(dirtySections(drafts, model, clean)).not.toContain("connections");
+  });
+
+  test("every section has a word", () => {
+    for (const s of SETTINGS_SECTIONS) {
+      expect(sectionLabel(s).length).toBeGreaterThan(0);
+    }
   });
 });

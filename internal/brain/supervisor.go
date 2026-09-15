@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/graphify"
 	"github.com/logrenant/mimir/internal/llm"
 )
 
@@ -64,6 +65,15 @@ type SupervisorDeps struct {
 	// Nil means cfg.BrainScanRoots and no exclusions — the behaviour every
 	// caller had before the policy existed.
 	Policy func() ScanPolicy
+
+	// Structural is where the loop asks whether the parser is available and
+	// wanted. A function for the same reason Policy is: the operator installs
+	// Graphify, or turns it off, without restarting the daemon.
+	//
+	// Nil, or false, means no structural pass — which is the shipped state on
+	// a machine that has never heard of Graphify, and is silent rather than an
+	// error. See internal/brain/structural.go.
+	Structural func() (graphify.Info, bool)
 }
 
 // ScanPolicy is what the supervisor is permitted to read, as it reads it.
@@ -103,6 +113,17 @@ type ScanStatus struct {
 	ScannedTotal      int `json:"scanned_total"`
 	Sweeps            int `json:"sweeps"`
 	NodesTotal        int `json:"nodes_total"`
+
+	// Symbols is what the structural pass wrote this sweep, and Structural is
+	// what produced it — empty when Graphify is not installed, which is how the
+	// tab tells "off" from "found nothing".
+	Symbols int `json:"symbols_session"`
+	// SymbolsDropped is how many the per-project ceiling turned away. Reported
+	// because it is a setting rather than a fact: this repository alone puts
+	// 1228 symbols past it, and a number nobody sees is a limit nobody can
+	// decide about.
+	SymbolsDropped int    `json:"symbols_dropped"`
+	Structural     string `json:"structural,omitempty"`
 
 	SweepStarted   time.Time `json:"sweep_started,omitempty"`
 	LastPassAt     time.Time `json:"last_pass_at,omitempty"`
@@ -353,6 +374,10 @@ func (s *Supervisor) sweep(ctx context.Context) {
 			st.ProjectIndex = i + 1
 		})
 		s.emit(EventProject, project, fmt.Sprintf("%s (%d/%d)", filepath.Base(project), i+1, len(projects)))
+		// Before the distillation, not after: the structural pass costs no
+		// model call and finishes in seconds, so a sweep the operator pauses
+		// half way through has still left the parser's facts behind.
+		s.structural(ctx, project, exclude)
 		s.scanProject(ctx, project, sel, exclude)
 		s.remember(ctx, project)
 	}
@@ -414,6 +439,83 @@ func (s *Supervisor) scanProject(ctx context.Context, project string, sel llm.Se
 		}
 		s.clearBackoff()
 	}
+}
+
+// structural is the parser's pass over one project: Graphify's AST extraction,
+// written straight into the store with no model call (structural.go).
+//
+// Nothing here is fatal. A machine without Graphify, an interpreter that has
+// gone away mid-upgrade, a project the parser chokes on — each of them costs
+// the symbol layer for that project and nothing else, and the semantic scan
+// that follows does not know this ran.
+func (s *Supervisor) structural(ctx context.Context, project string, exclude Excluder) {
+	if s.deps.Structural == nil || s.deps.Core == nil {
+		return
+	}
+	info, ok := s.deps.Structural()
+	if !ok {
+		return
+	}
+
+	files, err := StructuralFiles(ctx, project, exclude)
+	if err != nil || len(files) == 0 {
+		return
+	}
+
+	// Nothing to do if nothing changed. The parser is deterministic, so an
+	// unchanged project produces the rows the store already has — and paying
+	// for that on every sweep, for every project, is the difference between a
+	// loop that costs seconds and one that costs minutes for ever.
+	digest := StructuralDigest(project, files)
+	key := StructuralCursorKey(project)
+	if s.deps.Cursors != nil {
+		if seen, err := s.deps.Cursors.BrainCursor(ctx, key); err == nil && seen == digest {
+			return
+		}
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, s.cfg.BrainStructuralTimeout)
+	defer cancel()
+
+	extraction, err := graphify.Extract(runCtx, info, project, files)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		// One line, not a red banner: this is a layer that was never promised.
+		s.emit(EventFailed, project, "graphify: "+err.Error())
+		s.log.Debug("structural pass skipped", "project", project, "error", err)
+		return
+	}
+
+	res, err := s.deps.Core.IngestStructural(ctx, project, extraction, info.Version)
+	if err != nil {
+		s.log.Warn("structural pass could not be stored", "project", project, "error", err)
+		return
+	}
+
+	// Recorded only after the store took it. A digest written on a pass that
+	// failed half way would skip the project until somebody touched a file.
+	if s.deps.Cursors != nil {
+		if err := s.deps.Cursors.SetBrainCursor(ctx, key, project, digest); err != nil {
+			s.log.Debug("structural digest not written", "project", project, "error", err)
+		}
+	}
+
+	s.withStatus(func(st *ScanStatus) { st.SymbolsDropped += res.Dropped })
+	if res.Symbols == 0 {
+		return
+	}
+
+	note := fmt.Sprintf("graphify: %d sembol · %d bağ", res.Symbols, res.Edges)
+	if res.Dropped > 0 {
+		note += fmt.Sprintf(" · %d tavana takıldı", res.Dropped)
+	}
+	s.emit(EventPass, project, note)
+	s.withStatus(func(st *ScanStatus) {
+		st.Symbols += res.Symbols
+		st.Structural = info.Version
+	})
 }
 
 // report turns one pass into console lines: the files by name, then a summary.
@@ -653,8 +755,22 @@ func (s *Supervisor) Status() ScanStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := s.status
-	out.Roots = append([]string(nil), s.status.Roots...)
+	out.Roots = list(s.status.Roots)
+	out.Excludes = list(s.status.Excludes)
 	return out
+}
+
+// list copies a slice and never returns nil.
+//
+// The copy is why this is here at all — the caller must not be handed a slice
+// the loop still writes to. Never-nil is the second reason and the one that
+// cost a bug: `roots` carries no omitempty, so an operator who had removed
+// every scan folder got JSON `null`, the desktop's type said `string[]`, and
+// `status.roots.join(...)` threw. With no error boundary above it that emptied
+// the entire window. An empty list is the truthful answer to "which folders
+// are being read" when the answer is none.
+func list(in []string) []string {
+	return append(make([]string, 0, len(in)), in...)
 }
 
 // --- the console -------------------------------------------------------------
@@ -730,6 +846,8 @@ func (s *Supervisor) startSweep() {
 		st.ScannedSession = 0
 		st.FailedSession = 0
 		st.UnreadableSession = 0
+		st.Symbols = 0
+		st.SymbolsDropped = 0
 		st.ProjectIndex = 0
 		st.NextSweepAt = time.Time{}
 	})

@@ -12,5 +12,3 @@ type Tool interface {
 	InputSchema() json.RawMessage
 	Handle(ctx context.Context, args json.RawMessage) (any, error)
 }
-
-

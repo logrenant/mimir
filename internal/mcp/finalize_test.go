@@ -12,8 +12,8 @@ import (
 type fakeGateTool struct{ name string }
 
 func (f fakeGateTool) Name() string                 { return f.name }
-func (f fakeGateTool) Description() string           { return "" }
-func (f fakeGateTool) InputSchema() json.RawMessage  { return json.RawMessage(`{"type":"object"}`) }
+func (f fakeGateTool) Description() string          { return "" }
+func (f fakeGateTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (f fakeGateTool) Handle(context.Context, json.RawMessage) (any, error) {
 	return nil, nil
 }

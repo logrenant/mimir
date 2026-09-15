@@ -129,6 +129,21 @@ begin.
   become argv to a subprocess, and a saved value is spent by every run
   afterwards without anybody re-reading it. A saved pair that a later build
   retired is dropped back to class routing rather than failed at the subprocess.
+- **A card's model is written onto the card, not re-read per call**
+  (`POST /catalog/rewrite`). The pass used to resolve the settings file at each
+  model call, so a settings change made while it ran could move it mid-pass —
+  the schema gate cleared under the old value and the first draft call landed
+  on the new one. The pair is stored in the card's `params`, and a card that
+  names none still follows the saved choice when it starts, which is what keeps
+  a week-old backlog card answering to today's default. Absent, deliberately,
+  is lead-gen's trick of folding the saved pair in at the door: a search is over
+  in a minute and a catalog card is not.
+- **The refusal is asked about the selection that will actually be spent**
+  (`catalogModelRefusal(effectiveSelection(sel))`). A gate that asked about the
+  machine default while the card named a provider of its own would refuse the
+  very choice the operator made to get past it — and the import view's
+  `rewrite_blocked` stays the *saved* model's answer, because that is what a
+  card with no pair of its own gets.
 - **No new path parameter.** Every one of these routes takes its identifiers in
   the JSON body, keeping "a filesystem path is accepted at exactly one route"
   and "no path parameter anywhere else" intact.

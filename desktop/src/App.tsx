@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { AccountsProvider } from "./components/AccountsProvider";
+import { AgentsProvider } from "./components/AgentPicker";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RunsProvider } from "./components/RunsProvider";
 import { TerminalsProvider } from "./components/TerminalsProvider";
 import { Connection } from "./screens/Connection";
@@ -31,12 +33,19 @@ export default function App() {
   if (!connected) return <Connection onReady={() => setConnected(true)} />;
 
   return (
-    <TerminalsProvider>
-      <RunsProvider>
-        <AccountsProvider>
-          <Dashboard />
-        </AccountsProvider>
-      </RunsProvider>
-    </TerminalsProvider>
+    // Outside the providers, because a provider that throws while setting up
+    // takes the whole tree with it, and an empty window is the one failure the
+    // operator cannot report.
+    <ErrorBoundary what="Mimir">
+      <TerminalsProvider>
+        <RunsProvider>
+          <AccountsProvider>
+            <AgentsProvider>
+              <Dashboard />
+            </AgentsProvider>
+          </AccountsProvider>
+        </RunsProvider>
+      </TerminalsProvider>
+    </ErrorBoundary>
   );
 }

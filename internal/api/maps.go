@@ -148,6 +148,39 @@ type llmProviderListResponse struct {
 	// inventing one, and it is not derivable from the list: it comes from the
 	// class routing, which is a different constant.
 	Routed llmRoutedDefault `json:"routed"`
+	// Available is what this machine can actually run, when a router is
+	// wired. Omitted rather than empty when it is not, so a client can tell
+	// "nothing is installed" from "nobody asked".
+	Available []llm.Availability `json:"available,omitempty"`
+}
+
+// connectionView is one connection as a screen reads it. It has no field that
+// could carry a secret or an executable path, and that is deliberate rather
+// than incidental — see `internal/llm/connection.go`.
+type connectionView struct {
+	ID           string                     `json:"id"`
+	Label        string                     `json:"label"`
+	Vendor       string                     `json:"vendor"`
+	Adapter      string                     `json:"adapter"`
+	Transport    string                     `json:"transport"`
+	DefaultModel string                     `json:"default_model"`
+	Models       []config.CodingModelChoice `json:"models,omitempty"`
+	Discovered   bool                       `json:"discovered,omitempty"`
+	Enabled      bool                       `json:"enabled"`
+	Builtin      bool                       `json:"builtin"`
+	// Connect is what an operator does to sign this in. Carried per connection
+	// because it is a property of the binary, not of the vendor.
+	Connect llm.ConnectSpec `json:"connect"`
+	// Availability is what this machine says about it, when a router is wired.
+	Availability *llm.Availability `json:"availability,omitempty"`
+}
+
+type connectionListResponse struct {
+	Connections []connectionView `json:"connections"`
+	// Catalogue is every way to reach models this product knows about,
+	// including the ones this build cannot run yet. Published so the picker is
+	// the final one rather than a picker that grows a section later.
+	Catalogue []llm.CatalogueEntry `json:"catalogue,omitempty"`
 }
 
 type llmRoutedDefault struct {
@@ -162,14 +195,129 @@ type llmRoutedDefault struct {
 //
 // Nothing here is secret or per-operator: it is the same table
 // llmSelection validates against.
+// handleListConnections is the connection-shaped view of the same question
+// `/llm/providers` answers, and it is the one a screen that manages connections
+// reads.
+//
+// The older route keeps its shape — a superset, so an existing client is not
+// broken by a refactor — and this one says what each connection *is*: its
+// label, its vendor, whether it rides a CLI or an endpoint. Never a secret:
+// this surface reports whether one is set, and nothing more.
+func (s *Server) handleListConnections(w http.ResponseWriter, r *http.Request) {
+	res := connectionListResponse{Connections: []connectionView{}}
+	if s.deps.Connections == nil {
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
+
+	available := map[string]llm.Availability{}
+	if s.deps.LLM != nil {
+		for _, a := range s.deps.LLM.Discover(r.Context(), r.URL.Query().Get("probe") == "1", s.cfg.LLMProbeTimeout) {
+			available[a.Provider] = a
+		}
+	}
+
+	res.Catalogue = s.deps.Connections.Catalogue()
+
+	for _, spec := range s.deps.Connections.Specs() {
+		view := connectionView{
+			ID:           spec.ID,
+			Label:        spec.Label,
+			Vendor:       spec.Vendor,
+			Adapter:      string(spec.Adapter),
+			Transport:    string(spec.Transport()),
+			DefaultModel: spec.DefaultModel,
+			Discovered:   spec.Discovered,
+			Enabled:      spec.Enabled,
+			Builtin:      spec.Builtin,
+			Connect:      spec.Connect(),
+		}
+		for _, m := range spec.Models {
+			view.Models = append(view.Models, config.CodingModelChoice{ID: m.ID, Label: m.Label})
+		}
+		if a, ok := available[spec.ID]; ok {
+			view.Availability = &a
+		}
+		res.Connections = append(res.Connections, view)
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleAddConnection is the extension point, and today it refuses everything.
+//
+// That is the shape working rather than a placeholder. Every provider an
+// operator could add is an API one and none of those adapters is written yet
+// (`internal/llm/catalogue.go` says why: an adapter written against
+// documentation and never exercised fails at the first real call, or half-works
+// and returns prose where a schema was asked for). So the route exists, takes
+// the final body, resolves the catalogue entry, and answers with that entry's
+// name and reason.
+//
+// When an adapter lands, this handler starts succeeding without its route, its
+// body or the screen that calls it changing.
+func (s *Server) handleAddConnection(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Connections == nil {
+		writeError(w, http.StatusServiceUnavailable, codeUnavailable,
+			"this daemon has no connection registry")
+		return
+	}
+	var req addConnectionRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	spec, err := s.deps.Connections.Add(strings.TrimSpace(req.Provider), strings.TrimSpace(req.Label))
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, spec)
+}
+
+// handleProbeConnection asks whether one connection's login works.
+//
+// One row, because that is the question the screen asks. Probing everything at
+// once was measured at four minutes — long enough that the operator concludes
+// the button is broken — and it is also the wrong shape: each probe spends a
+// model call, and spending four because somebody wanted to check one is not a
+// thing to do quietly.
+func (s *Server) handleProbeConnection(w http.ResponseWriter, r *http.Request) {
+	if s.deps.LLM == nil {
+		writeError(w, http.StatusServiceUnavailable, codeUnavailable,
+			"this daemon has no model router")
+		return
+	}
+	got, ok := s.deps.LLM.ProbeOne(r.Context(), r.PathValue("id"), s.cfg.LLMProbeTimeout)
+	if !ok {
+		writeError(w, http.StatusNotFound, codeNotFound, "no such connection")
+		return
+	}
+	writeJSON(w, http.StatusOK, got)
+}
+
+// addConnectionRequest is the final body. `provider` names a catalogue entry,
+// never an adapter and never a URL: an operator picks from what the daemon
+// published, so nothing they type decides what runs.
+type addConnectionRequest struct {
+	Provider string `json:"provider"`
+	Label    string `json:"label"`
+}
+
+// `?probe=1` asks whether the logins work rather than only whether the binaries
+// are there. It is opt-in because it is not free: one completion per provider.
+// A screen opening asks the cheap question; an operator pressing "test" asks
+// the expensive one.
 func (s *Server) handleListLLMProviders(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, llmProviderListResponse{
+	res := llmProviderListResponse{
 		Providers: s.cfg.LLMProviders,
 		Routed: llmRoutedDefault{
 			Provider: s.cfg.DistillProvider,
 			Model:    s.cfg.DistillModel,
 		},
-	})
+	}
+	if s.deps.LLM != nil {
+		res.Available = s.deps.LLM.Discover(r.Context(), r.URL.Query().Get("probe") == "1", s.cfg.LLMProbeTimeout)
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // llmSelection validates the operator's provider/model override.
@@ -196,15 +344,39 @@ func (s *Server) llmSelection(w http.ResponseWriter, rawProvider, rawModel strin
 			"model was given without a provider — send both, or neither to route by class")
 		return llm.Selection{}, false
 	}
-	if !s.cfg.HasLLMModel(provider, model) {
+	if !s.allowsModel(provider, model) {
 		writeError(w, http.StatusBadRequest, codeBadRequest,
 			"unknown provider/model combination — GET /llm/providers lists what this daemon will run")
 		return llm.Selection{}, false
 	}
 	if model == "" {
-		model = s.cfg.LLMDefaultModel(provider)
+		model = s.defaultModel(provider)
 	}
 	return llm.Selection{Provider: provider, Model: model}, true
+}
+
+// allowsModel and defaultModel ask the connection registry when there is one,
+// and the shipped table when there is not.
+//
+// The registry is where the allow-list lives once connections are the unit of
+// routing — it knows the operator's connections as well as the built-ins, and
+// the shipped table only knows half. A daemon built without one still answers
+// correctly about the half it has, which is the same degradation `Deps.LLM`
+// already has.
+func (s *Server) allowsModel(provider, model string) bool {
+	if s.deps.Connections != nil {
+		return s.deps.Connections.Allows(provider, model)
+	}
+	return s.cfg.HasLLMModel(provider, model)
+}
+
+func (s *Server) defaultModel(provider string) string {
+	if s.deps.Connections != nil {
+		if m := s.deps.Connections.DefaultModel(provider); m != "" {
+			return m
+		}
+	}
+	return s.cfg.LLMDefaultModel(provider)
 }
 
 // leadgenSelection is llmSelection with the operator's saved default behind it.

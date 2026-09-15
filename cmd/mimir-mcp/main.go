@@ -17,6 +17,7 @@ import (
 	"github.com/logrenant/mimir/internal/project"
 	"github.com/logrenant/mimir/internal/refine"
 	"github.com/logrenant/mimir/internal/search"
+	"github.com/logrenant/mimir/internal/skills"
 	"github.com/logrenant/mimir/internal/store"
 	"github.com/logrenant/mimir/internal/tools"
 )
@@ -55,6 +56,10 @@ func run() error {
 	}
 
 	srv := mimirmcp.NewServer(cfg)
+	// The same skill files the daemon serves, read from the same directory.
+	// This process only reads them: the editor is the desktop app, and a skill
+	// seeded here on first use is the same file it would seed there.
+	srv.Registry().SetSkills(skills.New(cfg.SkillDir))
 
 	// A nested instance serves the protocol and nothing else.
 	//
@@ -100,6 +105,14 @@ func run() error {
 	var knowledge *brain.Core
 	if pageStore != nil {
 		mem = memory.New(cfg, pageStore, refineClient, nil)
+		// And the verbatim archive. The reason this was left out — "a
+		// short-lived stdio process has no backlog to archive" — was true of
+		// the backlog and wrong about the session in front of it: PutChatTurn
+		// is one insert with no model call, and without it the project a
+		// session is actually working in was the one project whose
+		// conversations were never kept. mimir-agent had eleven episodes and
+		// nought archived turns.
+		mem.UseArchive(pageStore)
 		projects = project.NewRegistry(pageStore)
 		knowledge = brain.New(cfg, pageStore, llm.NewRouter(cfg))
 	}

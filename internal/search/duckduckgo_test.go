@@ -43,7 +43,7 @@ func TestParseLite(t *testing.T) {
 	if len(res) == 0 {
 		t.Fatal("expected results, got 0")
 	}
-	
+
 	found := false
 	for _, r := range res {
 		if r.URL == "https://pkg.go.dev/go/parser" && r.Title == "parser package - go/parser - Go Packages" {

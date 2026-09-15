@@ -1,31 +1,95 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
-   Mimir — Brand System Guide, applied.
+   Mimir — the design system.
    ---------------------------------------------------------------------------
-   Four colours, no fifth (p.8). Carbon and Mist carry the composition; Electric
-   and Lime interrupt it. The proportions are the guide's: Carbon 70% of the
-   surface, Mist 20%, Electric 8%, Lime 2% — which is why the accent appears on
-   one control at a time and never as a fill behind a panel.
+   Two halves, held in one place. The brand's own language is an *aesthetic*
+   one — grain, monochrome, editorial scale, the poster. What it drives is a
+   *technical* one — a console that runs a daemon, a board of jobs, a graph.
+   An interface that is only the first is a landing page; only the second is a
+   generated dashboard. This file is the join.
 
-   Tints of Carbon and Mist are the only permitted extensions, and they are what
-   the interface structure is built from: every panel, edge and muted label
-   below is one of the two, not a new hue.
+   ---------------------------------------------------------------------------
+   What changed, and why the previous version read as unfinished.
+   ---------------------------------------------------------------------------
+   The rules here were never wrong; the proportions were. Twelve type sizes
+   lived between 9px and 13px — 9.5, 10.5, 11.5, 12.5 among them — so nothing
+   in the application led anything else, and a heading was the same weight on
+   the page as the caption under it. Every element carried the same hairline
+   border, which is the same as no element carrying one. `raised` sat six
+   luminance steps above `ground`, so a selected row and an unselected row were
+   the same rectangle. And the accent was a blue that does not survive Carbon:
+   Electric at #2547e8 on #101114 reads as dark grey, so a palette with two
+   accents in it produced a screen with none.
+
+   So: seven type steps with no fractions, a surface ramp with steps you can
+   actually see, and one accent that is genuinely bright — Lime — carrying the
+   things the operator acts on and the things that are alive. Electric keeps
+   the two jobs it is good at on a dark ground: the focus ring, and work that
+   is in progress.
+
+   ---------------------------------------------------------------------------
+   Aldrich is display-only now.
+   ---------------------------------------------------------------------------
+   It was on every button and every label at 10px, all-caps, tracked out. At
+   that size a geometric single-weight face stops being a voice and becomes
+   texture — and this product's copy is part Turkish, where 10px caps Aldrich
+   renders ğ, ş and ı as noise. It now appears where a display face earns its
+   keep: the masthead, the one large number on a screen, an overlay's title,
+   the wordmark. Everything an operator reads or presses is Open Sans.
+
+   ---------------------------------------------------------------------------
+   Elevation, motion and focus.
+   ---------------------------------------------------------------------------
+   The guide bans shadow and glow and that ban holds for panels: a surface is a
+   tint of Carbon catching light on its top edge, which is why `--shadow-elev-1`
+   is an inset highlight and not a drop shadow. A genuine cast shadow appears
+   only under something genuinely off the page — an overlay, a popover, a card
+   under the pointer.
+
+   Motion answers an action or reports a real value, and does nothing else.
+   There is no decorative entrance. The durations and the one easing curve live
+   here so no screen invents its own, and `prefers-reduced-motion` collapses all
+   of them at the bottom of this file.
 --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+   Aldrich, and the range it is actually allowed to claim.
+   ---------------------------------------------------------------------------
+   The subset in `assets/fonts` does not draw accented Latin, and the way it
+   fails is the dangerous way: it does not fall through and it does not draw a
+   missing-glyph box — it draws the *base letter with the mark removed*. Ü and
+   U measure identically at 100px; so do Ö/O and Ç/C. Meanwhile Ş, Ğ and İ are
+   absent outright and fell through to whatever the system offered, so a single
+   word was set in three faces.
+
+   The declared range was `U+0000-00FF`, which claims all of that. So the
+   module screen titled "Katalog · Ürün içeriği" rendered as
+   "KATALOG · URUN IÇERIGI" — silently, in a product whose copy is half
+   Turkish, on the largest text on the screen.
+
+   The range below is what this file measurably draws: ASCII, plus the
+   punctuation the product's display strings actually use (·, –, …, the curly
+   quotes, ×). Everything else — every Turkish character — now falls through to
+   Open Sans, with its diacritics intact and in one known face rather than two
+   unknown ones. `—`, `→`, `↑` and `↓` are excluded because Aldrich does not
+   have them either; they were falling through already.
+
+   `swap`, not `block`: Aldrich carries a screen's title at 30px, and a block
+   period means that title is simply absent for the first frames — which on a
+   WebView that reloads itself after a suspend is a window that looks broken.
+--------------------------------------------------------------------------- */
 @font-face {
   font-family: "Aldrich";
   font-style: normal;
   font-weight: 400;
-  font-display: block;
+  font-display: swap;
   src: url("./assets/fonts/aldrich-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
-    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
-    U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range: U+0020-007E, U+00B7, U+00D7, U+2013, U+2018-201D, U+2026;
 }
 
 /* Open Sans ships as one variable file per subset; the weight axis covers
-   300/400/600 without three downloads. latin-ext is not optional here — the
+   300/400/500/600 without four downloads. latin-ext is not optional here — the
    product's own copy is part Turkish, and ı/ş/ğ live in that subset. */
 @font-face {
   font-family: "Open Sans";
@@ -49,19 +113,38 @@
 }
 
 @theme {
-  /* The four. */
-  --color-carbon: #101114;
+  /* -----------------------------------------------------------------------
+     The four.
+     ----------------------------------------------------------------------- */
+  --color-carbon: #0b0c0e;
   --color-mist: #eef0f2;
-  --color-electric: #2547e8;
+  --color-electric: #3d63ff;
   --color-lime: #c6f04a;
 
-  /* Structure — tints of Carbon, nothing new. */
-  --color-ground: #101114;
-  --color-panel: #16181c;
+  /* -----------------------------------------------------------------------
+     The surface ramp — tints of Carbon, nothing new.
+     -----------------------------------------------------------------------
+     The steps are wider than they were, and that is the whole point: a panel
+     now separates from the ground by its own tone, so it does not need a
+     border to be a panel. Border is for two surfaces of the *same* tone
+     meeting, and for a control that needs a hit target. Everything else is
+     depth.
+
+     `overlay` is new. A popover floats above a panel, and with only `raised`
+     available it landed on the same tone as the card underneath it.
+     ----------------------------------------------------------------------- */
+  --color-ground: #0b0c0e;
+  --color-panel: #141619;
   --color-raised: #1c1f24;
-  --color-edge: #24272d;
+  --color-overlay: #23262c;
+  --color-sunken: #08090a;
+  --color-edge: #232730;
+  --color-edge-strong: #333844;
   --color-text: #eef0f2;
   --color-muted: #8a9099;
+
+  /* Text on top of Lime. A fill this bright takes Carbon, never Mist. */
+  --color-lime-ink: #0b0c0e;
 
   /* System states. Not brand colours and never used as one: Lime reports
      success because it is already the "live" accent, Electric reports work in
@@ -69,49 +152,319 @@
      the guide itself uses to mark a DON'T, because an error that reads as
      decoration is a worse violation than a fifth colour. */
   --color-ok: #c6f04a;
-  --color-warn: #2547e8;
-  --color-bad: #e5484d;
+  --color-warn: #3d63ff;
+  --color-bad: #ff5c5c;
 
-  --font-display: "Aldrich", "SF Compact Display", ui-sans-serif, system-ui, sans-serif;
+  /* -----------------------------------------------------------------------
+     Type.
+     -----------------------------------------------------------------------
+     Seven steps, no fractional sizes, and nothing below 11px. These override
+     Tailwind's own scale rather than sitting beside it, so a `text-sm` left
+     behind in a screen this pass has not reached still lands on the ramp
+     instead of drifting off it.
+
+     13px is the body. That is the size a row, a label and a button are set
+     in, and it is the size the application should feel like.
+     ----------------------------------------------------------------------- */
+  --text-xs: 11px;        /* micro — mono meta, ids, timestamps, section labels */
+  --text-xs--line-height: 1.4;
+  --text-sm: 12px;        /* secondary — captions, table cells, hints */
+  --text-sm--line-height: 1.5;
+  --text-base: 13px;      /* the body */
+  --text-base--line-height: 1.55;
+  --text-lg: 15px;        /* a card's title, a panel's heading */
+  --text-lg--line-height: 1.4;
+  --text-xl: 20px;        /* an overlay's title */
+  --text-xl--line-height: 1.25;
+  --text-2xl: 24px;       /* a figure on a strip of figures */
+  --text-2xl--line-height: 1.1;
+  --text-3xl: 30px;       /* a screen's name */
+  --text-3xl--line-height: 1.05;
+  --text-4xl: 44px;       /* the one reading a screen is about */
+  --text-4xl--line-height: 0.95;
+
+  /* Open Sans sits directly behind Aldrich rather than a system face, because
+     with the range above it is no longer a hypothetical fallback: it sets
+     every Turkish character in every display string, and which face does that
+     is a design decision rather than whatever the machine happens to have. */
+  --font-display: "Aldrich", "Open Sans", -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Open Sans", -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* -----------------------------------------------------------------------
+     Radius.
+     -----------------------------------------------------------------------
+     Everything used to be 4px, on the reasoning that the brand reads as
+     infrastructure and infrastructure has square corners. That reasoning
+     produced an interface of small hard rectangles, which reads as cheap
+     rather than as engineered — the instruments this product wants to be
+     compared to are softer than this and more confident for it.
+
+     Five steps, and each owns a category so nothing has to choose.
+     ----------------------------------------------------------------------- */
+  --radius-sm: 6px;   /* inputs, chips, tags */
+  --radius-md: 10px;  /* buttons, list rows, nav rows */
+  --radius-lg: 14px;  /* cards, panels, popovers */
+  --radius-xl: 18px;  /* overlays, the composer */
+
+  /* Elevation is light. elev-1 is a surface catching the room; elev-2 and
+     elev-3 also cast, because they are the only things actually above the
+     page — elev-2 for a popover, elev-3 for a modal over a scrim. */
+  --shadow-elev-1: inset 0 1px 0 rgb(238 240 242 / 0.05);
+  --shadow-elev-2:
+    inset 0 1px 0 rgb(238 240 242 / 0.07), 0 10px 30px -8px rgb(0 0 0 / 0.65);
+  --shadow-elev-3:
+    inset 0 1px 0 rgb(238 240 242 / 0.09), 0 24px 60px -16px rgb(0 0 0 / 0.8);
+
+  /* One curve. It decelerates hard, which is what makes a control feel
+     mechanical rather than floaty — the right register for this product. */
+  --ease-decisive: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Durations sit outside @theme: Tailwind has no duration namespace, and these
+   are read by `lib/motion.ts` and by the rules below rather than by a utility. */
+:root {
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
 }
 
 html, body, #root { height: 100%; }
+
+/* The menu-bar panel is a transparent window, so the document behind it must
+   not paint. Set on the root element by `main.tsx` from the window label —
+   one stylesheet serves both windows, and the main window keeps its ground. */
+[data-window="quick"],
+[data-window="quick"] body,
+[data-window="quick"] #root {
+  background: transparent;
+}
 
 body {
   margin: 0;
   background: var(--color-ground);
   color: var(--color-text);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Aldrich is one weight, geometric, and it collapses below 32 px at running
-   sizes — the guide is explicit that it is display-only. In this UI that means
-   headings, labels and the wordmark: all-caps, tracked out, never a paragraph. */
+/* ---------------------------------------------------------------------------
+   The two type roles that are not a size.
+--------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+   The display face — and why nothing here is uppercased any more.
+   ---------------------------------------------------------------------------
+   Aldrich, and only where a display face earns its keep: a screen's name, the
+   one large figure it is about, an overlay's title, the wordmark. Never a
+   paragraph, never a button, never below 20px.
+
+   `text-transform: uppercase` is gone, and it is a correctness fix rather than
+   a matter of taste. Blink does not apply Turkish casing for `text-transform`
+   even under `lang="tr"` — verified in this app's own WebView — so the `i` in
+   "içeriği" uppercases to `I` and not `İ`. The module screen titled
+   "Katalog · Ürün içeriği" was painting "KATALOG · ÜRÜN IÇERIĞI": not a
+   Turkish word, on the largest text on the screen, produced by a stylesheet
+   silently rewriting copy the code had authored correctly.
+
+   There is no CSS-side fix for that. So the rule is now that display text says
+   exactly what the source string says, and the display *voice* comes from the
+   face, the size and the tracking — which is where it should have come from.
+--------------------------------------------------------------------------- */
 .display {
   font-family: var(--font-display);
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+
+/* ---------------------------------------------------------------------------
+   Numerals.
+   ---------------------------------------------------------------------------
+   Aldrich does not set numbers, and the reason is worth writing down because
+   it is not a matter of taste: its zero is a plain rounded rectangle with no
+   counter and no slash, so at any size below the poster it is indistinguishable
+   from a missing-glyph box. The first build of the new dashboard had the hero
+   figure and all six cells of the day's strip in Aldrich, and on an idle
+   machine — where every one of those values is 0 — the screen read as seven
+   tofu boxes. That is the single most common state this product has.
+
+   So the display face sets the *words* a screen is titled with, and the data
+   is set in Open Sans, which has real figures and a real `tnum` axis. Pairing
+   a geometric display face with a humanist one for the numbers is also just
+   the right typographic move: the label and the value should not be the same
+   voice.
+--------------------------------------------------------------------------- */
+.figure {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* The caption that names a group — a section heading, a field's label, a
+   column of figures.
+   It was Aldrich at 10px, all caps, with 0.18em of tracking, which is
+   unreadable in a language with diacritics and was being asked to double as
+   every button's label as well. */
+.label {
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 600;
+  /* Not uppercased, for the reason `.display` is not: this application's
+     labels are Turkish — "Sistem", "Modüller", "Çalışan oturumlar" — and the
+     transform mangles every one that contains an `i`. Size, weight, tracking
+     and colour carry a section label perfectly well without it. */
   letter-spacing: 0.06em;
 }
 
-/* The label style the guide uses for its own section rules: small, spaced,
-   quiet until it carries the accent. */
-.label {
-  font-family: var(--font-display);
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-  font-size: 10px;
-}
-
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--color-edge); border-radius: 6px; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-edge);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--color-edge-strong); }
 ::-webkit-scrollbar-track { background: transparent; }
 
 ::selection { background: color-mix(in srgb, var(--color-electric) 45%, transparent); }
 
-/* Used by the Dashboard screen's blinking cursor and in-progress marquee. */
+/* ---------------------------------------------------------------------------
+   Focus.
+   ---------------------------------------------------------------------------
+   An outline rather than a ring built from box-shadow, because every raised
+   surface in this UI already spends its box-shadow on elevation and the two
+   would overwrite each other. `:focus-visible` and not `:focus`: a mouse click
+   on a button should not leave it outlined.
+
+   Electric and not Lime. Lime is now what the operator's own actions are drawn
+   in, so a focus ring in the same colour would say "this is the primary
+   action" about whatever the keyboard happens to be resting on.
+--------------------------------------------------------------------------- */
+.focus-ring:focus-visible {
+  outline: 2px solid var(--color-electric);
+  outline-offset: 2px;
+}
+
+/* The inner variant, for a control whose neighbour is one hairline away — a
+   segmented tab, a table row — where an offset outline would collide. */
+.focus-ring-inset:focus-visible {
+  outline: 2px solid var(--color-electric);
+  outline-offset: -2px;
+}
+
+/* ---------------------------------------------------------------------------
+   The ground.
+   ---------------------------------------------------------------------------
+   Carbon was a flat fill, which is what makes a large empty pane read as
+   unfinished rather than as quiet. A 32px dot grid at 3% Mist gives it the
+   texture of measuring paper — a material, not a gradient wash — and the wash
+   over it fades it out downward so it never competes with content.
+
+   This is the technical half of the vocabulary and it stays on the working
+   panes. The aesthetic half — the grain below — is deliberately rationed to
+   the two surfaces that are not work: the gate, and the top of the day's
+   reading.
+--------------------------------------------------------------------------- */
+.grid-ground {
+  /* Two layers, and the fade is the top one rather than a mask. `mask-image`
+     masks the element's *contents* as well as its background, so the first
+     version of this quietly faded every screen out towards its own bottom
+     edge — a panel of controls dissolving into the ground, which looked like a
+     rendering fault and was one. A wash of the ground colour over the dots
+     does the same job and touches nothing but the paint. */
+  background-image:
+    linear-gradient(to bottom, transparent 0%, var(--color-ground) 58%),
+    radial-gradient(circle at 1px 1px, rgb(238 240 242 / 0.045) 1px, transparent 0);
+  background-size:
+    100% 100%,
+    32px 32px;
+  background-repeat: no-repeat, repeat;
+}
+
+/* ---------------------------------------------------------------------------
+   Grain.
+   ---------------------------------------------------------------------------
+   The brand's own surface, and until now it appeared nowhere in the product.
+
+   It is built from two layers rather than one image, because the two halves
+   want opposite treatment. The *gradient* is soft and enormous, so it ships as
+   a 1200px WebP at 16 kB and is stretched — blur does not care about scaling.
+   The *grain* is high-frequency, which is exactly what an image codec throws
+   away and what stretching destroys: at 2752px it cost 114 kB and still went
+   soft the moment it was resized. So it is generated instead, by the
+   compositor, at whatever the display's real pixel density is — sharper than
+   the source, free, and tunable per placement.
+
+   `--grain-opacity` is the knob each placement sets.
+--------------------------------------------------------------------------- */
+.grain-noise {
+  --grain-opacity: 0.18;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23g)'/%3E%3C/svg%3E");
+  background-size: 140px 140px;
+  background-repeat: repeat;
+  opacity: var(--grain-opacity);
+  /* Overlay rather than normal: grain is light *scattering* on a surface, so
+     it has to lift the highlights and deepen the shadows rather than laying a
+     flat grey veil over both. */
+  mix-blend-mode: overlay;
+}
+
+/* ---------------------------------------------------------------------------
+   The live-signal vocabulary.
+   ---------------------------------------------------------------------------
+   Both of these are driven by real daemon state, never by a timer. `mimirBeat`
+   is fired once per successful heartbeat by re-keying the element, so a
+   *still* dot means a dead daemon and that stillness is the reading. Nothing
+   here loops on its own.
+--------------------------------------------------------------------------- */
+@keyframes mimirBeat {
+  0% { transform: scale(1); }
+  38% { transform: scale(1.9); }
+  100% { transform: scale(1); }
+}
+
+/* The halo a beat pushes outward. Separate element, so the dot itself stays
+   crisp at 6px while the ring dissolves. */
+@keyframes mimirRipple {
+  0% { transform: scale(1); opacity: 0.55; }
+  100% { transform: scale(3.4); opacity: 0; }
+}
+
+/* The one exception to "no timer": a run that is streaming has no percentage to
+   report — the daemon does not know how long a coding task will take — so the
+   bar reports *that work is happening* rather than how much is left. It exists
+   only while a socket is open. */
+@keyframes mimirCrawl {
+  0% { background-position: 0 0; }
+  100% { background-position: 24px 0; }
+}
+
+/* Used by the terminal's caret. */
 @keyframes mimirBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-@keyframes mimirCrawl { 0% { background-position: 0 0; } 100% { background-position: 24px 0; } }
+
+/* ---------------------------------------------------------------------------
+   Reduced motion.
+   ---------------------------------------------------------------------------
+   The durations collapse rather than the animations being disabled: a
+   transition of 1ms still ends in the right final state, where
+   `animation: none` on a keyframe that carries the element's resting transform
+   would leave it mid-flight. framer-motion reads the same preference through
+   `useReducedMotion()` in `lib/motion.ts`.
+--------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 1ms;
+    --dur-base: 1ms;
+    --dur-slow: 1ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -84,9 +84,39 @@ var ErrUnknownChannel = errors.New("settings: unknown outreach channel")
 type Values struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+
+	// Distill and Reason are the operator's standing preference for each class
+	// of the daemon's *own* work — Brain's distil and relation passes, refine's
+	// five profiles, the catalog rewrite.
+	//
+	// Which class a piece of work belongs to stays in code (SD-1): "is this
+	// compression or synthesis" is a property of the work and not a taste.
+	// Which provider serves a class on *this machine* is not — it depends on
+	// what is installed and signed in here, and that is the operator's to say.
+	// This is `internal/settings`' whole argument, applied to the one decision
+	// that previously had nowhere to live: a machine-wide Brain scan is
+	// thousands of calls, and before this the only way to point it somewhere
+	// else was to edit a constant and rebuild.
+	Distill Choice `json:"distill,omitzero"`
+	Reason  Choice `json:"reason,omitzero"`
 }
 
+// Choice is one provider/model pair. Both halves are validated against the
+// daemon's published table before they are stored — they end up as argv.
+type Choice struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// IsZero reports whether no choice has been made.
+func (c Choice) IsZero() bool { return c.Provider == "" && c.Model == "" }
+
 // IsZero reports whether no model choice has been made.
+//
+// It deliberately answers about the search bar's own choice only: the two class
+// defaults are read by the router and a screen that asked "has anything been
+// configured" about them would get the wrong answer for the field it is
+// showing.
 func (v Values) IsZero() bool { return v.Provider == "" && v.Model == "" }
 
 // Rule is one channel's rule file as the settings screen sees it.

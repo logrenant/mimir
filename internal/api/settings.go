@@ -26,7 +26,12 @@ type settingsView struct {
 	// Routed is what a run gets when no model is chosen — the class routing's
 	// own answer. The picker needs it to label the empty option honestly.
 	Routed llmRoutedDefault `json:"routed"`
-	Rules  []ruleView       `json:"rules"`
+	// Distill and Reason are the operator's standing preference for the two
+	// classes the daemon routes on its own. Always present, empty when unset,
+	// so a screen can tell "not chosen" from "field missing".
+	Distill settings.Choice `json:"distill"`
+	Reason  settings.Choice `json:"reason"`
+	Rules   []ruleView      `json:"rules"`
 }
 
 type ruleView struct {
@@ -74,7 +79,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			Provider: s.cfg.DistillProvider,
 			Model:    s.cfg.DistillModel,
 		},
-		Rules: make([]ruleView, 0, len(rules)),
+		Distill: values.Distill,
+		Reason:  values.Reason,
+		Rules:   make([]ruleView, 0, len(rules)),
 	}
 	for _, rule := range rules {
 		out.Rules = append(out.Rules, viewOf(rule))
@@ -83,6 +90,17 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 type saveSettingsRequest struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	// Distill and Reason are the operator's standing preference for the two
+	// classes the daemon routes on its own. Optional: a request that omits
+	// them clears them, which is the same gesture as clearing the search bar's
+	// own choice and keeps this a whole-document PUT rather than a patch.
+	Distill *choiceRequest `json:"distill,omitempty"`
+	Reason  *choiceRequest `json:"reason,omitempty"`
+}
+
+type choiceRequest struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 }
@@ -103,11 +121,42 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.deps.Settings.Put(settings.Values{Provider: sel.Provider, Model: sel.Model}); err != nil {
+	// The class defaults go through the same gate. They are the most dangerous
+	// values on this surface: a per-run selection is spent once and watched,
+	// while these are spent by every Brain pass and every refine afterwards,
+	// with nobody re-reading them.
+	distill, ok := s.choice(w, req.Distill)
+	if !ok {
+		return
+	}
+	reason, ok := s.choice(w, req.Reason)
+	if !ok {
+		return
+	}
+
+	if err := s.deps.Settings.Put(settings.Values{
+		Provider: sel.Provider,
+		Model:    sel.Model,
+		Distill:  distill,
+		Reason:   reason,
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, err.Error())
 		return
 	}
 	s.handleGetSettings(w, r)
+}
+
+// choice validates one class default against the published table. A nil
+// request is "no preference", which is valid and is how a default is cleared.
+func (s *Server) choice(w http.ResponseWriter, req *choiceRequest) (settings.Choice, bool) {
+	if req == nil || (req.Provider == "" && req.Model == "") {
+		return settings.Choice{}, true
+	}
+	sel, ok := s.llmSelection(w, req.Provider, req.Model)
+	if !ok {
+		return settings.Choice{}, false
+	}
+	return settings.Choice{Provider: sel.Provider, Model: sel.Model}, true
 }
 
 type saveRuleRequest struct {

@@ -351,7 +351,10 @@ func TestLive_MCPRouteExposesTheCanonicalToolSet(t *testing.T) {
 	want := []string{
 		"brain_ingest_data", "brain_ingest_github", "brain_query_nodes",
 		"brain_related", "brain_scan_repo", "diagnostics", "ecommerce_product_lookup",
-		"fetch_page", "gmaps_business_lookup", "instagram_profile_lookup",
+		"fetch_page", "gmaps_business_lookup",
+		// The graph read as a graph, over the parser's own edges.
+		"graph_affected", "graph_hubs", "graph_path", "graph_query",
+		"instagram_profile_lookup",
 		"maps_search", "research", "tiktok_profile_lookup", "web_search",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

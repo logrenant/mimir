@@ -292,7 +292,7 @@ func TestBrainGraphIDs_RanksByDegree(t *testing.T) {
 	s := openTestStore(t)
 	graphFixture(t, s, "/repo")
 
-	got, err := s.BrainGraphIDs(context.Background(), "/repo", 3)
+	got, err := s.BrainGraphIDs(context.Background(), "/repo", 3, nil)
 	if err != nil {
 		t.Fatalf("BrainGraphIDs: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestBrainGraphIDs_ScopesToAProjectPlusGlobal(t *testing.T) {
 		}
 	}
 
-	got, err := s.BrainGraphIDs(ctx, "/repo", 50)
+	got, err := s.BrainGraphIDs(ctx, "/repo", 50, nil)
 	if err != nil {
 		t.Fatalf("BrainGraphIDs: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestBrainGraphIDs_ScopesToAProjectPlusGlobal(t *testing.T) {
 	}
 
 	// The whole machine, when no project is named.
-	all, err := s.BrainGraphIDs(ctx, "", 50)
+	all, err := s.BrainGraphIDs(ctx, "", 50, nil)
 	if err != nil {
 		t.Fatalf("BrainGraphIDs: %v", err)
 	}
@@ -556,5 +556,218 @@ func TestBrainNodeVersions_NilStoreTolerated(t *testing.T) {
 	var s *Store
 	if rows, err := s.BrainNodeVersions(context.Background(), "node-f", 10); err != nil || rows != nil {
 		t.Errorf("BrainNodeVersions on a nil store: %v %v", rows, err)
+	}
+}
+
+// TestBrainInboundEdges_KeepsTheDirectionNeighborsThrowsAway.
+//
+// BrainNeighbors normalises an edge so the node asked about is always Src,
+// which is right for drawing the graph and destroys the only thing "who calls
+// this" is made of. The parser writes calls edges caller-to-callee, so the fact
+// is in the table; the read was what could not express it.
+func TestBrainInboundEdges_KeepsTheDirectionNeighborsThrowsAway(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	if err := s.UpsertBrainEdges(ctx, []BrainEdgeRow{
+		{Src: "caller", Dst: "callee", Kind: "calls", Weight: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	inbound, err := s.BrainInboundEdges(ctx, "callee", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inbound) != 1 || inbound[0].Src != "caller" {
+		t.Fatalf("inbound = %+v, want the caller", inbound)
+	}
+	// The callee calls nobody.
+	if in, err := s.BrainInboundEdges(ctx, "caller", nil, 10); err != nil || len(in) != 0 {
+		t.Fatalf("inbound(caller) = %+v (err %v), want none", in, err)
+	}
+
+	outbound, err := s.BrainOutboundEdges(ctx, "caller", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outbound) != 1 || outbound[0].Dst != "callee" {
+		t.Fatalf("outbound = %+v, want the callee", outbound)
+	}
+
+	// And the normalising read still answers both ways, because the graph view
+	// depends on it. Changing that would break the picture.
+	both, err := s.BrainNeighbors(ctx, "callee", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(both) != 1 || both[0].Src != "callee" || both[0].Dst != "caller" {
+		t.Fatalf("BrainNeighbors changed shape: %+v", both)
+	}
+}
+
+func TestBrainInboundEdges_FiltersByKind(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	if err := s.UpsertBrainEdges(ctx, []BrainEdgeRow{
+		{Src: "a", Dst: "target", Kind: "calls", Weight: 1},
+		{Src: "b", Dst: "target", Kind: "semantic", Weight: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.BrainInboundEdges(ctx, "target", []string{"calls"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Src != "a" {
+		t.Fatalf("got %+v, want only the calls edge", got)
+	}
+}
+
+// TestUpsertBrainEdges_KeepsTheParsersDirectionAndSortsTheRest.
+//
+// The sorting is what made "who calls this" unanswerable: it collapsed A→B and
+// B→A into one row, which is right for a claim that two things belong together
+// and wrong for a claim that one calls the other. This asserts both halves, so
+// re-introducing the old blanket sort fails here rather than silently in an
+// answer nobody can check.
+func TestUpsertBrainEdges_KeepsTheParsersDirectionAndSortsTheRest(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	// "zzz" sorts after "aaa", so the old code would have stored this
+	// backwards and the inbound read would find nothing.
+	if err := s.UpsertBrainEdges(ctx, []BrainEdgeRow{
+		{Src: "zzz-caller", Dst: "aaa-callee", Kind: "calls", Weight: 1},
+		{Src: "zzz-one", Dst: "aaa-two", Kind: "semantic", Weight: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	callers, err := s.BrainInboundEdges(ctx, "aaa-callee", []string{"calls"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers) != 1 || callers[0].Src != "zzz-caller" {
+		t.Fatalf("callers = %+v — the parser's direction was sorted away", callers)
+	}
+
+	// The symmetric kind keeps the old treatment: stored one way round, so the
+	// same pair found from either end is still one row.
+	sym, err := s.BrainOutboundEdges(ctx, "aaa-two", []string{"semantic"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sym) != 1 {
+		t.Fatalf("semantic edge = %+v, want it normalised to one row", sym)
+	}
+}
+
+func TestDirectedEdgeKind_NamesThePartsOfTheGraphWithArrows(t *testing.T) {
+	for _, kind := range []string{"calls", "imports", "inherits", "structural"} {
+		if !DirectedEdgeKind(kind) {
+			t.Errorf("%q should be directed", kind)
+		}
+	}
+	for _, kind := range []string{"semantic", "tag"} {
+		if DirectedEdgeKind(kind) {
+			t.Errorf("%q is a claim that two things belong together, not an arrow", kind)
+		}
+	}
+}
+
+// --- the three ways a word that is in the graph used to be declared absent ---
+
+// An empty project path means "everywhere", the way it already did for the
+// graph picture. It used to mean "the nodes belonging to no project", of which
+// a real store has none — so the console's opening state searched an empty set
+// and reported that the graph had no vocabulary for anything at all.
+func TestSearchBrainNodes_NoProjectMeansEveryProject(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	for _, n := range []BrainNodeRow{
+		node("mine", "/p", "note", "mine"),
+		node("theirs", "/other", "note", "theirs"),
+	} {
+		if err := s.UpsertBrainNode(ctx, n); err != nil {
+			t.Fatalf("upsert %s: %v", n.ID, err)
+		}
+	}
+
+	got, err := s.SearchBrainNodes(ctx, "", "alpha", 10)
+	if err != nil {
+		t.Fatalf("SearchBrainNodes: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("an unscoped search returned %d nodes, want both", len(got))
+	}
+}
+
+// FTS5 splits on non-alphanumerics and nothing else, so a compound name is one
+// token and the word inside it is unreachable through the index. It is still a
+// word this graph contains, and a search box that cannot find it is the bug.
+func TestSearchBrainNodes_FindsAWordInsideACompoundName(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	n := node("n1", "/p", "symbol", "internal/api/handlers.go::handleListCodingTasks")
+	n.Title = "handleListCodingTasks"
+	n.Assessment = ""
+	n.Body = ""
+	n.Tags = nil
+	n.Aliases = nil
+	if err := s.UpsertBrainNode(ctx, n); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	for _, word := range []string{"handle", "coding", "tasks"} {
+		got, err := s.SearchBrainNodes(ctx, "/p", word, 5)
+		if err != nil {
+			t.Fatalf("SearchBrainNodes(%q): %v", word, err)
+		}
+		if len(got) != 1 {
+			t.Errorf("%q found %d nodes, want the symbol whose name contains it", word, len(got))
+		}
+	}
+}
+
+// The vocabulary check is what decides whether a question is worth running.
+// It reads the index, so it has to agree with the index — including the second
+// look the search itself takes.
+func TestBrainVocabulary_KeepsWhatTheGraphHasAndDropsWhatItDoesNot(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	n := node("n1", "/p", "file", "src/components/seo/OrganizationJsonLd.tsx")
+	n.Title = "OrganizationJsonLd structured data component"
+	n.Assessment = "Emits the popover-free JSON-LD block."
+	n.Body = ""
+	n.Tags = nil
+	n.Aliases = nil
+	if err := s.UpsertBrainNode(ctx, n); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	got, err := s.BrainVocabulary(ctx, "/p", []string{
+		"structured",   // a plain word in the title
+		"popover",      // only in the assessment — the field the old check ignored
+		"organization", // the front of a compound name
+		"kuantum",      // genuinely absent
+	})
+	if err != nil {
+		t.Fatalf("BrainVocabulary: %v", err)
+	}
+	want := map[string]bool{"structured": true, "popover": true, "organization": true}
+	for _, w := range got {
+		if !want[w] {
+			t.Errorf("kept %q, which this graph does not contain", w)
+		}
+		delete(want, w)
+	}
+	for w := range want {
+		t.Errorf("dropped %q, which this graph does contain", w)
 	}
 }

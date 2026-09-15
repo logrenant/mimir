@@ -24,6 +24,20 @@ import (
 // itself".
 var ErrBudgetSpent = errors.New("coderunner: the token budget is spent")
 
+// WorkerSlot is the key a worker-lane pause is held under.
+//
+// The account lane holds a pause per credential slot, because that is what runs
+// out: two runs sharing one login share its rate limit. A worker-lane job holds
+// no such slot — but it is not therefore free of a budget. It spends the
+// daemon's own model identity through internal/llm, and there is exactly one of
+// those, shared by every worker job in the process. So there is exactly one
+// pause for all of them, under this key.
+//
+// It is a wire string: it lands in the rate-limit log's account_id column and
+// is read back by restoreHolds, so it is never renamed. It cannot collide with
+// a real slot id, which is hex from internal/account.
+const WorkerSlot = "worker-lane"
+
 // holdFloor is the shortest pause worth arming a timer for. A reset time that
 // has already passed by the time it is read would otherwise schedule a wake-up
 // in the past, and the pump it triggers would race the run that reported it.
@@ -145,6 +159,26 @@ func (r *Runner) holdSlot(accountID, reason string, until, now time.Time) {
 	}
 }
 
+// slotFor is the pause key a row's work belongs to.
+//
+// Derived from the row rather than passed in, so the account lane's behaviour
+// is bit-for-bit what it was: an account-lane row holds its own slot, exactly
+// as before this key existed.
+func (r *Runner) slotFor(row store.RunRow) string {
+	if r.laneOf(row.Agent) == LaneWorker {
+		return WorkerSlot
+	}
+	return row.AccountID
+}
+
+// ResetFromMessage reads the moment a provider says its budget returns, out of
+// the sentence it said it in.
+//
+// Exported because an Executor has to answer the same question the claude path
+// answers, from the same `…|<unix>` suffix, and there is no reason for two
+// parsers of one CLI's wording.
+func ResetFromMessage(detail string) (time.Time, bool) { return resetFromMessage(detail) }
+
 // hold records a spent budget and pauses the slot it belongs to.
 func (r *Runner) hold(accountID, runID, reason string, until time.Time) {
 	now := time.Now().UTC()
@@ -208,12 +242,21 @@ func (r *Runner) releaseSlot(accountID string) {
 // nobody. And only once per pause — the queue is pumped on every release, so a
 // row per attempt would be a row per unrelated event elsewhere in the daemon.
 func (r *Runner) noteHeld(ctx context.Context, held []string) {
-	queued, err := r.runs.ListQueuedRuns(ctx, 1)
-	if err != nil || len(queued) == 0 {
+	// The head of the queue is not enough any more: it can be a worker-lane
+	// card, which is waiting for nothing at all. Reporting that one as blocked
+	// on a token budget would send the operator to look at a rate limit that
+	// has no bearing on it.
+	queued, err := r.runs.ListQueuedRuns(ctx, 100)
+	if err != nil {
 		return
 	}
-
 	for _, id := range held {
+		waiting, ok := firstWaitingOn(r, queued, id)
+		if !ok {
+			// A pause with nothing queued behind it happened to nobody.
+			continue
+		}
+
 		r.limitsMu.Lock()
 		b, ok := r.held[id]
 		first := ok && !b.noted
@@ -226,14 +269,14 @@ func (r *Runner) noteHeld(ctx context.Context, held []string) {
 		}
 
 		slog.Warn("a queued coding task is waiting for the token budget",
-			"account_id", id, "run_id", queued[0].ID,
+			"account_id", id, "run_id", waiting.ID,
 			"resets_at", b.until.Format(time.RFC3339))
 
 		r.logLimit(store.RateLimitRow{
 			At:        time.Now().UTC(),
 			Phase:     store.RateLimitPhaseDispatch,
 			AccountID: id,
-			RunID:     queued[0].ID,
+			RunID:     waiting.ID,
 			ResetsAt:  b.until,
 			Detail:    "the queue is held: this slot has no tokens left to spend",
 		})
@@ -326,7 +369,7 @@ func (r *Runner) park(row store.RunRow, st *state, reason string, until time.Tim
 		r.finish(row, st, fmt.Errorf("%w: %s", ErrBudgetSpent, reason), transcript)
 	}
 
-	r.hold(row.AccountID, row.ID, reason, until)
+	r.hold(r.slotFor(row), row.ID, reason, until)
 }
 
 // waitingReason is what the parked card says while it waits. It stays on the
@@ -442,4 +485,23 @@ func (r *Runner) heldSlots(slots []account.Account, now time.Time) ([]string, ti
 		}
 	}
 	return held, soonest
+}
+
+// firstWaitingOn is the first queued row this pause is actually holding up.
+//
+// Keyed by the slot, because the two lanes wait on different things: an
+// account-lane card waits on a credential slot, and a worker-lane card waits on
+// the daemon's own model budget. Reporting one as blocked by the other would
+// send the operator to look at a limit that has no bearing on it.
+func firstWaitingOn(r *Runner, queued []store.RunRow, slot string) (store.RunRow, bool) {
+	want := LaneAccount
+	if slot == WorkerSlot {
+		want = LaneWorker
+	}
+	for _, row := range queued {
+		if r.laneOf(row.Agent) == want {
+			return row, true
+		}
+	}
+	return store.RunRow{}, false
 }

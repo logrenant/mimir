@@ -26,6 +26,18 @@ func writeFakeCLI(t *testing.T, name, body string) string {
 	return path
 }
 
+// writeFakeEchoCLI is writeFakeCLI's sibling for the one thing it cannot do:
+// prove what went in on stdin. writeFakeCLI discards stdin by design so a
+// fake's output is fixed; this one hands it back.
+func writeFakeEchoCLI(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	cfg := config.Load()
@@ -378,10 +390,16 @@ func TestRouter_ReasonUsesClaudeAndHasNoFallback(t *testing.T) {
 	}
 }
 
+// Each once — and *every* one.
+//
+// This asserted `want 2`, which was the bug written down as an expectation:
+// `Providers()` walked the class map and the fallback, so the two providers
+// that no class routes to were never listed and never probed. The intent of the
+// test (no duplicates) was always right; the number was the defect.
 func TestRouter_ProvidersListsEachOnce(t *testing.T) {
 	got := NewRouter(testConfig(t)).Providers()
-	if len(got) != 2 {
-		t.Fatalf("Providers() = %d entries, want 2", len(got))
+	if len(got) != 4 {
+		t.Fatalf("Providers() = %d entries, want 4 (agy, claude, gemini, ollama)", len(got))
 	}
 	seen := map[string]bool{}
 	for _, p := range got {

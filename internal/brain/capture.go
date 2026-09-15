@@ -94,6 +94,16 @@ func (c *Core) pass(ctx context.Context, list func(context.Context) ([]string, e
 		if ctx.Err() != nil {
 			return
 		}
+		// A project whose folder is gone is not captured. The transcripts
+		// outlive the directory — they live under ~/.claude/projects and are
+		// keyed by the path as it was — so without this a repository that was
+		// renamed or moved went on being re-recorded under its old name every
+		// five minutes, and forgetting it would not have stuck. The scan has
+		// asked this question since it was written (discover.go); the capture
+		// never did.
+		if !OnDisk(p) {
+			continue
+		}
 		stats, err := c.CaptureProject(ctx, p, deps)
 		if err != nil && ctx.Err() == nil {
 			log.Warn("brain: capture failed", "project", p, "error", err)

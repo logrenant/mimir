@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"go.uber.org/goleak"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/crawl"
 	"github.com/logrenant/mimir/internal/refine"
 	"github.com/logrenant/mimir/internal/search"
+	"go.uber.org/goleak"
 )
 
 func TestMain(m *testing.M) {
@@ -79,15 +79,15 @@ type fakeRefiner struct {
 	out   map[string]refine.Output
 	errs  map[string]error
 	delay time.Duration
-	
-	active   int32
+
+	active    int32
 	maxActive int32
 }
 
 func (f *fakeRefiner) Distil(ctx context.Context, in refine.Input) (refine.Output, error) {
 	cur := atomic.AddInt32(&f.active, 1)
 	defer atomic.AddInt32(&f.active, -1)
-	
+
 	for {
 		old := atomic.LoadInt32(&f.maxActive)
 		if cur <= old || atomic.CompareAndSwapInt32(&f.maxActive, old, cur) {

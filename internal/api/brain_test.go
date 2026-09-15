@@ -74,7 +74,7 @@ type fakeGraphStore struct {
 	versionLimit int
 }
 
-func (f *fakeGraphStore) BrainGraphIDs(_ context.Context, projectPath string, limit int) ([]store.BrainNodeDegree, error) {
+func (f *fakeGraphStore) BrainGraphIDs(_ context.Context, projectPath string, limit int, kinds []string) ([]store.BrainNodeDegree, error) {
 	f.lastPath = projectPath
 	f.limit = limit
 	if limit < len(f.ranked) {

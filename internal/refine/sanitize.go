@@ -18,7 +18,7 @@ func sanitizePage(md string, byteBudget int) (string, bool) {
 	for _, line := range lines {
 		tLine := strings.TrimSpace(line)
 		tLower := strings.ToLower(tLine)
-		
+
 		// Drop extremely common boilerplate exact matches
 		if tLower == "accept cookies" || tLower == "privacy policy" || tLower == "terms of service" {
 			continue

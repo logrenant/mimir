@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -238,5 +239,147 @@ func TestProbe_ReportsANonZeroExitAsAStatus(t *testing.T) {
 	}
 	if !strings.Contains(status.Error, "keychain locked") {
 		t.Errorf("the CLI's own reason should survive: %+v", status)
+	}
+}
+
+// statusStub writes a stand-in CLI that answers `auth status` with the given
+// JSON and records any `auth logout` it is asked to perform.
+//
+// The real CLI talks to the keychain; what these tests have to prove is which
+// of the three answers Restore acts on, and whether the slot survives it.
+func statusStub(t *testing.T, dir, statusJSON string, exitCode int) (cli, logoutMarker string) {
+	t.Helper()
+
+	logoutMarker = filepath.Join(dir, "logout-ran")
+	cli = filepath.Join(dir, "fake-claude.sh")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = auth ] && [ \"$2\" = logout ]; then : > " + logoutMarker + "; exit 0; fi\n" +
+		"if [ \"$1\" = auth ] && [ \"$2\" = status ]; then printf %s '" + statusJSON + "'; exit " +
+		strconv.Itoa(exitCode) + "; fi\nexit 0\n"
+	if err := os.WriteFile(cli, []byte(script), 0o700); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return cli, logoutMarker
+}
+
+// The point of the whole change: a login made once is still there at the next
+// launch. Restore keeps the slot and writes the row back even when the database
+// is the thing that was lost — record is idempotent by directory, and the
+// keychain is the authority on whether there is anything to record.
+func TestRestore_KeepsASlotTheKeychainStillBacks(t *testing.T) {
+	tmp := t.TempDir()
+	slot := filepath.Join(tmp, "claude-session")
+	if err := os.MkdirAll(slot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cli, logoutMarker := statusStub(t, tmp, `{"loggedIn":true,"email":"a@b.c"}`, 0)
+
+	r := NewRegistry(openTestStore(t), slot, cli)
+	acct, ok, err := r.Restore(context.Background())
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if !ok {
+		t.Fatal("a slot the keychain still backs should come back connected")
+	}
+	if acct.ConfigDir != slot {
+		t.Errorf("ConfigDir: got %q, want %q", acct.ConfigDir, slot)
+	}
+	if _, err := os.Stat(slot); err != nil {
+		t.Errorf("the slot directory should have survived: %v", err)
+	}
+	if _, err := os.Stat(logoutMarker); !os.IsNotExist(err) {
+		t.Error("Restore signed a live login out")
+	}
+}
+
+// A clean "nobody is signed in here" is the one answer that earns a full Reset:
+// the directory is a handle to nothing, and a row behind it would advertise
+// capacity the keychain does not back.
+func TestRestore_CleansUpWhenTheSlotIsEmpty(t *testing.T) {
+	tmp := t.TempDir()
+	slot := filepath.Join(tmp, "claude-session")
+	if err := os.MkdirAll(slot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cli, _ := statusStub(t, tmp, `{"loggedIn":false}`, 0)
+
+	r := NewRegistry(openTestStore(t), slot, cli)
+	if _, err := r.record(context.Background()); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	_, ok, err := r.Restore(context.Background())
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if ok {
+		t.Error("an empty slot should not come back connected")
+	}
+	if _, err := os.Stat(slot); !os.IsNotExist(err) {
+		t.Errorf("the slot directory should have gone: %v", err)
+	}
+	accounts, err := r.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Errorf("the row survived: %+v", accounts)
+	}
+}
+
+// "We could not ask" is not "there is nobody there". A missing CLI or a locked
+// keychain must not cost the operator their login: the directory is the only
+// thing that can address the keychain entry again, so removing it here would
+// orphan a perfectly good login for good. The row still goes, because capacity
+// has to stay honest.
+func TestRestore_KeepsTheSlotWhenTheProbeCannotAnswer(t *testing.T) {
+	tmp := t.TempDir()
+	slot := filepath.Join(tmp, "claude-session")
+	if err := os.MkdirAll(slot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cli, logoutMarker := statusStub(t, tmp, "keychain locked", 1)
+
+	r := NewRegistry(openTestStore(t), slot, cli)
+	if _, err := r.record(context.Background()); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	_, ok, err := r.Restore(context.Background())
+	if err == nil {
+		t.Fatal("an unreadable slot should be reported, not passed over in silence")
+	}
+	if ok {
+		t.Error("an unreadable slot should not come back connected")
+	}
+	if _, err := os.Stat(slot); err != nil {
+		t.Errorf("the slot directory should have survived an unreadable probe: %v", err)
+	}
+	if _, err := os.Stat(logoutMarker); !os.IsNotExist(err) {
+		t.Error("Restore signed out over a probe that never answered")
+	}
+	accounts, err := r.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Errorf("the row should have gone, capacity has to stay honest: %+v", accounts)
+	}
+}
+
+// The first-launch path, and the one after a sign-out: no directory, so there is
+// nothing to probe and no subprocess worth spawning to be told so.
+func TestRestore_ReportsNotConnectedWithNoSlotAtAll(t *testing.T) {
+	tmp := t.TempDir()
+	cli, _ := statusStub(t, tmp, `{"loggedIn":true}`, 0)
+
+	r := NewRegistry(openTestStore(t), filepath.Join(tmp, "claude-session"), cli)
+	_, ok, err := r.Restore(context.Background())
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if ok {
+		t.Error("nothing was ever connected here")
 	}
 }

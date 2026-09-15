@@ -8,9 +8,9 @@ import (
 
 func TestParseFloatLoose(t *testing.T) {
 	cases := []struct {
-		in      string
-		want    float64
-		wantOk  bool
+		in     string
+		want   float64
+		wantOk bool
 	}{
 		{"$1,299.99", 1299.99, true},
 		{"4.5 out of 5 stars", 4.5, true},

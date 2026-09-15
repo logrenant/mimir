@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -58,7 +59,48 @@ type Config struct {
 	// hand-off to a paid tier — it is the same free login, spending a bucket
 	// that was already full. Ordered cheapest first; an empty slice is no
 	// chain, and the distil tier fails loudly exactly as before.
-	AgyCLIPath        string
+	AgyCLIPath string
+
+	// GeminiCLIPath / GeminiModel are Google's `gemini` CLI as a provider.
+	//
+	// Every flag the provider passes was read off the installed binary
+	// (task-93), and the one that shaped the design is the flag that is *not*
+	// there: `gemini` has no `--json-schema`, so it cannot serve the distil
+	// tier's schema-carrying calls and says so through its Capabilities.
+	//
+	// The model tag is pinned (SD-5). It is a 2.5 tag rather than a newer one
+	// because that is what this CLI's own `--help` and this machine's install
+	// could be checked against; bumping it is its own task.
+	GeminiCLIPath string
+	GeminiModel   string
+
+	// OllamaCLIPath / OllamaModel / OllamaTimeout are the local model runner.
+	//
+	// It is the only provider that costs nothing and needs no login, which
+	// makes it the right answer for the work an operator would otherwise think
+	// twice about — and the wrong one for anything needing a schema.
+	//
+	// The model is *not* pinned the way the others are, and that is not a
+	// relaxation of SD-5: these are files the operator pulled, so the shipped
+	// value is a starting point and `Ollama.Models` reports what is actually
+	// on the machine. The timeout is its own field because a local model on
+	// consumer hardware is slower than a hosted one, not faster.
+	OllamaCLIPath string
+	OllamaModel   string
+	OllamaTimeout time.Duration
+
+	// LLMProbeTimeout bounds "does this login work" — one trivial completion
+	// per connection, asked because an operator pressed a button and is
+	// watching.
+	//
+	// Its own constant rather than the provider's own timeout, and the
+	// measurement is why: a probe that borrowed `AgyPrintTimeout` (240s) made
+	// the settings screen spin for **four minutes** before it said anything.
+	// That is not a slow answer, it is no answer — the operator has already
+	// concluded the button is broken. A login either responds quickly or is not
+	// usable for interactive work, so the question is asked with a deadline
+	// that matches how long somebody will actually wait.
+	LLMProbeTimeout   time.Duration
 	AgyPrintTimeout   time.Duration
 	DistillProvider   string
 	DistillModel      string
@@ -180,6 +222,26 @@ type Config struct {
 	// ask for the whole machine and get an answer measured in megabytes.
 	BrainGraphDefaultNodes int
 	BrainGraphMaxNodes     int
+
+	// BrainSymbolsPerProject caps the structural layer (internal/graphify).
+	// A symbol graph is an order of magnitude larger than a file graph — one
+	// repository is thousands of functions — and without a ceiling one big
+	// project would fill the whole picture. Symbols are kept most-connected
+	// first, so what a cap removes is leaves.
+	//
+	// A machine property, not the operator's: it is a ceiling on what the
+	// store will hold and the canvas can draw, which is the same category as
+	// BrainGraphMaxNodes and the opposite of the scan policy (SD-1).
+	BrainSymbolsPerProject int
+
+	// BrainStructuralTimeout bounds one project's AST pass. Graphify parses a
+	// few thousand files a second and this is generous; what it is really for
+	// is an interpreter that has gone away, which must not hold the sweep.
+	BrainStructuralTimeout time.Duration
+
+	// BrainStructuralPython is the interpreter asked to import graphify.
+	// Empty means graphify.DefaultPython.
+	BrainStructuralPython string
 
 	// GitHubToken is the second operator-provisioned credential, and it earns
 	// that category the same way PlacesAPIKey does: empty is a valid, normal
@@ -308,9 +370,15 @@ type Config struct {
 
 	// ClaudeSessionDir is the credential slot Mimir signs into, and the only
 	// one it spends. It is Mimir's own — not the CLI's default slot and not a
-	// directory under the operator's ~/.claude-accounts — because the app
-	// signs this slot out when it quits, and a reset that reached either of
-	// those would log the operator out of their own terminal.
+	// directory under the operator's ~/.claude-accounts — because "çıkış yap"
+	// signs this slot out, and a reset that reached either of those would log
+	// the operator out of their own terminal.
+	//
+	// The path is stable on purpose, and now load-bearing for more than
+	// isolation: the CLI hashes it to name a keychain entry, so a slot that
+	// keeps its path keeps its login. That is what lets the account survive a
+	// quit — the operator connects once, and account.Restore reconciles what
+	// is left against the keychain at the next launch.
 	ClaudeSessionDir string
 
 	// Project memory (M8). Long-lived per-project context distilled from
@@ -380,6 +448,29 @@ type Config struct {
 	// every file this app writes in the same place.
 	ExportDir string
 
+	// SkillDir is where the operator's own copy of each sub-agent skill lives,
+	// derived beside the store like every other directory here. The bodies are
+	// the operator's writing (internal/skills); only where they sit is ours.
+	SkillDir string
+
+	// MaxConcurrentLeadgenRuns bounds how many lead-gen pipelines run at once,
+	// across the HTTP route and the board card alike. It lives on the pipeline
+	// rather than on either caller so neither can be unbounded.
+	MaxConcurrentLeadgenRuns int
+
+	// MaxConcurrentAgentJobs bounds the worker lane: how many jobs of one
+	// sub-agent that spends no credential slot may be in flight at once. The
+	// account lane has no such number — its capacity is the credential slots
+	// themselves, which is a fact rather than a setting.
+	MaxConcurrentAgentJobs int
+
+	// SkillBodyMaxTokens is the ceiling one skill body may occupy. It is a
+	// budget, not a formatting preference: a skill is attached to a tool
+	// response and counted against that tool's own size budget (SD-7), so a
+	// skill somebody grew by a page would start failing tool calls that used
+	// to work, at the choke-point and far from the edit that caused it.
+	SkillBodyMaxTokens int
+
 	// Lead-gen categorization (Phase 2 / M5). The normalized category
 	// vocabulary and the Google-type rule table are code, in internal/leadgen —
 	// only these three numbers live here.
@@ -433,6 +524,119 @@ type Config struct {
 	LeadsPageDefault int
 	LeadsPageMax     int
 	LeadRunsMax      int
+
+	// Katalog — ürün içeriği (task-85). The CSV side of an e-commerce catalog:
+	// read a Shopify/IKAS export, learn the brand's own markup vocabulary from
+	// it, and write it back losslessly.
+	//
+	// CatalogCSVMaxBytes is the one route in this system whose payload is a
+	// document rather than a prompt, so it has a row in internal/api's
+	// bodyLimits table rather than relaxing the cap for every route.
+	// CatalogMaxProductsPerImport is a ceiling on what one file may hold: an
+	// import larger than this is a catalog nobody reviews product by product,
+	// which is the only way this tool is used.
+	CatalogCSVMaxBytes          int64
+	CatalogMaxProductsPerImport int
+	CatalogProductsPageMax      int
+	// CatalogOutputsImportMax bounds how many imports the cross-import outputs
+	// listing composes draft keys for. It is a ceiling on one query's inline
+	// key table, not a knob: an operator never sees it and nothing reads it
+	// from the environment.
+	CatalogOutputsImportMax int
+
+	// CatalogBrandSampleSize is how many descriptions the voice distil sees.
+	// The vocabulary half reads every description and costs nothing; only this
+	// half costs a model call, so only this half is sampled.
+	//
+	// CatalogSEOTitleMaxChars / CatalogSEODescMaxChars are what a search result
+	// actually shows before it truncates. They are validation bounds, not
+	// suggestions: a rewrite that overruns them loses that field rather than
+	// shipping a title nobody will read the end of.
+	CatalogBrandSampleSize  int
+	CatalogSEOTitleMaxChars int
+	CatalogSEODescMaxChars  int
+
+	// CatalogSampleChars is how much of a column's first value the mapping
+	// form shows so the operator can tell two similarly named columns apart.
+	// Long enough to recognise a description, short enough that thirty-seven
+	// of them are still a form rather than a page of prose.
+	CatalogSampleChars int
+
+	// CatalogMaxConcurrentProducts bounds the fan-out of a bulk rewrite (SD-3).
+	// It is deliberately small: each product is a search, a crawl, a refine and
+	// a reason call, and the shared crawl politeness interval is what actually
+	// paces the work — a wider limit would only queue more requests behind the
+	// same door.
+	//
+	// CatalogResearchSources is how many competitor pages one product's
+	// research reads.
+	CatalogMaxConcurrentProducts int
+	CatalogResearchSources       int
+
+	// CatalogRewriteMaxTokens is the ceiling on one product's rewritten copy.
+	CatalogRewriteMaxTokens int
+
+	// CatalogResearchVersion and CatalogContentVersion are two cache-key halves
+	// and they are separate on purpose — the brand hash is composed into the
+	// draft key and deliberately absent from the research key. An operator who
+	// corrects the brand voice and re-runs gets every description rewritten and
+	// no competitor research thrown away: that research is about the market,
+	// not about how this store writes, and paying for it twice is the cost this
+	// whole layer exists to avoid.
+	CatalogResearchVersion string
+
+	// CatalogVoiceTimeout bounds the one model call an import makes.
+	//
+	// It is deliberately far shorter than RefineTimeout, which every other
+	// llm caller inherits. That budget was sized for distilling a page in the
+	// background; this call sits inside an HTTP request an operator is watching
+	// after dropping a file, and measured against a real CLI it ran for
+	// minutes. The voice is optional by design — a rejected one costs the voice
+	// and nothing else (SD-6) — so a bound that gives up and says so is
+	// strictly better than one that holds the upload open. Rescanning is a
+	// route (POST /catalog/imports/{id}/brand/rescan).
+	CatalogVoiceTimeout time.Duration
+
+	// CatalogBrandVersion is a cache-key half, like LeadgenGapVersion: it
+	// invalidates the derived brand kit and nothing else. Editing the voice
+	// prompt without bumping it serves a brand profile derived from a prompt
+	// that no longer exists.
+	//
+	// CatalogContentVersion is the other half of the same idea and covers the
+	// rewrite prompt. The two are separate because they are tuned
+	// independently: correcting how a brand's voice is *read* should not throw
+	// away every description already written under a rewrite prompt that did
+	// not change. The draft key composes this with the brand hash, the model
+	// selection and the skill version — see internal/catalog.DraftVersion.
+	CatalogBrandVersion   string
+	CatalogContentVersion string
+
+	// The language gate (task-107). A rewrite into a target language is checked
+	// deterministically before any model is asked to judge it, for the same
+	// reason DeriveVocabulary makes no model call: a gate that needed a model
+	// would be a gate that opens when the CLI is signed out.
+	//
+	// The two ratios are floors on how much of a field's *letters* belong to
+	// the language it claims to be. They are deliberately loose. A product
+	// listing legitimately carries brand names, model numbers and units in
+	// Latin script inside an Arabic sentence, and a floor tight enough to catch
+	// a half-translated paragraph would also reject "SPF 50 مرطب".
+	CatalogArabicMinLetterRatio  float64
+	CatalogEnglishMinLetterRatio float64
+	// CatalogTashkeelMaxRatio is how much of an Arabic field may be vowel
+	// marks. Commercial Arabic copy is written undiacritised; heavy tashkeel
+	// reads as machine output or as a textbook, and neither is a storefront.
+	CatalogTashkeelMaxRatio float64
+	// CatalogLatinRunMaxRunes is the longest unbroken run of Latin letters
+	// allowed inside a right-to-left field once URLs are set aside. A brand
+	// name passes; a sentence the model left untranslated does not.
+	CatalogLatinRunMaxRunes int
+	// CatalogReviewVersion is a cache-key half like the two above and covers
+	// the native-reviewer pass. It appears in a target language's draft key and
+	// never in the source language's, because the reviewer only ever runs for a
+	// target: a source key that carried it would claim a pass that never
+	// happened.
+	CatalogReviewVersion string
 
 	// The chat archive (task-65). Page bounds only: the archive grows without
 	// limit by design, and these say how much of it one request may carry.
@@ -531,7 +735,18 @@ type LLMProviderChoice struct {
 	// DefaultModel is what this provider runs when the operator picks the
 	// provider and leaves the model alone. It is always one of Models.
 	DefaultModel string              `json:"default_model"`
-	Models       []CodingModelChoice `json:"models"`
+	Models       []CodingModelChoice `json:"models,omitempty"`
+	// Discovered means this provider's models are whatever the machine holds,
+	// not a vendor's catalogue — so `Models` is empty and the daemon asks the
+	// provider at runtime (`llm.ModelLister`).
+	//
+	// It exists for exactly one case and the distinction is real: `claude` and
+	// `gemini` offer what their vendor offers, which is a decision this
+	// repository makes and pins (SD-5). `ollama` offers what somebody
+	// downloaded, and a pinned list of those would be a list of *another*
+	// machine's files — correct nowhere, including here the moment a model is
+	// pulled or removed.
+	Discovered bool `json:"discovered,omitempty"`
 }
 
 // HasLLMModel reports whether (provider, model) is a pair the daemon will run.
@@ -549,6 +764,20 @@ func (c Config) HasLLMModel(provider, model string) bool {
 		if model == "" {
 			return true
 		}
+		// A discovered provider has no list to check against, so the check is
+		// on the *shape* of the name instead.
+		//
+		// This is a narrower guarantee than the table's and it is worth being
+		// explicit about why it is still enough. The allow-list's argument is
+		// that both names become argv — but `runCLI` uses `exec.Command`, so
+		// there is no shell, the binary and every flag are fixed by the
+		// provider, and a model name lands as one argument in a known position.
+		// What a client could achieve with an arbitrary name is "model not
+		// found", not a different command. The character class rules out the
+		// rest: no spaces, no separators, nothing that could be read as a flag.
+		if p.Discovered {
+			return isModelName(model)
+		}
 		for _, m := range p.Models {
 			if m.ID == model {
 				return true
@@ -557,6 +786,29 @@ func (c Config) HasLLMModel(provider, model string) bool {
 		return false
 	}
 	return false
+}
+
+// IsModelName is the exported form, for `internal/connections`: the allow-list
+// moved up a level when connections became the unit of routing, and the shape
+// check moved with it rather than being written a second time.
+func IsModelName(s string) bool { return isModelName(s) }
+
+// isModelName is the shape of an Ollama tag: `qwen3:8b`, `gpt-oss:20b`,
+// `nomic-embed-text:latest`. Letters, digits, and the four separators those
+// names use — and nothing that could begin a flag.
+func isModelName(s string) bool {
+	if s == "" || len(s) > 128 || strings.HasPrefix(s, "-") {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == ':' || r == '.' || r == '_' || r == '-' || r == '/':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // LLMDefaultModel is the model a provider runs when none was named.
@@ -590,6 +842,12 @@ func Load() Config {
 		ClaudeCLIPath:     "claude",
 		ClaudeModel:       "claude-haiku-4-5-20251001",
 		AgyCLIPath:        "agy",
+		GeminiCLIPath:     "gemini",
+		GeminiModel:       "gemini-2.5-flash",
+		OllamaCLIPath:     "ollama",
+		OllamaModel:       "qwen3:8b",
+		OllamaTimeout:     180 * time.Second,
+		LLMProbeTimeout:   25 * time.Second,
 		AgyPrintTimeout:   240 * time.Second,
 		DistillProvider:   "agy",
 		// -low, reversing the -high this held until 2026-09-03. The old note
@@ -625,7 +883,7 @@ func Load() Config {
 		LLMProviders: []LLMProviderChoice{
 			{
 				ID:           "agy",
-				Label:        "Antigravity (agy) — ücretsiz",
+				Label:        "Antigravity (agy)",
 				DefaultModel: "gemini-3.8-flash-low",
 				Models: []CodingModelChoice{
 					{ID: "gemini-3.8-flash-high", Label: "Gemini 3.8 Flash (High)"},
@@ -639,8 +897,32 @@ func Load() Config {
 				},
 			},
 			{
+				// Installed on this machine and signed out on it, which is a
+				// state the table cannot express and `llm.Discover` reports.
+				// Listed anyway: an allow-list is what the daemon will *run*,
+				// and whether the login works is a different question asked at
+				// a different price.
+				ID:           "gemini",
+				Label:        "Gemini CLI",
+				DefaultModel: "gemini-2.5-flash",
+				Models: []CodingModelChoice{
+					{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash"},
+					{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro"},
+				},
+			},
+			{
+				// The one provider whose model list is empty on purpose: these
+				// are files the operator pulled, so `llm.Ollama.Models` reports
+				// what is actually on the machine and a pinned list here would
+				// be a list of somebody else's.
+				ID:           "ollama",
+				Label:        "Ollama",
+				DefaultModel: "qwen3:8b",
+				Discovered:   true,
+			},
+			{
 				ID:           "claude",
-				Label:        "Claude Code — kotanızdan harcar",
+				Label:        "Claude Code",
 				DefaultModel: "claude-haiku-4-5-20251001",
 				Models: []CodingModelChoice{
 					{ID: "claude-opus-5", Label: "Opus 5"},
@@ -721,6 +1003,8 @@ func Load() Config {
 		BrainScanMaxPDFBytes:     32 << 20,
 		BrainGraphDefaultNodes:   1500,
 		BrainGraphMaxNodes:       3000,
+		BrainSymbolsPerProject:   2000,
+		BrainStructuralTimeout:   5 * time.Minute,
 
 		EcommerceLookupMaxTokens:   400,
 		TikTokProfileMaxTokens:     400,
@@ -816,6 +1100,28 @@ func Load() Config {
 		ContactModelMaxChars:  12000,
 		ContactModelMaxTokens: 200,
 
+		// 600 tokens is roughly a page and a half of Markdown. Wide enough for
+		// a skill to state a sequence and its prohibitions, narrow enough that
+		// attaching one to a tool response does not eat that tool's budget.
+		SkillBodyMaxTokens: 600,
+
+		// How many jobs of one worker-lane sub-agent may run at once.
+		//
+		// Two, not one: a worker job is Go code and HTTP calls with nothing to
+		// contend over — no shared login, no shared session, no token budget —
+		// so the "one run per identity" rule that bounds the account lane says
+		// nothing here. Two rather than more because the work behind it is
+		// still network-bound against somebody else's server, and the fan-out
+		// inside a single job is already bounded (SD-3).
+		MaxConcurrentAgentJobs: 2,
+
+		// How many full lead-gen pipelines may be in flight at once, counted
+		// across every entry point rather than per caller. One, because a
+		// single run already fans out over sixty websites and somebody else's
+		// Maps front end; a second concurrent run doubles that load on servers
+		// that are not ours, for a queue the operator cannot see.
+		MaxConcurrentLeadgenRuns: 1,
+
 		LeadgenCategoryVersion:   "leadgen-v1",
 		LeadgenBatchSize:         20,
 		LeadgenClassifyMaxTokens: 800,
@@ -839,6 +1145,35 @@ func Load() Config {
 		LeadsPageDefault: 200,
 		LeadsPageMax:     1000,
 		LeadRunsMax:      100,
+
+		// A Shopify export of a few thousand products with HTML descriptions
+		// runs to a handful of megabytes; 32 MiB is room for a large catalog
+		// and still far from a memory sink.
+		CatalogCSVMaxBytes:          32 << 20,
+		CatalogMaxProductsPerImport: 5000,
+		CatalogProductsPageMax:      500,
+		CatalogOutputsImportMax:     200,
+
+		CatalogMaxConcurrentProducts: 2,
+		CatalogResearchSources:       3,
+		CatalogRewriteMaxTokens:      900,
+		CatalogResearchVersion:       "research-v1",
+
+		CatalogSampleChars: 120,
+
+		CatalogBrandSampleSize:  12,
+		CatalogVoiceTimeout:     45 * time.Second,
+		CatalogSEOTitleMaxChars: 60,
+		CatalogSEODescMaxChars:  155,
+
+		CatalogBrandVersion:   "brand-v1",
+		CatalogContentVersion: "content-v1",
+
+		CatalogArabicMinLetterRatio:  0.60,
+		CatalogEnglishMinLetterRatio: 0.90,
+		CatalogTashkeelMaxRatio:      0.05,
+		CatalogLatinRunMaxRunes:      24,
+		CatalogReviewVersion:         "review-v1",
 
 		ChatSessionsMax:   200,
 		ChatTurnsPage:     100,
@@ -923,6 +1258,7 @@ func Load() Config {
 		c.MapScrapeComposeFile = val
 	}
 	c.AttachmentDir = filepath.Join(filepath.Dir(c.StorePath), "attachments")
+	c.SkillDir = filepath.Join(filepath.Dir(c.StorePath), "skills")
 	// Mimir's own credential slot, derived beside the store like every other
 	// directory here rather than configured (SD-1). The CLI hashes this path
 	// into a keychain entry name, so its location is the whole handle: no
@@ -1035,6 +1371,12 @@ func (c Config) Validate() error {
 	if c.BrainScanPDFMinChars <= 0 || c.BrainScanPDFMaxChars <= c.BrainScanPDFMinChars {
 		return errors.New("BrainScanPDFMinChars must be > 0 and below BrainScanPDFMaxChars")
 	}
+	if c.BrainSymbolsPerProject <= 0 {
+		return errors.New("BrainSymbolsPerProject must be > 0")
+	}
+	if c.BrainStructuralTimeout <= 0 {
+		return errors.New("BrainStructuralTimeout must be > 0")
+	}
 	if c.BrainGraphDefaultNodes <= 0 || c.BrainGraphMaxNodes < c.BrainGraphDefaultNodes {
 		return errors.New("BrainGraphDefaultNodes must be > 0 and not above BrainGraphMaxNodes")
 	}
@@ -1108,7 +1450,19 @@ func (c Config) Validate() error {
 	// a picker whose default is not in its own list is a picker that produces
 	// a request the daemon then rejects.
 	for _, prov := range c.LLMProviders {
-		if prov.ID == "" || len(prov.Models) == 0 {
+		if prov.ID == "" {
+			return errors.New("every LLMProviders entry needs an ID")
+		}
+		// A discovered provider is exempt from the list check and only from
+		// that: it still needs a default, because a picker with nothing
+		// selected has to be able to say what a run will use.
+		if prov.Discovered {
+			if prov.DefaultModel == "" {
+				return errors.New("discovered LLMProviders entry " + prov.ID + " needs a default model")
+			}
+			continue
+		}
+		if len(prov.Models) == 0 {
 			return errors.New("every LLMProviders entry needs an ID and at least one model")
 		}
 		if !c.HasLLMModel(prov.ID, prov.DefaultModel) {
@@ -1185,6 +1539,18 @@ func (c Config) Validate() error {
 	if c.ContactModelMaxChars <= 0 || c.ContactModelMaxTokens <= 0 {
 		return errors.New("the contact-enrichment bounds must be > 0")
 	}
+	if c.SkillDir == "" {
+		return errors.New("SkillDir is empty")
+	}
+	if c.SkillBodyMaxTokens <= 0 {
+		return errors.New("SkillBodyMaxTokens must be positive")
+	}
+	if c.MaxConcurrentAgentJobs <= 0 {
+		return errors.New("MaxConcurrentAgentJobs must be positive")
+	}
+	if c.MaxConcurrentLeadgenRuns <= 0 {
+		return errors.New("MaxConcurrentLeadgenRuns must be positive")
+	}
 	if c.ExportDir == "" {
 		return errors.New("ExportDir is empty")
 	}
@@ -1220,6 +1586,34 @@ func (c Config) Validate() error {
 	}
 	if c.LeadsPageDefault <= 0 || c.LeadsPageMax < c.LeadsPageDefault || c.LeadRunsMax <= 0 {
 		return errors.New("lead ledger page bounds must be > 0 with Max >= Default")
+	}
+	if c.CatalogCSVMaxBytes <= 0 || c.CatalogMaxProductsPerImport <= 0 ||
+		c.CatalogProductsPageMax <= 0 || c.CatalogOutputsImportMax <= 0 {
+		return errors.New("catalog import bounds must be > 0")
+	}
+	if c.CatalogBrandSampleSize <= 0 || c.CatalogSEOTitleMaxChars <= 0 || c.CatalogSEODescMaxChars <= 0 {
+		return errors.New("catalog brand and SEO bounds must be > 0")
+	}
+	if c.CatalogVoiceTimeout <= 0 {
+		return errors.New("CatalogVoiceTimeout must be > 0")
+	}
+	if c.CatalogArabicMinLetterRatio <= 0 || c.CatalogArabicMinLetterRatio > 1 ||
+		c.CatalogEnglishMinLetterRatio <= 0 || c.CatalogEnglishMinLetterRatio > 1 ||
+		c.CatalogTashkeelMaxRatio <= 0 || c.CatalogTashkeelMaxRatio > 1 {
+		return errors.New("catalog language ratios must be in (0,1]")
+	}
+	if c.CatalogLatinRunMaxRunes <= 0 {
+		return errors.New("CatalogLatinRunMaxRunes must be > 0")
+	}
+	if c.CatalogReviewVersion == "" {
+		return errors.New("CatalogReviewVersion must be set")
+	}
+	if c.CatalogBrandVersion == "" || c.CatalogContentVersion == "" || c.CatalogResearchVersion == "" {
+		return errors.New("catalog cache-version constants must not be empty")
+	}
+	if c.CatalogMaxConcurrentProducts <= 0 || c.CatalogResearchSources <= 0 ||
+		c.CatalogRewriteMaxTokens <= 0 {
+		return errors.New("catalog rewrite bounds must be > 0")
 	}
 	if c.ChatSessionsMax <= 0 || c.ChatTurnsPage <= 0 || c.ChatTurnsMax < c.ChatTurnsPage {
 		return errors.New("chat archive page bounds must be > 0 with Max >= page")

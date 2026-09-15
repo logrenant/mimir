@@ -49,6 +49,11 @@ type Deps struct {
 	// read. Satisfied by *store.Store; nil simply means every scan re-distils,
 	// which is correct but expensive.
 	BrainHashes brain.HashStore
+
+	// Catalog is the product content studio, read-only from here. Nil on
+	// cmd/mimir-mcp, which has no store: the two tools it powers would have
+	// nothing to list.
+	Catalog CatalogReader
 }
 
 // RegisterAll registers the canonical Mimir tool set on reg.
@@ -103,6 +108,24 @@ func RegisterAll(reg *mcp.Registry, cfg config.Config, d Deps) error {
 			NewBrainQueryNodes(cfg, d.Brain),
 			NewBrainRelated(cfg, d.Brain),
 			NewBrainScanRepo(cfg, d.Brain, d.BrainHashes),
+
+			// The graph read as a graph. Registered with the rest of Brain
+			// because they answer over the same edges — a machine with no
+			// knowledge base has nothing for them to walk.
+			NewGraphQuery(cfg, d.Brain),
+			NewGraphAffected(cfg, d.Brain),
+			NewGraphPath(cfg, d.Brain),
+			NewGraphHubs(cfg, d.Brain),
+		)
+	}
+
+	// The catalog. Availability follows the studio, which follows the store —
+	// a catalog with nowhere to keep an import is not a degraded catalog, it is
+	// none, exactly as with the memory and the knowledge base above.
+	if d.Catalog != nil {
+		toolSet = append(toolSet,
+			NewCatalogProducts(cfg, d.Catalog),
+			NewCatalogProduct(cfg, d.Catalog),
 		)
 	}
 

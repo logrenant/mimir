@@ -240,15 +240,35 @@ func (s *Store) SearchEpisodes(ctx context.Context, projectPath, query string, l
 // alphanumeric terms, each quoted as a literal, joined with OR. Ranking by
 // bm25 then does the work that boolean precision would have.
 func ftsQuery(raw string) string {
+	return ftsTerms(raw, false)
+}
+
+// ftsPrefixQuery is the same expression with every term opened at its end.
+//
+// It exists for the brain index, where the thing being searched is code. The
+// tokeniser splits on non-alphanumerics and nothing else, so `OrganizationJsonLd`
+// is one token — a reader who types "organization" is asking about a symbol
+// that is unmistakably there and is told the graph has never heard of it.
+// A prefix term matches the whole token as well as the opening of it, so this
+// is the exact query plus the compounds it begins, and nothing invented.
+//
+// Memory recall keeps the literal form: an episode is prose, its tokens are
+// already words, and opening them would only add near-misses.
+func ftsPrefixQuery(raw string) string {
+	return ftsTerms(raw, true)
+}
+
+// ftsWords is the term list ftsTerms builds, before it becomes syntax. The
+// substring fallback in brain.go needs the words themselves.
+func ftsWords(raw string) []string {
 	fields := strings.FieldsFunc(raw, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
 
-	terms := make([]string, 0, len(fields))
+	out := make([]string, 0, len(fields))
 	seen := make(map[string]struct{}, len(fields))
 	for _, f := range fields {
-		f = strings.ToLower(f)
-		// Single characters carry no signal and match nearly everything.
+		f = foldTerm(f)
 		if len([]rune(f)) < 2 {
 			continue
 		}
@@ -256,12 +276,40 @@ func ftsQuery(raw string) string {
 			continue
 		}
 		seen[f] = struct{}{}
-		terms = append(terms, `"`+f+`"`)
-		if len(terms) == 24 {
+		out = append(out, f)
+		if len(out) == 24 {
 			break
 		}
 	}
+	return out
+}
+
+func ftsTerms(raw string, prefix bool) string {
+	words := ftsWords(raw)
+	terms := make([]string, 0, len(words))
+	for _, f := range words {
+		term := `"` + f + `"`
+		if prefix {
+			term += "*"
+		}
+		terms = append(terms, term)
+	}
 	return strings.Join(terms, " OR ")
+}
+
+// foldTerm lower-cases a word the way the tokeniser will.
+//
+// FTS5's unicode61 folds case and strips diacritics on the way in, so a term
+// that keeps them is a term that cannot match the text it came from. This
+// matters here rather than in theory: macOS returns decomposed filenames, and
+// a query built from one carries combining marks the index does not have.
+func foldTerm(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, s)
 }
 
 // prefixed qualifies a column list with a table alias, so the shared
@@ -466,6 +514,78 @@ func (s *Store) SetEpisodeTitle(ctx context.Context, key, title string) error {
 	}
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE memory_episodes SET title = ? WHERE key = ?`, title, key); err != nil {
+		return unavailable(err)
+	}
+	return nil
+}
+
+// SourcesMissingArchive names transcripts whose episodes were recorded before
+// the verbatim archive existed.
+//
+// task-65 added the archive and wired it into the ingest, which meant it only
+// ever caught what was ingested afterwards: on this machine one project had two
+// hundred and twenty-two episodes and seventy-three archived turns, and the
+// difference was permanent because nothing ever re-read a transcript it had
+// already finished.
+//
+// The fix is not a new pipeline. Re-reading a transcript is the ingest's normal
+// job; all this has to do is name the files worth re-reading. The episode
+// upsert leaves title, summary, recap_attempts and prompt_version alone, so
+// re-ingesting an episode that has already been summarised costs no model call.
+func (s *Store) SourcesMissingArchive(ctx context.Context, limit int) ([]string, error) {
+	if s == nil || s.db == nil {
+		return nil, unavailable(errors.New("store is not open"))
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	// "This transcript has contributed nothing to the archive", not "this
+	// episode has no turn". The difference is termination: PutChatTurn stores
+	// nothing for an episode with neither a prompt nor a reply — a tool-only
+	// exchange — so per-episode the debt could never be paid off and the same
+	// file would be rewound on every pass forever. Per source it converges: a
+	// transcript that has been re-read has turns, and stops being named.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT e.source_path
+		FROM memory_episodes e
+		WHERE e.source_path <> ''
+		  AND NOT EXISTS (
+		      SELECT 1 FROM chat_sessions s
+		      JOIN chat_turns t ON t.chat_session_id = s.id
+		      WHERE s.source_path = e.source_path
+		  )
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, unavailable(err)
+		}
+		out = append(out, path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return out, nil
+}
+
+// RewindIngest sends the reader back to the start of one transcript.
+//
+// The row is kept rather than deleted so the project it belongs to is not
+// forgotten along with the offset.
+func (s *Store) RewindIngest(ctx context.Context, sourcePath string) error {
+	if s == nil || s.db == nil {
+		return unavailable(errors.New("store is not open"))
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE memory_ingest_state SET byte_offset = 0 WHERE source_path = ?`,
+		sourcePath); err != nil {
 		return unavailable(err)
 	}
 	return nil

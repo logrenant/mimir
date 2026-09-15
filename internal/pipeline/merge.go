@@ -38,7 +38,7 @@ func mergeResults(pages []RefinedPage, gaps []string, maxTokens int) Brief {
 			if seenPoints[norm] {
 				continue
 			}
-			
+
 			// We only count actual content against the budget
 			pointLen := len(line)
 			if approxCharsTotal+pointLen > maxChars && maxChars > 0 {

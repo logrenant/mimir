@@ -1,4 +1,11 @@
-import type { LLMProviderList, OutreachChannel, OutreachRule, SettingsView } from "./daemon";
+import type {
+  LLMAvailability,
+  LLMChoice,
+  LLMProviderList,
+  OutreachChannel,
+  OutreachRule,
+  SettingsView,
+} from "./daemon";
 
 /**
  * The settings screen's decisions, as functions.
@@ -29,9 +36,58 @@ export function isDirty(draft: RuleDraft | undefined): boolean {
 }
 
 /** Whether anything at all is unsaved — what the "leave the page" guard asks. */
-export function anyDirty(drafts: RuleDraft[], settings: ModelDraft): boolean {
-  return drafts.some(isDirty) || settings.provider !== settings.saved.provider ||
-    settings.model !== settings.saved.model;
+/**
+ * The class defaults, mid-edit, beside what is on the daemon.
+ *
+ * They live here rather than as comparisons inside JSX, and that is not tidiness
+ * — it is the direct cause of a shipped bug. `anyDirty` was a tested function in
+ * this file while the class-default comparison was four inline `??` expressions
+ * in `Settings.tsx`, so the save bar armed on one rule and `save()` branched on
+ * another. Editing only a class default marked the page dirty, wrote nothing,
+ * and reported "Kaydedildi."
+ */
+export type ClassDraft = {
+  distill: LLMChoice;
+  reason: LLMChoice;
+  saved: { distill: LLMChoice; reason: LLMChoice };
+};
+
+/** Whether one provider/model pair differs from what was saved. */
+function choiceDiffers(a: LLMChoice, b: LLMChoice): boolean {
+  return (a.provider ?? "") !== (b.provider ?? "") || (a.model ?? "") !== (b.model ?? "");
+}
+
+/** Whether either class default has been edited since it was loaded. */
+export function classesDirty(draft: ClassDraft): boolean {
+  return (
+    choiceDiffers(draft.distill, draft.saved.distill) ||
+    choiceDiffers(draft.reason, draft.saved.reason)
+  );
+}
+
+export function classDraftFrom(view: SettingsView): ClassDraft {
+  const distill = view.distill ?? {};
+  const reason = view.reason ?? {};
+  return { distill, reason, saved: { distill, reason } };
+}
+
+/**
+ * Whether anything on the page is unsaved.
+ *
+ * All three kinds in one place, because the save bar asks one question and the
+ * bug was that it asked it in two.
+ */
+export function anyDirty(
+  drafts: RuleDraft[],
+  settings: ModelDraft,
+  classes: ClassDraft,
+): boolean {
+  return (
+    drafts.some(isDirty) ||
+    settings.provider !== settings.saved.provider ||
+    settings.model !== settings.saved.model ||
+    classesDirty(classes)
+  );
 }
 
 /** The model choice while it is being edited. */
@@ -92,7 +148,11 @@ export function describeSelection(view: SettingsView | null, providers: LLMProvi
   }
 
   const provider = providers?.providers.find((p) => p.id === view.provider);
-  const model = provider?.models.find((m) => m.id === view.model);
+  // `models` is absent for a provider whose models are discovered rather than
+  // pinned — ollama publishes none, because they are files on this machine.
+  // Guarded rather than assumed: this line crashed the settings screen the
+  // first time somebody pointed a class default at ollama.
+  const model = provider?.models?.find((m) => m.id === view.model);
   return `${provider?.label ?? view.provider} · ${model?.label ?? view.model}`;
 }
 
@@ -132,3 +192,109 @@ export const RULE_CACHE_WARNING =
   "Kural dosyası taslak isteminin parçasıdır: kaydettiğinizde eski kurallarla " +
   "yazılmış taslaklar geçersiz olur ve bir sonraki çalıştırmada yeniden yazılır — " +
   "“gönderildi” işaretlenmiş olanlar dahil.";
+
+// --- what this machine can actually run --------------------------------------
+
+/**
+ * Whether a provider can be picked here.
+ *
+ * A provider whose CLI is not installed is not a choice, it is a failure with
+ * an extra click in front of it. Absent availability — a daemon with no router
+ * wired — is *not* the same as "nothing is installed", so everything stays
+ * selectable rather than a whole picker going dark over a missing field.
+ */
+export function isSelectable(
+  available: LLMAvailability[] | undefined,
+  providerID: string,
+): boolean {
+  if (!available) return true;
+  const found = available.find((a) => a.provider === providerID);
+  return found ? found.installed : true;
+}
+
+/**
+ * The note shown against a provider: what is wrong with it, in the CLI's own
+ * words, or "" when nothing is.
+ *
+ * Signed-out is only reported after a probe, because before one there is
+ * nothing to report — not knowing is not the same as knowing it is broken.
+ */
+export function availabilityNote(
+  available: LLMAvailability[] | undefined,
+  providerID: string,
+): string {
+  const found = available?.find((a) => a.provider === providerID);
+  if (!found) return "";
+  if (!found.installed) return "kurulu değil";
+  if (found.probed && !found.signed_in) return found.detail || "oturum kapalı";
+  return "";
+}
+
+/**
+ * The models a provider offers here.
+ *
+ * Discovered models win when there are any: a provider whose models are files
+ * on this machine (ollama) publishes an empty catalogue on purpose, and the
+ * real list is what the daemon found. Everyone else's list is the pinned
+ * vendor catalogue.
+ */
+export function modelsFor(
+  providers: LLMProviderList | null,
+  available: LLMAvailability[] | undefined,
+  providerID: string,
+): { id: string; label: string }[] {
+  const discovered = available?.find((a) => a.provider === providerID)?.models;
+  if (discovered && discovered.length > 0) {
+    return discovered.map((id) => ({ id, label: id }));
+  }
+  const listed = providers?.providers.find((p) => p.id === providerID)?.models ?? [];
+  return listed.map((m) => ({ id: m.id, label: m.label }));
+}
+
+// --- the screen's own sections -----------------------------------------------
+
+/**
+ * The settings screen's sections, in the order the rail offers them.
+ *
+ * It became a rail rather than staying one scroll column because the
+ * connections list is a list: a column that already held three cards and a
+ * 380px textarea cannot also hold "everything you have and whether it works"
+ * and still be scannable. Not a top tab bar either — `RulesCard` already draws
+ * a segmented strip for its two channels, and a second horizontal strip above
+ * it reads as nested tabs. A rail is a different axis, so they do not collide.
+ */
+export const SETTINGS_SECTIONS = ["connections", "routing", "skills", "rules"] as const;
+
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+
+const SECTION_LABELS: Record<SettingsSection, string> = {
+  connections: "Bağlantılar",
+  routing: "Yönlendirme",
+  skills: "Skill'ler",
+  rules: "Kurallar",
+};
+
+export function sectionLabel(section: SettingsSection): string {
+  return SECTION_LABELS[section];
+}
+
+/**
+ * Which sections hold something unsaved.
+ *
+ * The rail marks them, so an edit in a section that has been scrolled away from
+ * is still visible — the failure a rail introduces if nobody guards it.
+ * Connections are absent on purpose: that card writes immediately, so it has
+ * nothing to be unsaved.
+ */
+export function dirtySections(
+  drafts: RuleDraft[],
+  model: ModelDraft,
+  classes: ClassDraft,
+): SettingsSection[] {
+  const out: SettingsSection[] = [];
+  const modelDirty =
+    model.provider !== model.saved.provider || model.model !== model.saved.model;
+  if (modelDirty || classesDirty(classes)) out.push("routing");
+  if (drafts.some(isDirty)) out.push("rules");
+  return out;
+}

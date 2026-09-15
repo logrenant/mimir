@@ -4,6 +4,7 @@
 
 mod daemon;
 mod exports;
+mod liveness;
 #[cfg(target_os = "macos")]
 mod macos;
 mod quick;
@@ -14,6 +15,15 @@ use tauri_plugin_autostart::MacosLauncher;
 
 fn main() {
     let app = tauri::Builder::default()
+        // First, before anything that costs something. Mimir can be started
+        // three ways at once — the autostart LaunchAgent, a login item left by
+        // an older build, and the operator double-clicking it — and each one
+        // used to get its own process: two menu-bar items, two quick windows
+        // answering the same shortcut, two shells over one daemon. A second
+        // launch now raises the window the first one owns and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            quick::show_main(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -27,13 +37,18 @@ fn main() {
         ))
         .manage(daemon::DaemonState::default())
         .manage(tray::TrayItems::default())
+        .manage(liveness::Heartbeat::default())
         .invoke_handler(tauri::generate_handler![
             daemon::get_daemon_endpoint,
             daemon::daemon_request,
             daemon::restart_daemon,
             quick::hide_quick,
             quick::open_main,
-            exports::reveal_export
+            liveness::webview_heartbeat,
+            exports::reveal_export,
+            tray::autostart_enabled,
+            tray::set_autostart,
+            tray::quit_app
         ])
         .setup(|app| {
             // Mimir is a menu-bar app, and with no window on screen it still
@@ -54,12 +69,13 @@ fn main() {
             // UI asks for the endpoint until it is ready or has failed.
             daemon::start(app.handle().clone());
 
-            // Before the menu is built, so its checkmark reflects the result.
+            // Before the tray is built, so the panel's toggle reflects the
+            // result the first time it is opened.
             tray::enable_autostart_on_first_launch(app.handle());
             tray::build(app.handle())?;
 
             // A shortcut another app already owns is a degraded feature, not a
-            // failed launch — the tray menu opens the same window.
+            // failed launch — clicking the menu-bar icon opens the same panel.
             if let Err(err) = quick::register_shortcut(app.handle()) {
                 eprintln!("[mimir] {err}");
             }
@@ -67,6 +83,23 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // A window coming to the front is the other half of the tray's
+            // "open": the operator can also raise a hidden window from Mission
+            // Control or the app switcher, and a WebView that was suspended
+            // while hidden is just as blank that way round.
+            if let WindowEvent::Focused(true) = event {
+                liveness::revive(window.app_handle(), window.label());
+            }
+            // A menu-bar panel closes when you look away. That is the idiom the
+            // surface is borrowing — a native menu dismisses on the first click
+            // outside it — and without this an `alwaysOnTop` panel would hang
+            // over whatever the operator turned to next until they remembered
+            // Esc. The main window is not a panel and keeps its focus.
+            if let WindowEvent::Focused(false) = event {
+                if window.label() == quick::QUICK_LABEL {
+                    quick::hide_from_blur(window.app_handle());
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Closing a window hides it. Nothing about Mimir stops when a
                 // window goes away: the daemon is launchd's, and the app has

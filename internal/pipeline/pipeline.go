@@ -291,7 +291,7 @@ func (p *Pipeline) Research(ctx context.Context, q Query) (Brief, error) {
 	if topN > p.cfg.TopNForResearch {
 		topN = p.cfg.TopNForResearch
 	}
-	
+
 	searchCount := topN
 	if searchCount < p.cfg.SearchDefaultCount {
 		searchCount = p.cfg.SearchDefaultCount

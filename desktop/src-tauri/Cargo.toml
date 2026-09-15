@@ -1,6 +1,6 @@
 [package]
 name = "mimir-desktop"
-version = "2.7.1"
+version = "2.13.0"
 edition = "2021"
 description = "Mimir desktop shell"
 authors = ["Mimir Studio"]
@@ -13,12 +13,16 @@ tauri-build = { version = "=2.6.3", features = [] }
 # rebuilt shell is the shell that was reviewed.
 [dependencies]
 # tray-icon + image-png: the menu-bar item and the PNG template icon it draws.
-tauri = { version = "=2.11.5", features = ["tray-icon", "image-png"] }
+tauri = { version = "=2.11.5", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-shell = "=2.3.5"
 tauri-plugin-dialog = "=2.7.2"
 tauri-plugin-global-shortcut = "=2.3.2"
 tauri-plugin-notification = "=2.4.0"
 tauri-plugin-autostart = "=2.5.1"
+# One Mimir, however many things try to start it: a login item, the autostart
+# LaunchAgent and a double-click can all fire at once, and two menu-bar items
+# over one daemon is a machine with two of everything.
+tauri-plugin-single-instance = "=2.4.4"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 ureq = "=3.4.0"

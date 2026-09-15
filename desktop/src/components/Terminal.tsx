@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { LineKind, Session } from "../lib/terminals";
+import type { Session } from "../lib/terminals";
+import { CONSOLE_TEXT, LINE_CLASS } from "../lib/lineColors";
+import { Badge } from "./ui/badge";
+import { Button, IconButton } from "./ui/button";
+import { Pulse } from "./ui/pulse";
+import { Stream } from "./ui/stream";
+import { Tooltip } from "./ui/tooltip";
 import { isResumable, isRetryable, sessionText } from "../lib/terminals";
 
 /**
@@ -13,18 +19,6 @@ import { isResumable, isRetryable, sessionText } from "../lib/terminals";
  * sent.
  */
 
-const LINE_COLOR: Record<LineKind, string> = {
-  meta: "#6b7079",
-  text: "#eef0f2",
-  reasoning: "#8a9099",
-  tool: "#2547e8",
-  result: "#8a9099",
-  stderr: "#e5a23d",
-  ok: "#c6f04a",
-  bad: "#e5484d",
-};
-
-const MONO = "400 11.5px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace";
 
 export function Terminal({
   session,
@@ -80,123 +74,115 @@ export function Terminal({
   };
 
   return (
-    <div style={{ height: "100%", display: "grid", gridTemplateRows: "auto 1fr auto", minHeight: 0 }}>
+    <div className="grid h-full min-h-0 grid-rows-[auto_1fr_auto]">
       {/* Bar and banner are one grid row: the banner comes and goes, and a
           conditional child of the grid itself would renumber the rows under
           the scroller every time it did. */}
       <div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "9px 14px",
-          borderBottom: "1px solid #24272d",
-          background: "#16181c",
-        }}
-      >
-        <StatusDot status={session.status} />
-        <span style={{ font: "400 11px/1 ui-monospace,Menlo,monospace", color: "#8a9099" }}>
-          {session.runID.slice(0, 8)}
-        </span>
-        <span
-          style={{
-            font: "450 12px/1 ui-sans-serif,system-ui",
-            color: "#eef0f2",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            maxWidth: 320,
-          }}
-        >
-          {session.title}
-        </span>
-        <StatusBadge status={session.status} />
-        <div style={{ flex: 1 }} />
+        <div className="flex h-12 items-center gap-3 border-b border-edge bg-panel px-4 shadow-elev-1">
+          <StatusDot status={session.status} />
+          {/* `min-w-0 flex-1` and not a fixed max: the pane is as wide as the
+              window, and a title clipped at 360px was truncating with 600px of
+              empty bar beside it. */}
+          <span className="min-w-0 flex-1 truncate text-lg leading-tight font-medium text-text">
+            {session.title}
+          </span>
+          <span className="shrink-0 font-mono text-xs text-muted/60">
+            {session.runID.slice(0, 8)}
+          </span>
+          <StatusBadge status={session.status} />
 
-        {/* The recovery pair, first in the row because on a failed run it is
-            the only thing anybody came to this bar to press. */}
-        {recoverable && (
-          <>
-            {resumable ? (
+          {/* The recovery pair, first in the row because on a failed run it is
+              the only thing anybody came to this bar to press. */}
+          {recoverable && (
+            <>
+              {resumable ? (
+                <BarButton
+                  tone="accent"
+                  onClick={() => onRetry(session.runID, false)}
+                  title={`Oturumu kaldığı yerden sürdürür (--resume)${waits}`}
+                >
+                  Devam et
+                </BarButton>
+              ) : (
+                // No session id means nothing to resume — the run died before the
+                // CLI said who it was. Saying so beats a button that would
+                // silently start over under a label promising otherwise.
+                <span
+                  className="font-mono text-xs whitespace-nowrap text-muted/70"
+                  title="Bu çalışma kendini tanıtmadan bitti, sürdürülecek bir oturum yok."
+                >
+                  sürdürülemez
+                </span>
+              )}
               <BarButton
-                tone="accent"
-                onClick={() => onRetry(session.runID, false)}
-                title={`Oturumu kaldığı yerden sürdürür (--resume)${waits}`}
+                onClick={() => onRetry(session.runID, true)}
+                title={`Oturumu atar, görevi baştan çalıştırır${waits}`}
               >
-                ▶ devam et
+                Baştan dene
               </BarButton>
-            ) : (
-              // No session id means nothing to resume — the run died before the
-              // CLI said who it was. Saying so beats a button that would
-              // silently start over under a label promising otherwise.
-              <span
-                style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}
-                title="Bu çalışma kendini tanıtmadan bitti, sürdürülecek bir oturum yok."
-              >
-                sürdürülemez
-              </span>
-            )}
-            <BarButton
-              onClick={() => onRetry(session.runID, true)}
-              title={`Oturumu atar, görevi baştan çalıştırır${waits}`}
-            >
-              baştan dene
+              <BarDivider />
+            </>
+          )}
+
+          {/* The view's own controls are glyphs. They are pressed often and
+              they say nothing about the run — spelling them out put four words
+              between the operator and the two buttons that actually act on the
+              job. */}
+          {!following && (
+            <Tooltip label="En alta in">
+              <IconButton
+                name="arrowRight"
+                label="En alta in"
+                size="sm"
+                className="rotate-90"
+                onClick={() => {
+                  setFollowing(true);
+                  const el = scroller.current;
+                  if (el) el.scrollTop = el.scrollHeight;
+                }}
+              />
+            </Tooltip>
+          )}
+          <Tooltip label={copied ? "Kopyalandı" : "Transcript'i kopyala"}>
+            <IconButton
+              name={copied ? "check" : "copy"}
+              label={copied ? "Kopyalandı" : "Transcript'i kopyala"}
+              size="sm"
+              className={copied ? "text-lime" : undefined}
+              onClick={copy}
+            />
+          </Tooltip>
+          {live && (
+            <BarButton tone="bad" onClick={() => onStop(session.runID)}>
+              Durdur
             </BarButton>
-            <BarDivider />
-          </>
-        )}
-
-        {!following && (
-          <BarButton
-            onClick={() => {
-              setFollowing(true);
-              const el = scroller.current;
-              if (el) el.scrollTop = el.scrollHeight;
-            }}
-          >
-            en alta in
-          </BarButton>
-        )}
-        <BarButton onClick={copy}>{copied ? "kopyalandı" : "kopyala"}</BarButton>
-        {live && (
-          <BarButton tone="bad" onClick={() => onStop(session.runID)}>
-            stop
-          </BarButton>
-        )}
-        <BarDivider />
-        <BarButton onClick={() => onClose(session.runID)}>kapat</BarButton>
-      </div>
-
-      {/* Said once, under the bar, rather than on each button: it is a fact
-          about the machine right now, not about either choice. */}
-      {recoverable && busy && (
-        <div
-          style={{
-            padding: "6px 14px",
-            borderBottom: "1px solid #24272d",
-            background: "#131519",
-            font: "400 10.5px/1.5 ui-monospace,Menlo,monospace",
-            color: "#e5a23d",
-          }}
-        >
-          şu an başka bir task çalışıyor — buradan başlatılan iş kuyruğa alınır
+          )}
+          <BarDivider />
+          <Tooltip label="Sekmeyi kapat">
+            <IconButton name="close" label="Sekmeyi kapat" size="sm" onClick={() => onClose(session.runID)} />
+          </Tooltip>
         </div>
-      )}
+
+        {/* Said once, under the bar, rather than on each button: it is a fact
+            about the machine right now, not about either choice. */}
+        {recoverable && busy && (
+          <div className="border-b border-edge bg-raised px-4 py-2 font-mono text-xs leading-[1.5] text-electric">
+            şu an başka bir task çalışıyor — buradan başlatılan iş kuyruğa alınır
+          </div>
+        )}
+
+        {/* The live marker, on the seam between the bar and the transcript. */}
+        {live && <Stream />}
       </div>
 
       <div
         ref={scroller}
         onScroll={onScroll}
-        style={{
-          overflowY: "auto",
-          padding: "12px 14px",
-          background: "#0c0d10",
-          minHeight: 0,
-        }}
+        className={`min-h-0 overflow-y-auto bg-sunken px-4 py-3.5 ${CONSOLE_TEXT}`}
       >
         {session.lines.length === 0 ? (
-          <p style={{ margin: 0, font: MONO, color: "#4f545e" }}>
+          <p className="text-muted/60">
             {session.status === "queued"
               ? "kuyrukta — bir slot boşalınca başlayacak"
               : session.status === "backlog"
@@ -207,12 +193,7 @@ export function Terminal({
           session.lines.map((line, i) => (
             <div
               key={`${line.seq}-${i}`}
-              style={{
-                font: MONO,
-                color: LINE_COLOR[line.kind],
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-              }}
+              className={`break-words whitespace-pre-wrap ${LINE_CLASS[line.kind]}`}
             >
               {line.text}
             </div>
@@ -221,15 +202,7 @@ export function Terminal({
       </div>
 
       {session.closedReason && (
-        <div
-          style={{
-            padding: "7px 14px",
-            borderTop: "1px solid #24272d",
-            background: "#16181c",
-            font: "400 11px/1.5 ui-monospace,Menlo,monospace",
-            color: "#e5a23d",
-          }}
-        >
+        <div className="border-t border-edge bg-panel px-4 py-2.5 font-mono text-xs leading-[1.5] text-bad/80">
           {session.closedReason}
         </div>
       )}
@@ -237,57 +210,55 @@ export function Terminal({
   );
 }
 
-export function StatusDot({ status }: { status: string }) {
-  const color =
-    status === "running"
-      ? "#2547e8"
-      : status === "queued"
-        ? "#e5a23d"
-        : status === "completed"
-          ? "#c6f04a"
-          : status === "failed"
-            ? "#e5484d"
-            : status === "stopped"
-              ? "#8a9099"
-              : "#4f545e";
-  return <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }} />;
+/**
+ * A run's state as a tone.
+ *
+ * One switch instead of the three that were here — a dot, a badge and a bar
+ * button each deciding the same thing from the same string. `queued` was
+ * amber, which was a fifth colour; it is Electric now, because a queued run is
+ * work that is going to happen and that is what Electric reports.
+ */
+function toneOf(status: string): "ok" | "bad" | "accent" | "muted" {
+  switch (status) {
+    case "running":
+    case "queued":
+      return "accent";
+    case "completed":
+      return "ok";
+    case "failed":
+      return "bad";
+    default:
+      return "muted";
+  }
 }
 
-/** The run's state as a word, boxed in its own colour. */
+/** The application's status dot, wherever a run's state has to be glanced at. */
+export function StatusDot({ status }: { status: string }) {
+  return <Pulse tone={toneOf(status)} />;
+}
+
+/** The run's state as a word, boxed in its own tone. */
 function StatusBadge({ status }: { status: string }) {
-  const color =
-    status === "running"
-      ? "#2547e8"
-      : status === "queued"
-        ? "#e5a23d"
-        : status === "completed"
-          ? "#c6f04a"
-          : status === "failed"
-            ? "#e5484d"
-            : "#6b7079";
   return (
-    <span
-      style={{
-        font: "400 9.5px/1 ui-monospace,Menlo,monospace",
-        color,
-        border: `1px solid ${color}40`,
-        borderRadius: 3,
-        padding: "3px 5px",
-        letterSpacing: "0.04em",
-        textTransform: "uppercase",
-        flexShrink: 0,
-      }}
-    >
+    <Badge tone={toneOf(status)} className="shrink-0 px-1.5 py-1">
       {status}
-    </span>
+    </Badge>
   );
 }
 
 /** Separates what acts on the run from what acts on the view. */
 function BarDivider() {
-  return <span style={{ width: 1, height: 14, background: "#24272d", flexShrink: 0 }} />;
+  return <span aria-hidden className="h-4 w-px shrink-0 bg-edge" />;
 }
 
+/**
+ * A control that acts on the *run*, as against the view.
+ *
+ * These keep their words. "Devam et" and "Baştan dene" are the two most
+ * consequential buttons in the application — one resumes a session and one
+ * throws it away — and a glyph for either would be a guess the operator makes
+ * with real tokens.
+ */
 function BarButton({
   children,
   onClick,
@@ -299,28 +270,16 @@ function BarButton({
   tone?: "bad" | "accent";
   title?: string;
 }) {
-  const [hovered, setHovered] = useState(false);
-  const color = tone === "bad" ? "#e5484d" : tone === "accent" ? "#2547e8" : "#8a9099";
   return (
-    <button
-      type="button"
+    <Button
+      size="sm"
+      variant={tone === "bad" ? "danger" : tone === "accent" ? "primary" : "ghost"}
+      icon={tone === "bad" ? "stop" : tone === "accent" ? "play" : undefined}
+      className="shrink-0 whitespace-nowrap"
       onClick={onClick}
       title={title}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        background: hovered ? "#1c1f24" : "none",
-        border: `1px solid ${tone ? color : "#24272d"}`,
-        borderRadius: 5,
-        padding: "3px 8px",
-        cursor: "pointer",
-        font: "400 10.5px/1 ui-monospace,Menlo,monospace",
-        color,
-        whiteSpace: "nowrap",
-        flexShrink: 0,
-      }}
     >
       {children}
-    </button>
+    </Button>
   );
 }

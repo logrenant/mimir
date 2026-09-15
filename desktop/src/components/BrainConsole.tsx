@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 
 import { api, DaemonError, type BrainScanEvent, type BrainScanStatus } from "../lib/daemon";
 import { pollInterval } from "../lib/brainGraph";
+import { scanLineClass } from "../lib/lineColors";
+import { Button } from "./ui/button";
+import { Stream } from "./ui/stream";
 
 /**
  * The resident scan, as a terminal.
@@ -79,110 +82,70 @@ export function BrainConsole() {
   };
 
   return (
-    <div style={{ height: "100%", display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0 }}>
-      <div
-        style={{
-          borderBottom: "1px solid #24272d",
-          padding: "10px 14px",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
-        <span className="display" style={{ font: "400 13px/1 Aldrich,ui-sans-serif,system-ui", color: "#eef0f2" }}>
-          agy · sürekli tarama
-        </span>
-        <span style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}>
+    <div className="grid h-full min-h-0 grid-rows-[auto_1fr]">
+      <div className="flex flex-wrap items-center gap-3 border-b border-edge bg-panel px-3.5 py-2.5 shadow-elev-1">
+        <span className="display text-base leading-none">agy · sürekli tarama</span>
+        <span className="font-mono text-xs text-muted/70">
           {status ? `${status.provider} · ${status.model} · ${phaseLabel(status)}` : "bağlanıyor…"}
         </span>
         {status && (
-          <span style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#4f545e" }}>
+          <span className="font-mono text-xs text-muted/60">
             {status.nodes_total} düğüm · bu turda {status.scanned_session} · kalan {status.remaining}
           </span>
         )}
-        <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+        <span className="ml-auto flex gap-1.5">
           {status?.paused ? (
-            <ConsoleButton label="sürdür" disabled={busy} onClick={() => void act(api.resumeBrainScan)} />
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act(api.resumeBrainScan)}>
+              sürdür
+            </Button>
           ) : (
-            <ConsoleButton label="duraklat" disabled={busy} onClick={() => void act(api.pauseBrainScan)} />
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act(api.pauseBrainScan)}>
+              duraklat
+            </Button>
           )}
-          <ConsoleButton
-            label="şimdi tara"
+          <Button
+            size="sm"
+            variant="ghost"
             disabled={busy || !!status?.paused}
             onClick={() => void act(api.scanBrainNow)}
-          />
+          >
+            şimdi tara
+          </Button>
         </span>
       </div>
+
+      {/* A scan that is actually moving says so on the seam, the same way a
+          run does. `phase` is the daemon's word for it, so this is a reading
+          and not an animation that happens to be on screen. */}
+      {status && !status.paused && status.phase === "scanning" && <Stream />}
 
       <div
         onScroll={(e) => {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
-        style={{ overflowY: "auto", padding: "10px 14px", minHeight: 0 }}
+        className="min-h-0 overflow-y-auto bg-sunken px-3.5 py-2.5"
       >
         {error && (
-          <p style={{ margin: "0 0 8px", font: "400 11px/1.6 ui-monospace,Menlo,monospace", color: "#e5484d" }}>
-            {error}
-          </p>
+          <p className="mb-2 font-mono text-xs leading-[1.6] text-bad">{error}</p>
         )}
         {events.length === 0 && !error && (
-          <p style={{ margin: 0, font: "400 11px/1.6 ui-sans-serif,system-ui", color: "#4f545e" }}>
+          <p className="text-xs leading-[1.6] text-muted/60">
             Tarama bir şey yapar yapmaz satırlar burada belirir.
           </p>
         )}
         {events.map((e) => (
           <div
             key={e.seq}
-            style={{
-              display: "flex",
-              gap: 10,
-              font: "400 11px/1.7 ui-monospace,Menlo,monospace",
-              color: colorFor(e.kind),
-            }}
+            className={`flex gap-2.5 font-mono text-xs leading-[1.7] ${scanLineClass(e.kind)}`}
           >
-            <span style={{ color: "#3a3f47", flexShrink: 0 }}>
-              {new Date(e.at).toLocaleTimeString()}
-            </span>
-            <span style={{ minWidth: 0, wordBreak: "break-all" }}>{e.text}</span>
+            <span className="shrink-0 text-muted/40">{new Date(e.at).toLocaleTimeString()}</span>
+            <span className="min-w-0 break-all">{e.text}</span>
           </div>
         ))}
         <div ref={bottom} />
       </div>
     </div>
-  );
-}
-
-function ConsoleButton({
-  label,
-  disabled,
-  onClick,
-}: {
-  label: string;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      style={{
-        background: "none",
-        border: "1px solid #24272d",
-        borderRadius: 4,
-        padding: "5px 9px",
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.4 : 1,
-        font: "500 9.5px/1 ui-monospace,Menlo,monospace",
-        letterSpacing: ".1em",
-        textTransform: "uppercase",
-        color: "#8a9099",
-      }}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -212,25 +175,3 @@ export function statusOf(status: BrainScanStatus | null): string {
   return "completed";
 }
 
-function colorFor(kind: BrainScanEvent["kind"]): string {
-  switch (kind) {
-    case "failed":
-      return "#e5484d";
-    case "unreadable":
-      return "#8a9099";
-    case "pass":
-    case "sweep":
-      return "#c6f04a";
-    case "control":
-    case "backoff":
-      return "#2547e8";
-    case "project":
-      return "#eef0f2";
-    // A re-read is not a first read. It gets the electric accent because it is
-    // the only line that says "you edited that file and Brain noticed".
-    case "changed":
-      return "#2547e8";
-    default:
-      return "#8a9099";
-  }
-}

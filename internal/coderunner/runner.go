@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/logrenant/mimir/internal/account"
+	"github.com/logrenant/mimir/internal/agents"
 	"github.com/logrenant/mimir/internal/config"
 	"github.com/logrenant/mimir/internal/events"
 	"github.com/logrenant/mimir/internal/project"
@@ -112,16 +113,25 @@ type Run struct {
 	Model     string `json:"model,omitempty"`
 	// RequestedAccountID is the slot the operator pinned, empty for "any free
 	// one". AccountID is the slot it actually ran on.
-	RequestedAccountID string    `json:"requested_account_id,omitempty"`
-	AccountID          string    `json:"account_id,omitempty"`
-	Attachments        []string  `json:"attachments,omitempty"`
-	CostUSD            float64   `json:"cost_usd,omitempty"`
-	NumTurns           int       `json:"num_turns,omitempty"`
-	Error              string    `json:"error,omitempty"`
-	CreatedAt          time.Time `json:"created_at,omitempty"`
-	QueuedAt           time.Time `json:"queued_at,omitempty"`
-	StartedAt          time.Time `json:"started_at,omitempty"`
-	EndedAt            time.Time `json:"ended_at,omitempty"`
+	RequestedAccountID string   `json:"requested_account_id,omitempty"`
+	AccountID          string   `json:"account_id,omitempty"`
+	Attachments        []string `json:"attachments,omitempty"`
+	// Agent is the sub-agent this card belongs to, and Skills is what it was
+	// actually run under — the ids and the version each body hashed to. The
+	// second is a record rather than an input: it answers "which instructions
+	// produced this" for a run somebody is reading a month later, which an id
+	// alone cannot, because the body behind it is the operator's and changes.
+	Agent  string `json:"agent,omitempty"`
+	Skills string `json:"skills,omitempty"`
+	// Params is the executor's own input, as the operator's client sent it.
+	Params    string    `json:"params,omitempty"`
+	CostUSD   float64   `json:"cost_usd,omitempty"`
+	NumTurns  int       `json:"num_turns,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	QueuedAt  time.Time `json:"queued_at,omitempty"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	EndedAt   time.Time `json:"ended_at,omitempty"`
 }
 
 // CreateRequest is everything a task needs to exist. One struct rather than a
@@ -139,6 +149,13 @@ type CreateRequest struct {
 	// default, which is what every client written before the picker sends.
 	Model         string
 	AttachmentIDs []string
+	// Agent is the sub-agent this card belongs to. Empty means the default,
+	// which is what every client written before sub-agents existed sends and
+	// what every row written before them was.
+	Agent string
+	// Params is the executor's own input, a JSON object. Empty for an agent
+	// that reads the prompt directly.
+	Params string
 }
 
 // ProjectResolver hands back a directory that has passed every guard. Taking
@@ -167,6 +184,7 @@ type RunStore interface {
 	EditRun(ctx context.Context, id string, e store.RunEdit) (bool, error)
 	RequeueRun(ctx context.Context, id string, at time.Time, keepSession bool) (bool, error)
 	ListQueuedRuns(ctx context.Context, limit int) ([]store.RunRow, error)
+	ListRuns(ctx context.Context, limit int) ([]store.RunRow, error)
 	ClaimRun(ctx context.Context, id, accountID string, at time.Time) (bool, error)
 	ReconcileRunningRuns(ctx context.Context, reason string, at time.Time) (int, error)
 	DeleteRun(ctx context.Context, id string) error
@@ -183,9 +201,13 @@ type RunStore interface {
 
 // inflight is the handle on a run this process is currently executing.
 type inflight struct {
-	cancel    context.CancelFunc
-	accountID string
-	stopped   bool
+	cancel context.CancelFunc
+	// held is the capacity this job occupies. It replaced a bare account id
+	// when a second lane appeared: an id alone cannot say whether the empty
+	// string means "the default slot" or "no slot at all", and those are
+	// opposite answers to "is an account busy".
+	held    grant
+	stopped bool
 }
 
 // Runner starts and supervises coding sessions.
@@ -206,6 +228,12 @@ type Runner struct {
 
 	mu       sync.Mutex
 	inflight map[string]*inflight
+	// skills is the source a run's mandatory instructions come from. Nil
+	// falls back to the bodies compiled into this binary — see skills.go.
+	skills SkillSource
+	// executors is the non-claude half of the seam, keyed by sub-agent. The
+	// claude agents are this package's own path and are not in here.
+	executors map[string]Executor
 
 	// The credential slots that have nothing left to spend, and the wake-ups
 	// that end their pauses. See ratelimit.go: this is what makes a spent
@@ -314,27 +342,45 @@ func (r *Runner) insert(ctx context.Context, req CreateRequest, status string) (
 		return store.RunRow{}, errors.New("coderunner: prompt is empty")
 	}
 
+	// Which sub-agent runs this decides half of what follows: whether a folder
+	// is needed at all, whether a credential slot is, and which skills the
+	// mandate will ask for.
+	ag := agentFor(req.Agent)
+
 	// Resolve, never Get: this re-runs every path guard against the filesystem
 	// as it is now. It is the only way this package learns a directory.
-	proj, err := r.projects.Resolve(ctx, req.ProjectID)
+	//
+	// Only for an agent that works inside one. A worker-lane job names no
+	// project, and demanding one would make the operator register a folder to
+	// run something that never opens it.
+	var projectID string
+	if ag.NeedsProject {
+		proj, perr := r.projects.Resolve(ctx, req.ProjectID)
+		if perr != nil {
+			return store.RunRow{}, perr
+		}
+		projectID = proj.ID
+	}
+
+	if err := r.requireCapacity(ctx, ag.Key, req.AccountID); err != nil {
+		return store.RunRow{}, err
+	}
+
+	// The mandate, asked here for the same reason requireCapacity is: while
+	// the operator is still looking at the thing they pressed. A card that can
+	// never start is worse sitting in a queue than refused at the door.
+	if _, _, err := r.requireSkills(ag.Key); err != nil {
+		return store.RunRow{}, err
+	}
+
+	model, err := resolveModel(r.cfg, ag, req.Model)
 	if err != nil {
 		return store.RunRow{}, err
 	}
 
-	if err := r.requireSlot(ctx, req.AccountID); err != nil {
-		return store.RunRow{}, err
-	}
-
-	model := strings.TrimSpace(req.Model)
-	if model == "" {
-		model = r.cfg.CodingModel
-	} else if !r.cfg.HasCodingModel(model) {
-		return store.RunRow{}, fmt.Errorf("%w: %s", ErrUnknownModel, model)
-	}
-
-	runID, err := newRunID()
-	if err != nil {
-		return store.RunRow{}, err
+	runID, rerr := newRunID()
+	if rerr != nil {
+		return store.RunRow{}, rerr
 	}
 
 	transcriptPath := filepath.Join(r.cfg.TranscriptDir, runID+".jsonl")
@@ -350,7 +396,7 @@ func (r *Runner) insert(ctx context.Context, req CreateRequest, status string) (
 	now := time.Now().UTC()
 	row := store.RunRow{
 		ID:                 runID,
-		ProjectID:          proj.ID,
+		ProjectID:          projectID,
 		Title:              strings.TrimSpace(req.Title),
 		Prompt:             req.Prompt,
 		Status:             status,
@@ -358,6 +404,8 @@ func (r *Runner) insert(ctx context.Context, req CreateRequest, status string) (
 		RequestedAccountID: req.AccountID,
 		TranscriptPath:     transcriptPath,
 		Attachments:        attachments,
+		Agent:              ag.Key,
+		Params:             req.Params,
 		CreatedAt:          now,
 	}
 	if status == store.RunStatusQueued {
@@ -371,6 +419,34 @@ func (r *Runner) insert(ctx context.Context, req CreateRequest, status string) (
 	return row, nil
 }
 
+// resolveModel is what a card's model column may hold, which depends on the
+// lane the card runs on.
+//
+// A claude session's model is one of `cfg.CodingModels` and the empty string is
+// that list's default — the allow-list is the whole reason a client may choose
+// at all, since the name becomes argv to a subprocess.
+//
+// A worker-lane card's model is not a coding model and never was: a catalog
+// pass spends the daemon's own provider/model, and forcing `claude-sonnet-5`
+// into the column made every screen report a model that card would not spend —
+// and made the board's model control a knob wired to nothing. So the column is
+// left as the route wrote it, empty meaning "whatever the daemon routes to when
+// it starts", and the pair is validated where the provider it belongs to is
+// known: `llmSelection` on the route that writes the card's params.
+func resolveModel(cfg config.Config, ag agents.Agent, raw string) (string, error) {
+	model := strings.TrimSpace(raw)
+	if ag.Exec != agents.ExecClaude {
+		return model, nil
+	}
+	if model == "" {
+		return cfg.CodingModel, nil
+	}
+	if !cfg.HasCodingModel(model) {
+		return "", fmt.Errorf("%w: %s", ErrUnknownModel, model)
+	}
+	return model, nil
+}
+
 // EditRequest is a change to a card, field by field. A nil field is one the
 // operator did not touch, which is what makes this a patch rather than a
 // replacement — a client that only renames a card must not have to send the
@@ -380,6 +456,8 @@ type EditRequest struct {
 	Prompt        *string
 	Model         *string
 	AttachmentIDs *[]string
+	Agent         *string
+	Params        *string
 }
 
 // Edit rewrites what a card asks for.
@@ -404,6 +482,16 @@ func (r *Runner) Edit(ctx context.Context, runID string, req EditRequest) (Run, 
 		Prompt:      row.Prompt,
 		Model:       row.Model,
 		Attachments: row.Attachments,
+		Agent:       row.Agent,
+		Params:      row.Params,
+	}
+	if req.Agent != nil {
+		// An unknown name falls back rather than failing: a key from a newer
+		// client is version skew, not a reason to lose the edit.
+		edit.Agent = agentFor(strings.TrimSpace(*req.Agent)).Key
+	}
+	if req.Params != nil {
+		edit.Params = *req.Params
 	}
 	if req.Title != nil {
 		edit.Title = strings.TrimSpace(*req.Title)
@@ -415,11 +503,9 @@ func (r *Runner) Edit(ctx context.Context, runID string, req EditRequest) (Run, 
 		return Run{}, errors.New("coderunner: prompt is empty")
 	}
 	if req.Model != nil {
-		model := strings.TrimSpace(*req.Model)
-		if model == "" {
-			model = r.cfg.CodingModel
-		} else if !r.cfg.HasCodingModel(model) {
-			return Run{}, fmt.Errorf("%w: %s", ErrUnknownModel, model)
+		model, merr := resolveModel(r.cfg, agentFor(edit.Agent), *req.Model)
+		if merr != nil {
+			return Run{}, merr
 		}
 		edit.Model = model
 	}
@@ -485,6 +571,18 @@ func (r *Runner) sweepDropped(ctx context.Context, candidates []string) {
 //
 // A pin to an account that is not there is refused for the same reason — the
 // dispatcher would never find a slot matching it.
+//
+// It is asked *per agent*, because the answer differs by lane. A worker-lane
+// job needs no identity at all: refusing to create or release one on a
+// signed-out machine would demand a login the job will never spend, and the
+// message would name a fix that is not the problem.
+func (r *Runner) requireCapacity(ctx context.Context, agentName, accountID string) error {
+	if r.laneOf(agentName) == LaneWorker {
+		return nil
+	}
+	return r.requireSlot(ctx, accountID)
+}
+
 func (r *Runner) requireSlot(ctx context.Context, accountID string) error {
 	if r.accounts == nil {
 		if accountID != "" {
@@ -518,8 +616,12 @@ func (r *Runner) requireSlot(ctx context.Context, accountID string) error {
 // The connection check is the point as much as the pump is: an operator asking
 // why nothing starts deserves "no account is connected" rather than silence.
 func (r *Runner) Kick(ctx context.Context) error {
-	if err := r.requireSlot(ctx, ""); err != nil {
-		return err
+	// The connection check applies to the account lane only. A queue holding
+	// nothing but worker cards has no use for a login, and refusing to pump it
+	// would answer a question the operator did not ask.
+	slotErr := r.requireSlot(ctx, "")
+	if slotErr != nil && r.queueNeedsAnAccount(ctx) {
+		return slotErr
 	}
 	r.pump()
 
@@ -545,7 +647,10 @@ func (r *Runner) Enqueue(ctx context.Context, runID string) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
-	if err := r.requireSlot(ctx, ""); err != nil {
+	if err := r.requireCapacity(ctx, row.Agent, ""); err != nil {
+		return Run{}, err
+	}
+	if _, _, err := r.requireSkills(row.Agent); err != nil {
 		return Run{}, err
 	}
 	moved, err := r.runs.UpdateRunStatus(ctx, runID,
@@ -579,7 +684,10 @@ func (r *Runner) Retry(ctx context.Context, runID string, fresh bool) (Run, erro
 	// Asked before the row moves. A retry with nothing connected used to land
 	// the card in Queued and leave it there, which reads as the retry button
 	// being broken rather than as a missing login.
-	if err := r.requireSlot(ctx, ""); err != nil {
+	if err := r.requireCapacity(ctx, row.Agent, ""); err != nil {
+		return Run{}, err
+	}
+	if _, _, err := r.requireSkills(row.Agent); err != nil {
 		return Run{}, err
 	}
 	moved, err := r.runs.RequeueRun(ctx, runID, time.Now().UTC(), !fresh)
@@ -723,15 +831,35 @@ func (r *Runner) slots(ctx context.Context) []account.Account {
 }
 
 // busyAccounts is which slots this process is currently spending.
+//
+// A worker-lane job spends no identity, so it occupies no slot. Counting one
+// would take a credential away from the work that actually needs it.
 func (r *Runner) busyAccounts() map[string]struct{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	busy := make(map[string]struct{}, len(r.inflight))
 	for _, h := range r.inflight {
-		busy[h.accountID] = struct{}{}
+		if h.held.lane != LaneAccount {
+			continue
+		}
+		busy[h.held.accountID] = struct{}{}
 	}
 	return busy
+}
+
+// busyWorkers is how many jobs of one sub-agent are running right now.
+func (r *Runner) busyWorkers(agentName string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	n := 0
+	for _, h := range r.inflight {
+		if h.held.lane == LaneWorker && h.held.agent == agentName {
+			n++
+		}
+	}
+	return n
 }
 
 // dispatchOne finds one queued run that can start now and starts it, reporting
@@ -742,9 +870,6 @@ func (r *Runner) busyAccounts() map[string]struct{} {
 // account's work behind it.
 func (r *Runner) dispatchOne(ctx context.Context) bool {
 	slots := r.slots(ctx)
-	if len(slots) == 0 {
-		return false
-	}
 	busy := r.busyAccounts()
 	now := time.Now().UTC()
 
@@ -762,11 +887,26 @@ func (r *Runner) dispatchOne(ctx context.Context) bool {
 		}
 		free = append(free, a)
 	}
-	if len(free) == 0 {
-		if held, _ := r.heldSlots(slots, now); len(held) > 0 {
-			r.noteHeld(ctx, held)
-		}
-		return false
+
+	// "No free account" used to mean "nothing can start", and returning here
+	// was honest while every job was a claude subprocess. It is not any more:
+	// a worker-lane job needs no identity, and freezing it whenever a coding
+	// run is in flight — or whenever every slot is rate-limit held, which is
+	// exactly when somebody is staring at the board — would read as a hang.
+	// So the account lane's early exit moved into reserve(), and the queue is
+	// walked either way.
+	var paused []string
+	if len(free) == 0 && len(slots) > 0 {
+		paused, _ = r.heldSlots(slots, now)
+	}
+	// The worker lane's pause is reported alongside them. It is not one of the
+	// credential slots — there is one of it for the whole process — so it is
+	// asked for by name rather than found by walking accounts.
+	if _, out := r.heldUntil(WorkerSlot, now); out {
+		paused = append(paused, WorkerSlot)
+	}
+	if len(paused) > 0 {
+		r.noteHeld(ctx, paused)
 	}
 
 	queued, err := r.runs.ListQueuedRuns(ctx, 100)
@@ -778,19 +918,81 @@ func (r *Runner) dispatchOne(ctx context.Context) bool {
 	}
 
 	for _, row := range queued {
-		// A pin to a slot that no longer exists is not a pin. The account is
-		// signed out on quit and comes back with a new id, so every pin
-		// written before the last launch names something gone — honouring it
-		// would strand the run in the queue for the life of the row.
-		requested := row.RequestedAccountID
-		if requested != "" && !known(slots, requested) {
-			requested = ""
-		}
-		target, ok := pick(free, requested)
+		g, ok := r.reserve(row, slots, free)
 		if !ok {
-			continue // pinned to a slot that is busy right now
+			// Stepped over rather than stopped on: a job pinned to a busy
+			// account, or a lane at its limit, must not hold up another lane's
+			// work behind it.
+			continue
 		}
-		if r.launch(ctx, row, target) {
+		if r.launch(ctx, row, g) {
+			return true
+		}
+	}
+	return false
+}
+
+// reserve finds the capacity one queued row needs, if it is there right now.
+//
+// The two lanes ask different questions and neither can answer the other's: an
+// account-lane job needs a specific free identity, a worker-lane job needs a
+// permit from a pool. Both come back as a grant, which is what the inflight map
+// records and what busyAccounts and busyWorkers read.
+func (r *Runner) reserve(row store.RunRow, slots, free []account.Account) (grant, bool) {
+	agentName := agentFor(row.Agent).Key
+
+	if r.laneOf(row.Agent) == LaneWorker {
+		if r.busyWorkers(agentName) >= r.cfg.MaxConcurrentAgentJobs {
+			return grant{}, false
+		}
+		// The daemon's own model budget is spent, so starting this would spend
+		// a subprocess to be told again what the last one was told. The pause
+		// lifts itself — see releaseSlot — exactly as the account lane's does.
+		if _, out := r.heldUntil(WorkerSlot, time.Now().UTC()); out {
+			return grant{}, false
+		}
+		return grant{lane: LaneWorker, agent: agentName}, true
+	}
+
+	if len(free) == 0 {
+		return grant{}, false
+	}
+	// A pin to a slot that no longer exists is not a pin. The account is
+	// signed out on quit and comes back with a new id, so every pin written
+	// before the last launch names something gone — honouring it would strand
+	// the run in the queue for the life of the row.
+	requested := row.RequestedAccountID
+	if requested != "" && !known(slots, requested) {
+		requested = ""
+	}
+	target, ok := pick(free, requested)
+	if !ok {
+		return grant{}, false
+	}
+	return grant{
+		lane:      LaneAccount,
+		agent:     agentName,
+		accountID: target.ID,
+		configDir: target.ConfigDir,
+	}, true
+}
+
+// queueNeedsAnAccount reports whether anything currently queued would actually
+// spend a credential slot. It is what separates "nothing can start because
+// nobody is logged in" from "nothing is waiting on a login at all".
+func (r *Runner) queueNeedsAnAccount(ctx context.Context) bool {
+	queued, err := r.runs.ListQueuedRuns(ctx, 100)
+	if err != nil {
+		// Unknown, so answer the way the check behaved before lanes existed:
+		// a store that will not answer is not a reason to stop reporting a
+		// missing login.
+		return true
+	}
+	if len(queued) == 0 {
+		return true
+	}
+	for _, row := range queued {
+		if r.laneOf(row.Agent) == LaneAccount {
 			return true
 		}
 	}
@@ -824,21 +1026,55 @@ func pick(free []account.Account, requested string) (account.Account, bool) {
 
 // launch claims a run for a slot and starts it, reporting whether the claim
 // won. Losing is ordinary: another dispatcher took it first.
-func (r *Runner) launch(ctx context.Context, row store.RunRow, on account.Account) bool {
-	proj, err := r.projects.Resolve(ctx, row.ProjectID)
-	if err != nil {
-		// The folder moved or was withdrawn between queueing and now. The run
-		// is over before it started, and the reason is the useful part — but
-		// only if we are the one that claimed it.
-		if claimed, cerr := r.runs.ClaimRun(ctx, row.ID, on.ID, time.Now().UTC()); cerr != nil || !claimed {
+func (r *Runner) launch(ctx context.Context, row store.RunRow, g grant) bool {
+	// refuse ends a card the dispatcher cannot start, rather than stepping
+	// over it. A row left queued would be picked up on every pump, for ever,
+	// and the operator would watch a card that never starts and never says
+	// why. Claiming first is what makes the reason land on the card.
+	refuse := func(cause error) bool {
+		if claimed, cerr := r.runs.ClaimRun(ctx, row.ID, g.accountID, time.Now().UTC()); cerr != nil || !claimed {
 			return false
 		}
-		row.AccountID = on.ID
-		r.finish(row, newState(row.ID), err, nil)
+		row.AccountID = g.accountID
+		r.finish(row, newState(row.ID), cause, nil)
 		return true
 	}
 
-	claimed, err := r.runs.ClaimRun(ctx, row.ID, on.ID, time.Now().UTC())
+	// Which machinery runs this row, asked before anything is claimed. An
+	// agent with no executor is a refusal for the same reason a withdrawn
+	// folder is: nothing will ever be able to start it.
+	ex, builtin, err := r.executorFor(row.Agent)
+	if err != nil {
+		return refuse(err)
+	}
+
+	// A skill can stop resolving between the card being released and the
+	// dispatcher reaching it.
+	skillBody, skillVersion, err := r.requireSkills(row.Agent)
+	if err != nil {
+		return refuse(err)
+	}
+
+	// Only the claude path needs a folder. Resolve, never Get: this re-runs
+	// every path guard against the filesystem as it is now.
+	var projectPath string
+	if agentFor(row.Agent).NeedsProject {
+		proj, perr := r.projects.Resolve(ctx, row.ProjectID)
+		if perr != nil {
+			// The folder moved or was withdrawn between queueing and now. The
+			// run is over before it started, and the reason is the useful part.
+			return refuse(perr)
+		}
+		projectPath = proj.Path
+	}
+
+	if !builtin {
+		if perr := ex.Prepare(ctx, row); perr != nil {
+			return refuse(perr)
+		}
+	}
+
+	claimed, err := r.runs.ClaimRun(ctx, row.ID, g.accountID, time.Now().UTC())
 	if err != nil {
 		if r.base.Err() == nil {
 			slog.Warn("claiming a queued run", "run_id", row.ID, "error", err)
@@ -850,12 +1086,12 @@ func (r *Runner) launch(ctx context.Context, row store.RunRow, on account.Accoun
 	}
 
 	row.Status = store.RunStatusRunning
-	row.AccountID = on.ID
+	row.AccountID = g.accountID
 	row.StartedAt = time.Now().UTC()
 
-	if r.accounts != nil && on.ID != defaultAccountID {
-		if err := r.accounts.Touch(ctx, on.ID, row.StartedAt); err != nil {
-			slog.Warn("touching an account", "account_id", on.ID, "error", err)
+	if r.accounts != nil && g.lane == LaneAccount && g.accountID != defaultAccountID {
+		if err := r.accounts.Touch(ctx, g.accountID, row.StartedAt); err != nil {
+			slog.Warn("touching an account", "account_id", g.accountID, "error", err)
 		}
 	}
 
@@ -867,7 +1103,7 @@ func (r *Runner) launch(ctx context.Context, row store.RunRow, on account.Accoun
 	// that window, because the window is between launch returning and the
 	// child being scheduled.
 	ctx, cancel := context.WithTimeout(r.base, r.cfg.CodingRunTimeout)
-	h := &inflight{cancel: cancel, accountID: on.ID}
+	h := &inflight{cancel: cancel, held: g}
 	r.mu.Lock()
 	r.inflight[row.ID] = h
 	r.mu.Unlock()
@@ -879,7 +1115,11 @@ func (r *Runner) launch(ctx context.Context, row store.RunRow, on account.Accoun
 		// run ending and the next being registered.
 		defer r.wg.Done()
 		defer r.pump()
-		r.execute(ctx, h, row, proj.Path, on.ConfigDir)
+		if builtin {
+			r.execute(ctx, h, row, projectPath, g.configDir, skillBody, skillVersion)
+			return
+		}
+		r.runExecutor(ctx, h, row, ex, skillBody, skillVersion)
 	}()
 	return true
 }
@@ -919,13 +1159,19 @@ func runFromRow(row store.RunRow) Run {
 		SessionID:          row.SessionID,
 		Model:              row.Model,
 		Attachments:        decodeAttachmentIDs(row.Attachments),
-		CostUSD:            row.CostUSD,
-		NumTurns:           row.NumTurns,
-		Error:              row.Error,
-		CreatedAt:          row.CreatedAt,
-		QueuedAt:           row.QueuedAt,
-		StartedAt:          row.StartedAt,
-		EndedAt:            row.EndedAt,
+		// agentFor rather than row.Agent verbatim: a row written by a newer
+		// binary can name an agent this one has retired, and the wire should
+		// say what will actually run it.
+		Agent:     agentFor(row.Agent).Key,
+		Skills:    strings.Join(agentFor(row.Agent).RequiredSkills, ","),
+		Params:    row.Params,
+		CostUSD:   row.CostUSD,
+		NumTurns:  row.NumTurns,
+		Error:     row.Error,
+		CreatedAt: row.CreatedAt,
+		QueuedAt:  row.QueuedAt,
+		StartedAt: row.StartedAt,
+		EndedAt:   row.EndedAt,
 	}
 }
 
@@ -936,6 +1182,25 @@ func (r *Runner) Get(ctx context.Context, runID string) (Run, error) {
 		return Run{}, err
 	}
 	return runFromRow(row), nil
+}
+
+// ListAll returns every project's runs, most recent first — what the board
+// renders now that a card need not name a project at all.
+//
+// It replaces a fan-out the desktop used to do for itself, one request per
+// project, because there was no cross-project read. There is one now, and a
+// worker-lane card would have been invisible to the old shape: it belongs to
+// no project, so nothing would ever have asked for it.
+func (r *Runner) ListAll(ctx context.Context, limit int) ([]Run, error) {
+	rows, err := r.runs.ListRuns(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Run, len(rows))
+	for i, row := range rows {
+		out[i] = runFromRow(row)
+	}
+	return out, nil
 }
 
 // List returns a project's runs, most recent first — what the desktop app's
@@ -1038,7 +1303,8 @@ func continuation(prompt, cause string) string {
 // before this goroutine exists so the slot is never briefly free; releasing
 // both is still this function's job, because it is the one that knows when the
 // run is over.
-func (r *Runner) execute(ctx context.Context, h *inflight, row store.RunRow, projectPath, configDir string) {
+func (r *Runner) execute(ctx context.Context, h *inflight, row store.RunRow,
+	projectPath, configDir, skillBody, skillVersion string) {
 	defer h.cancel()
 	defer r.bus.CloseRun(row.ID)
 	defer func() {
@@ -1091,6 +1357,25 @@ func (r *Runner) execute(ctx context.Context, h *inflight, row store.RunRow, pro
 	attachments := r.attachmentPaths(decodeAttachmentIDs(row.Attachments))
 
 	args := append(r.args(row.Model, row.SessionID), "--add-dir", projectPath)
+	// The standing instructions, as a file rather than argv: the composition
+	// is a page or more of Markdown, and --append-system-prompt-file is the
+	// flag that says "these apply throughout", as opposed to the prompt, which
+	// is the job. A file that cannot be written is a refusal, not a run
+	// without instructions.
+	if skillBody != "" {
+		skillPath, cleanup, serr := r.writeSkillFile(row.ID, skillBody)
+		if serr != nil {
+			r.finish(row, st, serr, transcript)
+			return
+		}
+		defer cleanup()
+		args = append(args, "--append-system-prompt-file", skillPath)
+		// Said out loud, because it is the answer to "which instructions
+		// produced this" for a run somebody reads later, and the column that
+		// will hold it does not exist yet.
+		slog.Info("run is bound to its agent's skills",
+			"run_id", row.ID, "agent", agents.Default, "skills", skillVersion)
+	}
 	if len(attachments) > 0 {
 		// The images live beside the store, outside the project, so the run
 		// needs a second readable root to reach them at all.

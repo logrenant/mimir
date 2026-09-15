@@ -518,3 +518,136 @@ func TestSetEpisodeTitle_DoesNotTouchTheSummaryOrTheAttemptCount(t *testing.T) {
 		t.Errorf("the retitled episode is not findable by its new title")
 	}
 }
+
+// The archive arrived after the ingest had already read most of this machine's
+// history, and it only ever caught what came afterwards. This is how the debt
+// is found: an episode with no conversation behind it.
+func TestSourcesMissingArchive_NamesTranscriptsWithNoTurns(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	put := func(key, source string) {
+		t.Helper()
+		if err := s.PutEpisode(ctx, EpisodeRow{
+			Key: key, ProjectPath: "/p", SourceKind: "claude_code", SourcePath: source,
+			StartedAt: time.Now(), EndedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("archived", "/t/one.jsonl")
+	put("bare", "/t/two.jsonl")
+
+	if err := s.PutChatTurn(ctx, ChatTurnRow{
+		EpisodeKey: "archived", ProjectPath: "/p", SourceKind: "claude_code",
+		SourcePath: "/t/one.jsonl", UserPrompt: "do the thing",
+		StartedAt: time.Now(), EndedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.SourcesMissingArchive(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "/t/two.jsonl" {
+		t.Fatalf("missing = %v, want only the transcript with no turns", got)
+	}
+}
+
+// It has to end. A machine with nothing missing must pay one query, not a
+// stream of rewinds that never converges.
+func TestSourcesMissingArchive_IsEmptyWhenEverythingIsArchived(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if err := s.PutEpisode(ctx, EpisodeRow{
+		Key: "k", ProjectPath: "/p", SourcePath: "/t/a.jsonl",
+		StartedAt: time.Now(), EndedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutChatTurn(ctx, ChatTurnRow{
+		EpisodeKey: "k", ProjectPath: "/p", SourcePath: "/t/a.jsonl",
+		UserPrompt: "do the thing", StartedAt: time.Now(), EndedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.SourcesMissingArchive(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("missing = %v, want none", got)
+	}
+}
+
+func TestRewindIngest_SendsTheReaderBackToTheStart(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if err := s.PutIngestState(ctx, IngestState{
+		SourcePath: "/t/a.jsonl", ProjectPath: "/p", ByteOffset: 4096, SizeSeen: 4096,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RewindIngest(ctx, "/t/a.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+
+	st, ok, err := s.GetIngestState(ctx, "/t/a.jsonl")
+	if err != nil || !ok {
+		t.Fatalf("state gone after a rewind: ok=%v err=%v", ok, err)
+	}
+	if st.ByteOffset != 0 {
+		t.Errorf("offset = %d, want 0", st.ByteOffset)
+	}
+	// The row is kept, not deleted: the project it belongs to must not be
+	// forgotten along with the offset.
+	if st.ProjectPath != "/p" {
+		t.Errorf("project = %q, want it preserved", st.ProjectPath)
+	}
+}
+
+// The termination property, stated as a test because getting it wrong is
+// invisible: PutChatTurn stores nothing for an episode with neither a prompt
+// nor a reply, so a per-episode criterion would name the same transcript for
+// ever and the catch-up would never end.
+func TestSourcesMissingArchive_ATextlessEpisodeDoesNotKeepATranscriptPending(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	for _, key := range []string{"spoken", "silent"} {
+		if err := s.PutEpisode(ctx, EpisodeRow{
+			Key: key, ProjectPath: "/p", SourceKind: "claude_code", SourcePath: "/t/a.jsonl",
+			StartedAt: time.Now(), EndedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// One of the two has text; the other is a tool-only exchange the archive
+	// declines to store.
+	if err := s.PutChatTurn(ctx, ChatTurnRow{
+		EpisodeKey: "spoken", ProjectPath: "/p", SourceKind: "claude_code",
+		SourcePath: "/t/a.jsonl", UserPrompt: "do the thing",
+		StartedAt: time.Now(), EndedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutChatTurn(ctx, ChatTurnRow{
+		EpisodeKey: "silent", ProjectPath: "/p", SourceKind: "claude_code",
+		SourcePath: "/t/a.jsonl", StartedAt: time.Now(), EndedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.SourcesMissingArchive(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("missing = %v; the transcript has been read, one silent episode is not a debt", got)
+	}
+}

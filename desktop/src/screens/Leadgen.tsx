@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Badge } from "../components/ui/badge";
-import { Button } from "../components/ui/button";
+import { Button, buttonClass } from "../components/ui/button";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
+import { Input } from "../components/ui/field";
+import { Picker, type Choice } from "../components/ui/picker";
+import { Empty } from "../components/ui/empty";
+import { Tabs } from "../components/ui/tabs";
+import { RailItem } from "../components/ui/rail";
+import { isTypingTarget } from "../lib/keys";
 import {
   api,
   CHANNELS,
@@ -48,6 +54,20 @@ import {
   withDraftStatus,
   type SortKey,
 } from "../lib/leadgen";
+
+/**
+ * The three orderings, declared once.
+ *
+ * They were two byte-identical `<select>` blocks in this same file, ninety
+ * lines apart — which is how one of them gains a fourth option a year from now
+ * and the other does not.
+ */
+const SORTS: Choice<SortKey>[] = [
+  { value: "rating", label: "Puana göre" },
+  { value: "reviews", label: "Yorum sayısına göre" },
+  { value: "name", label: "Ada göre" },
+];
+
 
 /**
  * Maps lead-gen: find the companies in a region, read them by category, then
@@ -228,9 +248,9 @@ function SearchPanel(props: {
   onRun: () => void;
 }) {
   return (
-    <Card>
-      <CardBody className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
+    <Card elevation="raised">
+      <CardBody className="flex flex-col gap-4 pt-4">
+        <div className="flex items-center gap-2.5">
           <Field
             className="min-w-64 flex-1"
             placeholder="Google Maps'e yazacağınız arama — örn. Kadıköy diş kliniği"
@@ -239,26 +259,32 @@ function SearchPanel(props: {
             onEnter={props.onRun}
           />
           <Field
-            className="w-40"
+            className="w-44 shrink-0"
             placeholder="bölge etiketi"
             value={props.region}
             onChange={props.onRegion}
             onEnter={props.onRun}
           />
           <Field
-            className="w-20"
+            className="w-24 shrink-0"
             placeholder="adet"
             value={props.count}
             onChange={props.onCount}
             onEnter={props.onRun}
           />
-          {/* The one Electric control on the screen. Everything else is a ghost. */}
-          <Button onClick={props.onRun} disabled={props.busy || !props.query.trim()}>
+          {/* The one filled control on the screen. Everything else is a ghost. */}
+          <Button
+            icon="search"
+            loading={props.busy}
+            className="shrink-0"
+            onClick={props.onRun}
+            disabled={props.busy || !props.query.trim()}
+          >
             {props.busy ? "Aranıyor…" : "Ara"}
           </Button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2.5">
           <Check
             label="kategori boşluk analizi"
             checked={props.withGaps}
@@ -270,17 +296,30 @@ function SearchPanel(props: {
             checked={props.withEmails}
             onChange={props.onEmails}
           />
-          <span className="text-xs text-muted">
+          <span className="max-w-[80ch] text-sm leading-[1.6] text-muted">
             boşluk analizi ve taslaklar model harcar; bölge sonucu önbelleğe alınır. Seçtiğiniz
             şirketlere yazmak için tabloda işaretleyin — bu kutu <em>bulunan herkese</em> yazar.
           </span>
-          {props.error && <span className="text-xs text-bad">{props.error}</span>}
+          {props.error && <span className="font-mono text-xs text-bad">{props.error}</span>}
         </div>
       </CardBody>
     </Card>
   );
 }
 
+/**
+ * A text field that is actually the width it was asked to be.
+ *
+ * The className went straight onto the `Input`, whose base carries `w-full` —
+ * and `cn()` is a join, not a merge, so `w-20` and `w-full` both landed in the
+ * class list and the cascade picked whichever the stylesheet ordered last.
+ * `w-full` won every time. That is why the search row rendered as three
+ * stacked full-width boxes: a "count" input a thousand pixels wide, above a
+ * button on a line of its own.
+ *
+ * The width belongs on a wrapper, which is what `ui/field`'s `Select` already
+ * does and for exactly this reason. The `Input` fills it.
+ */
 function Field(props: {
   className?: string;
   placeholder: string;
@@ -289,15 +328,16 @@ function Field(props: {
   onEnter?: () => void;
 }) {
   return (
-    <input
-      className={`rounded-sm border border-edge bg-ground px-3 py-2 text-sm text-text outline-none placeholder:text-muted/70 focus:border-electric ${props.className ?? ""}`}
-      placeholder={props.placeholder}
-      value={props.value}
-      onChange={(e) => props.onChange(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") props.onEnter?.();
-      }}
-    />
+    <div className={props.className}>
+      <Input
+        placeholder={props.placeholder}
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") props.onEnter?.();
+        }}
+      />
+    </div>
   );
 }
 
@@ -307,14 +347,16 @@ function Check(props: {
   disabled?: boolean;
   onChange: (v: boolean) => void;
 }) {
+  // `ui/checkbox`, not a native box with `accent-electric` on it. This screen
+  // had both — the table drew the real one and the filter bar drew the
+  // browser's — so two visibly different tick boxes appeared six inches apart.
   return (
     <label className="flex cursor-pointer items-center gap-2 text-sm">
-      <input
-        type="checkbox"
-        className="accent-electric"
+      <Checkbox
+        label={props.label}
         checked={props.checked}
         disabled={props.disabled}
-        onChange={(e) => props.onChange(e.target.checked)}
+        onChange={(next) => props.onChange(next)}
       />
       {props.label}
     </label>
@@ -449,11 +491,12 @@ function OutreachBar({ outreach }: { outreach: Outreach }) {
   const nothingToWriteWith = channels.length === 0;
 
   return (
-    <div className="shrink-0 border-t border-electric/30 bg-raised/60">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
-        <span className="text-sm tabular-nums text-mist">
-          {summary.total} şirket seçili
-        </span>
+    // The bar the operator's own selection raises, so it is marked in the
+    // operator's own colour. It was Electric, which on this ground is a dark
+    // grey line — the bar announced itself by appearing and by nothing else.
+    <div className="shrink-0 border-t border-lime/40 bg-raised/70">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+        <span className="figure text-base text-mist">{summary.total} şirket seçili</span>
 
         <span className="text-xs text-muted tabular-nums">
           {summary.withPhone} telefon · {summary.withEmail} e-posta
@@ -472,19 +515,16 @@ function OutreachBar({ outreach }: { outreach: Outreach }) {
           {CHANNELS.map((ch) => {
             const on = channels.includes(ch);
             return (
-              <button
+              <Button
                 key={ch}
-                type="button"
+                size="sm"
+                variant="ghost"
+                active={on}
+                icon={on ? "check" : undefined}
                 onClick={() => outreach.setChannel(ch)}
-                aria-pressed={on}
-                className={`label rounded-sm border px-2.5 py-1.5 leading-none transition-colors ${
-                  on
-                    ? "border-electric/60 bg-electric/10 text-mist"
-                    : "border-edge text-muted hover:border-muted/60 hover:text-mist"
-                }`}
               >
                 {ch === "email" ? "E-posta" : "WhatsApp"}
-              </button>
+              </Button>
             );
           })}
         </div>
@@ -511,7 +551,7 @@ function OutreachBar({ outreach }: { outreach: Outreach }) {
       {outreach.notes.length > 0 && (
         <ul className="max-h-24 space-y-0.5 overflow-auto border-t border-edge px-4 py-2">
           {outreach.notes.map((note, i) => (
-            <li key={i} className="text-[11px] leading-relaxed text-muted">
+            <li key={i} className="text-xs leading-relaxed text-muted">
               {note}
             </li>
           ))}
@@ -566,7 +606,7 @@ function Results(props: {
         aside={
           <div className="flex items-center gap-2">
             <SourceBadge report={report} />
-            <Tabs view={view} drafts={counts.email + counts.whatsapp} onChange={setView} />
+            <ViewTabs view={view} drafts={counts.email + counts.whatsapp} onChange={setView} />
             <Button variant="ghost" onClick={props.onShowLedger}>
               Kayıtlı işletmeler
             </Button>
@@ -609,27 +649,18 @@ function Results(props: {
   );
 }
 
-function Tabs(props: { view: View; drafts: number; onChange: (v: View) => void }) {
-  const tab = (id: View, label: string, badge?: number) => (
-    <button
-      type="button"
-      onClick={() => props.onChange(id)}
-      className={`label rounded-sm px-2.5 py-1.5 leading-none transition-colors ${
-        props.view === id ? "bg-raised text-mist" : "text-muted hover:text-mist"
-      }`}
-    >
-      {label}
-      {badge !== undefined && badge > 0 && (
-        <span className="ml-1.5 tabular-nums text-muted">{badge}</span>
-      )}
-    </button>
-  );
-
+function ViewTabs(props: { view: View; drafts: number; onChange: (v: View) => void }) {
   return (
-    <div className="flex items-center gap-1 rounded-sm border border-edge p-0.5">
-      {tab("companies", "Şirketler")}
-      {tab("drafts", "Taslaklar", props.drafts)}
-    </div>
+    <Tabs
+      id="leadgen-view"
+      variant="segmented"
+      active={props.view}
+      onSelect={props.onChange}
+      tabs={[
+        { key: "companies" as View, label: "Şirketler" },
+        { key: "drafts" as View, label: "Taslaklar", count: props.drafts || undefined },
+      ]}
+    />
   );
 }
 
@@ -771,22 +802,26 @@ function Ledger() {
         aside={
           <div className="flex items-center gap-2">
             {error && <span className="text-xs text-bad">{error}</span>}
-            {loading && <span className="label text-muted">yükleniyor…</span>}
-            <select
-              value={region}
-              onChange={(e) => {
-                setRegion(e.target.value);
-                setSelected(null);
-              }}
-              className="max-w-56 rounded-sm border border-edge bg-ground px-2 py-1.5 text-xs text-text outline-none"
-            >
-              <option value={ALL_REGIONS}>tüm bölgeler</option>
-              {regions.map((r) => (
-                <option key={r.region} value={r.region}>
-                  {describeRegion(r)}
-                </option>
-              ))}
-            </select>
+            {loading && <span className="text-sm text-muted">yükleniyor…</span>}
+            <div className="w-60">
+              <Picker
+                label="Bölge"
+                choices={[
+                  { value: ALL_REGIONS, label: "Tüm bölgeler", icon: "grid" as const },
+                  ...regions.map((r) => ({
+                    value: r.region,
+                    label: r.region,
+                    detail: describeRegion(r),
+                    icon: "search" as const,
+                  })),
+                ]}
+                value={region}
+                onChange={(next) => {
+                  setRegion(next);
+                  setSelected(null);
+                }}
+              />
+            </div>
           </div>
         }
       />
@@ -823,15 +858,9 @@ function Ledger() {
                 checked={onlyWithoutWebsite}
                 onChange={setOnlyWithoutWebsite}
               />
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortKey)}
-                className="rounded-sm border border-edge bg-ground px-2 py-1.5 text-xs text-text outline-none"
-              >
-                <option value="rating">puana göre</option>
-                <option value="reviews">yorum sayısına göre</option>
-                <option value="name">ada göre</option>
-              </select>
+              <div className="w-44">
+                <Picker label="Sıralama" choices={SORTS} value={sort} onChange={setSort} />
+              </div>
               <span className="label ml-auto text-muted tabular-nums">{ordered.length} satır</span>
             </div>
 
@@ -918,15 +947,9 @@ function CompaniesView({
             checked={onlyWithoutWebsite}
             onChange={setOnlyWithoutWebsite}
           />
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortKey)}
-            className="rounded-sm border border-edge bg-ground px-2 py-1.5 text-xs text-text outline-none"
-          >
-            <option value="rating">puana göre</option>
-            <option value="reviews">yorum sayısına göre</option>
-            <option value="name">ada göre</option>
-          </select>
+          <div className="w-44">
+            <Picker label="Sıralama" choices={SORTS} value={sort} onChange={setSort} />
+          </div>
           <span className="label ml-auto text-muted tabular-nums">{rows.length} satır</span>
         </div>
 
@@ -969,33 +992,33 @@ function CategoryRail(props: {
   const row = (key: string, label: string, count: number, share: number | null, without: number | null) => {
     const active = props.selected === key;
     return (
-      <button
+      <RailItem
         key={key}
-        type="button"
-        onClick={() => props.onSelect(key)}
-        className={`group w-full border-l-2 px-3 py-2 text-left transition-colors ${
-          active ? "border-electric bg-raised" : "border-transparent hover:bg-raised/60"
-        }`}
-      >
-        <span className="flex items-baseline justify-between gap-2">
-          <span className={`truncate text-xs ${active ? "text-mist" : "text-muted"}`}>{label}</span>
-          <span className="shrink-0 text-xs tabular-nums text-muted">{count}</span>
-        </span>
-        {/* A meter, not a chart: it says "this is where the mass is" at a
-            glance and takes two pixels of height to do it. Two, not one — a
-            single pixel over a panel tint reads as a text underline. */}
-        {share !== null && (
-          <span className="mt-1.5 block h-0.5 w-full rounded-full bg-edge">
-            <span
-              className={`block h-0.5 rounded-full ${active ? "bg-electric" : "bg-muted/60"}`}
-              style={{ width: `${Math.max(share * 100, 3)}%` }}
-            />
+        on={active}
+        onSelect={() => props.onSelect(key)}
+        label={
+          <span className="flex min-w-0 flex-col">
+            <span className="flex items-baseline justify-between gap-2">
+              <span className="truncate text-xs">{label}</span>
+              <span className="shrink-0 text-xs tabular-nums text-muted">{count}</span>
+            </span>
+            {/* A meter, not a chart: it says "this is where the mass is" at a
+                glance and takes two pixels of height to do it. Two, not one — a
+                single pixel over a panel tint reads as a text underline. */}
+            {share !== null && (
+              <span className="mt-1.5 block h-0.5 w-full rounded-full bg-edge">
+                <span
+                  className={`block h-0.5 rounded-full ${active ? "bg-lime" : "bg-muted/60"}`}
+                  style={{ width: `${Math.max(share * 100, 3)}%` }}
+                />
+              </span>
+            )}
+            {without !== null && without > 0 && (
+              <span className="mt-1 block text-xs text-muted">{without} web sitesi yok</span>
+            )}
           </span>
-        )}
-        {without !== null && without > 0 && (
-          <span className="mt-1 block text-[10px] text-muted">{without} web sitesi yok</span>
-        )}
-      </button>
+        }
+      />
     );
   };
 
@@ -1022,7 +1045,7 @@ function CompanyTable({
   outreach: Outreach;
 }) {
   if (rows.length === 0) {
-    return <p className="px-4 py-8 text-center text-sm text-muted">Bu süzgeçle şirket yok.</p>;
+    return <Empty title="Bu süzgeçle şirket yok." hint="Süzgeci genişletin ya da kategori seçimini kaldırın." />;
   }
 
   return (
@@ -1059,6 +1082,13 @@ function CompanyTable({
                 // list with checkboxes uses, and it is worth following even
                 // though space used to open the row here: the box is now the
                 // thing on the row a keyboard is most likely to be aimed at.
+                //
+                // Not while somebody is typing. A row-level binding that
+                // `preventDefault()`s the space bar makes it untypable in any
+                // text field that ever lands on the row, and the symptom is
+                // "the space bar is broken" — which is exactly the report the
+                // brand panel produced for an unrelated reason.
+                if (isTypingTarget(e.target)) return;
                 if (e.key === "Enter") {
                   e.preventDefault();
                   onSelect(c.place_id);
@@ -1072,7 +1102,7 @@ function CompanyTable({
                 // bottom is about to spend on, so it has to stay visible while
                 // the operator moves the detail panel around.
                 ticked
-                  ? "bg-electric/[0.07] hover:bg-electric/10"
+                  ? "bg-lime/[0.06] hover:bg-lime/10"
                   : active
                     ? "bg-raised"
                     : "hover:bg-raised/50 focus:bg-raised/50"
@@ -1097,7 +1127,7 @@ function CompanyTable({
               <td className="py-2 pr-3 text-right tabular-nums text-muted">
                 {c.rating ? c.rating.toFixed(1) : "—"}
                 {c.review_count ? (
-                  <span className="ml-1 text-[10px]">({c.review_count})</span>
+                  <span className="ml-1 text-xs">({c.review_count})</span>
                 ) : null}
               </td>
               <td className="py-2 pr-3">
@@ -1159,19 +1189,16 @@ function DraftState({ company }: { company: LeadCompany }) {
   return (
     <span className="flex items-center gap-1">
       {marks.map(({ ch, draft }) => (
-        <span
+        <Badge
           key={ch}
           title={`${channelLabel(ch)} · ${statusLabel(draft?.status)}`}
-          className={`label rounded-sm border px-1.5 py-0.5 leading-none ${
-            draft?.status === "sent"
-              ? "border-ok/45 text-ok"
-              : draft?.status === "skipped"
-                ? "border-edge text-muted"
-                : "border-electric/60 text-electric"
-          }`}
+          tone={
+            draft?.status === "sent" ? "ok" : draft?.status === "skipped" ? "muted" : "accent"
+          }
+          className="px-1.5 py-0.5"
         >
           {ch === "whatsapp" ? "WA" : "EP"}
-        </span>
+        </Badge>
       ))}
     </span>
   );
@@ -1235,7 +1262,7 @@ function CompanyDetail({
         ))}
         {company.email && <Row label="e-posta">{company.email}</Row>}
         {!company.website && (
-          <p className="border-l-2 border-ok/50 pl-2 text-[11px] leading-relaxed text-muted">
+          <p className="border-l-2 border-ok/50 pl-2 text-xs leading-relaxed text-muted">
             Bu şirketin listede web sitesi yok — aramanın aradığı şey bu.
           </p>
         )}
@@ -1258,7 +1285,7 @@ function CompanyDetail({
                 <span className="label text-muted">{channelLabel(ch)}</span>
                 <span className="label text-muted">{statusLabel(draft?.status)}</span>
               </div>
-              <p className="max-h-40 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-muted">
+              <p className="max-h-40 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-muted">
                 {draft?.body}
               </p>
               <div className="flex gap-2">
@@ -1357,8 +1384,10 @@ function DraftsView({
   };
 
   // Arrow keys move, g marks sent, a skips. Bound on the pane rather than the
-  // window so typing in the search field above never triggers them.
+  // window, and guarded against the field the operator is typing in — the pane
+  // holding no text input today is where it happens to stand, not a rule.
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (isTypingTarget(e.target)) return;
     if (e.key === "ArrowDown" || e.key === "j") {
       e.preventDefault();
       setCursor((c) => Math.min(c + 1, items.length - 1));
@@ -1373,7 +1402,10 @@ function DraftsView({
   };
 
   useEffect(() => {
-    listRef.current?.querySelector<HTMLElement>("[data-active='true']")?.scrollIntoView({
+    // `aria-current` rather than a `data-active` twin: `ui/rail` already marks
+    // the selected row for the screen reader, and two attributes for one state
+    // is one that can go stale.
+    listRef.current?.querySelector<HTMLElement>("[aria-current='page']")?.scrollIntoView({
       block: "nearest",
     });
   }, [cursor]);
@@ -1382,20 +1414,19 @@ function DraftsView({
   // choice is "which letters am I reading", which is a property of this pane,
   // and it has to stay reachable when the channel it names is empty.
   const tabs = (
-    <div className="flex shrink-0 items-center gap-1 border-b border-edge px-2 py-1.5">
-      {CHANNELS.map((ch) => (
-        <button
-          key={ch}
-          type="button"
-          onClick={() => onChannel(ch)}
-          className={`label flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 py-1.5 leading-none transition-colors ${
-            ch === channel ? "bg-raised text-mist" : "text-muted hover:text-mist"
-          }`}
-        >
-          {channelLabel(ch)}
-          <span className="tabular-nums text-muted">{counts[ch] ?? 0}</span>
-        </button>
-      ))}
+    <div className="shrink-0 border-b border-edge px-2 py-1.5">
+      <Tabs
+        id="leadgen-channel"
+        variant="segmented"
+        active={channel}
+        onSelect={onChannel}
+        className="w-full [&>button]:flex-1"
+        tabs={CHANNELS.map((ch) => ({
+          key: ch,
+          label: channelLabel(ch),
+          count: counts[ch] ?? 0,
+        }))}
+      />
     </div>
   );
 
@@ -1403,12 +1434,11 @@ function DraftsView({
     return (
       <div className="flex min-h-0 flex-1">
         <div className="flex w-60 shrink-0 flex-col border-r border-edge">{tabs}</div>
-        <div className="grid flex-1 place-items-center">
-          <p className="max-w-sm p-8 text-center text-sm leading-relaxed text-muted">
-            {channelLabel(channel)} kanalında taslak yok. Şirketler tablosunda yazmak istediğiniz
-            şirketleri işaretleyin, alttaki çubuktan kanalı seçip “Taslak yaz” deyin.
-          </p>
-        </div>
+        <Empty
+          className="flex-1"
+          title={`${channelLabel(channel)} kanalında taslak yok.`}
+          hint="Şirketler tablosunda yazmak istediğiniz şirketleri işaretleyin, alttaki çubuktan kanalı seçip “Taslak yaz” deyin."
+        />
       </div>
     );
   }
@@ -1428,24 +1458,19 @@ function DraftsView({
             const active = i === cursor;
             const status = item.draft.status;
             return (
-              <button
+              <RailItem
                 key={item.company.place_id || item.company.name}
-                type="button"
-                data-active={active}
-                onClick={() => setCursor(i)}
-                className={`flex w-full items-center gap-2 border-l-2 px-3 py-2 text-left transition-colors ${
-                  active ? "border-electric bg-raised" : "border-transparent hover:bg-raised/60"
-                }`}
-              >
-                <span
-                  className={`size-1.5 shrink-0 rounded-full ${
-                    status === "sent" ? "bg-ok" : status === "skipped" ? "bg-edge" : "bg-electric"
-                  }`}
-                />
-                <span className={`truncate text-xs ${active ? "text-mist" : "text-muted"}`}>
-                  {item.company.name}
-                </span>
-              </button>
+                on={active}
+                onSelect={() => setCursor(i)}
+                lead={
+                  <span
+                    className={`size-1.5 shrink-0 rounded-full ${
+                      status === "sent" ? "bg-ok" : status === "skipped" ? "bg-edge" : "bg-electric"
+                    }`}
+                  />
+                }
+                label={<span className="truncate text-xs">{item.company.name}</span>}
+              />
             );
           })}
         </div>
@@ -1514,7 +1539,7 @@ function DraftsView({
                 href={wa}
                 target="_blank"
                 rel="noreferrer"
-                className="label inline-flex items-center rounded-sm border border-edge px-3.5 py-2 leading-none text-text transition-colors hover:border-muted/60 hover:bg-raised"
+                className={buttonClass("ghost")}
               >
                 WhatsApp'ta aç
               </a>
@@ -1522,7 +1547,7 @@ function DraftsView({
             {mailto && (
               <a
                 href={mailto}
-                className="label inline-flex items-center rounded-sm border border-edge px-3.5 py-2 leading-none text-text transition-colors hover:border-muted/60 hover:bg-raised"
+                className={buttonClass("ghost")}
               >
                 E-postada aç
               </a>

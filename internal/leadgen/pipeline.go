@@ -203,6 +203,39 @@ type Pipeline struct {
 	contacts ContactEnricher
 	// ledger is the durable record of what a run found. Nil forgets the run.
 	ledger LedgerStore
+
+	// permits bounds how many full runs are in flight at once, across every
+	// entry point.
+	//
+	// It lives here rather than in whatever calls Run, and that placement is
+	// the whole point: there are two callers now — POST /maps/leadgen and a
+	// board card — and a limit held by one of them would leave the other
+	// unbounded. A run behind this fans out over sixty websites and somebody
+	// else's Maps front end; two of them started from two different doors are
+	// the same load on the same servers.
+	permits chan struct{}
+}
+
+// ErrBusy means every permit is spent. The caller decides what that means: the
+// dispatcher steps over the card and tries again on the next pump, the HTTP
+// route answers 429 rather than queueing a request the operator is watching.
+var ErrBusy = errors.New("leadgen: too many runs in flight")
+
+// acquire takes a permit or reports that there is none. It never blocks: a
+// caller that waited here would hold an HTTP request open behind work it
+// cannot see, which is exactly the failure the queue exists to avoid.
+func (p *Pipeline) acquire(ctx context.Context) (release func(), err error) {
+	if p.permits == nil {
+		return func() {}, nil
+	}
+	select {
+	case p.permits <- struct{}{}:
+		return func() { <-p.permits }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		return nil, ErrBusy
+	}
 }
 
 // UseContacts installs the contact enricher used by Export.
@@ -225,6 +258,10 @@ func (p *Pipeline) UseLedger(l LedgerStore) { p.ledger = l }
 // may each be nil; the pipeline degrades the corresponding stage rather than
 // failing. The source may not: with nothing to search there is no pipeline.
 func NewPipeline(cfg config.Config, source RegionSource, rs RegionStore, cat *Categorizer, gaps *GapAnalyzerRunner, messages *MessageRunner) *Pipeline {
+	limit := cfg.MaxConcurrentLeadgenRuns
+	if limit <= 0 {
+		limit = 1
+	}
 	return &Pipeline{
 		cfg:         cfg,
 		source:      source,
@@ -232,6 +269,7 @@ func NewPipeline(cfg config.Config, source RegionSource, rs RegionStore, cat *Ca
 		categorizer: cat,
 		gaps:        gaps,
 		messages:    messages,
+		permits:     make(chan struct{}, limit),
 	}
 }
 
@@ -245,6 +283,12 @@ func (p *Pipeline) Run(ctx context.Context, req RunRequest) (Report, error) {
 	if p.source == nil || !p.source.Available() {
 		return Report{}, errors.New("leadgen: pipeline has no region search source")
 	}
+
+	release, err := p.acquire(ctx)
+	if err != nil {
+		return Report{}, err
+	}
+	defer release()
 
 	region := req.Region
 	if region == "" {

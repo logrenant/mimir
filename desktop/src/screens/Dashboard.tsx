@@ -1,12 +1,33 @@
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Fragment,
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
+  useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from "react";
-import { css, HoverButton, HoverDiv } from "../components/hover";
+import { cn } from "../lib/cn";
+import { Badge } from "../components/ui/badge";
+import { Icon, type IconName } from "../components/ui/icon";
+import { MenuItem, MenuList } from "../components/ui/menu";
+import { Orb } from "../components/ui/orb";
+import {
+  Popover,
+  PopoverBody,
+  PopoverFoot,
+  PopoverHead,
+} from "../components/ui/popover";
+import { Card, CardBody, CardHeader } from "../components/ui/card";
+import { Masthead } from "../components/ui/masthead";
+import { Button, IconButton } from "../components/ui/button";
+import { Overlay } from "../components/ui/overlay";
+import { Pulse } from "../components/ui/pulse";
+import { Stream } from "../components/ui/stream";
+import { Rail, RailItem } from "../components/ui/rail";
+import { SETTLE, screenSwap, useMotion } from "../lib/motion";
 import {
   api,
   DaemonError,
@@ -14,10 +35,16 @@ import {
   type CodingModel,
   type Diagnostics,
   type DiagnosticsDependency,
+  type LLMProviderList,
   type Run,
 } from "../lib/daemon";
 import {
   actionsFor,
+  catalogParams,
+  catalogSelection,
+  catalogSummary,
+  heldLabel,
+  leadgenSummary,
   allowedMove,
   BOARD_COLUMNS,
   canContinue,
@@ -29,23 +56,55 @@ import {
   groupRuns,
   isSetTime,
   isStalled,
+  modelControlFor,
   retryOutcome,
+  withCatalogSelection,
   type ColumnID,
 } from "../lib/board";
-import { Wordmark } from "../components/brand";
-import { loadAttachments, TaskComposer, type Attached } from "../components/TaskComposer";
-import { modelLabel, ModelSelect, useModels } from "../components/ModelPicker";
+import { Mark, Wordmark } from "../components/brand";
+import {
+  loadAttachments,
+  TaskComposer,
+  type Attached,
+} from "../components/TaskComposer";
+import {
+  modelLabel,
+  ModelSelect,
+  ProviderModelPicker,
+  useModels,
+  useProviders,
+} from "../components/ModelPicker";
+import { modelForProvider } from "../lib/settings";
+import { modelChangeWarning } from "../lib/catalog";
+import { identityLabel, useAccounts } from "../components/AccountsProvider";
 import { useTerminals } from "../components/TerminalsProvider";
 import { useRuns, runTime, type BoardRun } from "../components/RunsProvider";
 import { MODULES, type ModuleDef } from "../lib/modules";
 import { NewTaskOverlay } from "../components/NewTaskOverlay";
-import { useDiagnostics } from "../components/DiagnosticsPanel";
+import {
+  DaemonFootnote,
+  DependencyRow,
+  HealthStrip,
+  useDiagnostics,
+} from "../components/DiagnosticsPanel";
 import { Home } from "./Home";
 import { Leadgen } from "./Leadgen";
 import { Brain } from "./Brain";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { Settings } from "./Settings";
 import { Terminals } from "./Terminals";
 import { Workspace } from "./Workspace";
+
+/**
+ * Katalog is loaded on demand, and it is the only screen that is.
+ *
+ * Its rich-text editor is the heaviest thing in this app — measured at +130 kB
+ * gzipped, more than half the bundle again — and most launches never open it.
+ * Everything else here is small enough that splitting it would buy a spinner
+ * and nothing else.
+ */
+const Catalog = lazy(() => import("./catalog"));
+
 
 /**
  * The app's one screen: a sidebar over the daemon's real modules (Coding
@@ -54,26 +113,6 @@ import { Workspace } from "./Workspace";
  * list, the module descriptions — comes from `lib/daemon.ts` or is static
  * copy; there is no sample or placeholder data.
  */
-
-function navStyle(on: boolean): string {
-  return [
-    "display:flex;align-items:center;gap:9px;width:100%;text-align:left",
-    `background:${on ? "#1c1f24" : "transparent"}`,
-    "border:none;border-radius:6px;padding:7px 9px;cursor:pointer",
-    `font:${on ? "500" : "450"} 12.5px/1 ui-sans-serif,system-ui`,
-    `color:${on ? "#eef0f2" : "#8a9099"}`,
-  ].join(";");
-}
-
-function navDotStyle(on: boolean): CSSProperties {
-  return {
-    width: 5,
-    height: 5,
-    borderRadius: "50%",
-    flexShrink: 0,
-    background: on ? "#2547e8" : "#3b3f48",
-  };
-}
 
 // ---------------------------------------------------------------------------
 // main component
@@ -86,13 +125,40 @@ function navDotStyle(on: boolean): CSSProperties {
 // governs modules rather than being one.
 type Screen = "home" | "board" | "terminals" | "brain" | "settings" | "module";
 
+/** The screen's own name, so a crash says which tab it was. The sidebar's
+ * labels, not the type's members — the operator never saw "leadgen". */
+function screenLabel(screen: Screen, mod: ModuleDef): string {
+  switch (screen) {
+    case "home":
+      return "Genel";
+    case "board":
+      return "Board";
+    case "terminals":
+      return "Terminals";
+    case "brain":
+      return "Brain";
+    case "settings":
+      return "Ayarlar";
+    case "module":
+      return mod.name;
+  }
+}
+
 export function Dashboard() {
   const [screen, setScreen] = useState<Screen>("home");
   const [activeModule, setActiveModule] = useState<ModuleDef>(MODULES[0]);
+  // Which import the Katalog screen should open on, when a finished card sent
+  // the operator there. Cleared by opening the module any other way, so the
+  // screen does not keep reopening the last card's result.
+  const [catalogImportID, setCatalogImportID] = useState<string>("");
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
-  const { diagnostics, error: diagnosticsError, refresh: refreshDiagnostics } = useDiagnostics();
+  const {
+    diagnostics,
+    error: diagnosticsError,
+    refresh: refreshDiagnostics,
+  } = useDiagnostics();
   const terminals = useTerminals();
 
   // The pill used to be a hardcoded green dot over an unhandled promise: it
@@ -115,14 +181,6 @@ export function Dashboard() {
       });
   }, []);
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOverlayOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
   const goHome = () => setScreen("home");
   const goBoard = () => setScreen("board");
   const goTerminals = () => setScreen("terminals");
@@ -130,6 +188,14 @@ export function Dashboard() {
   const goSettings = () => setScreen("settings");
   const goModule = (mod: ModuleDef) => {
     setActiveModule(mod);
+    setCatalogImportID("");
+    setScreen("module");
+  };
+  const goCatalog = (importID: string) => {
+    const mod = MODULES.find((m) => m.key === "catalog");
+    if (!mod) return;
+    setActiveModule(mod);
+    setCatalogImportID(importID);
     setScreen("module");
   };
   const openDiagnostics = () => {
@@ -137,11 +203,24 @@ export function Dashboard() {
     setOverlayOpen(true);
   };
 
-  return (
-    <div style={{ height: "100%", display: "grid", gridTemplateRows: "auto 1fr", background: "#101114", overflow: "hidden", position: "relative" }}>
-      <TitleBar baseUrl={baseUrl} connected={connected} onOpenDiagnostics={openDiagnostics} />
+  // The key is what makes a screen a distinct thing to AnimatePresence: a
+  // module is keyed by which module, so switching between Coding runner and
+  // Lead-gen crosses rather than mutating one pane in place.
+  const key = screen === "module" ? `module:${activeModule.key}` : screen;
+  const swap = useMotion(screenSwap);
 
-      <div style={{ display: "grid", gridTemplateColumns: "214px 1fr", minHeight: 0 }}>
+  return (
+    <div className="relative grid h-full grid-rows-[auto_1fr] overflow-hidden bg-ground">
+      <TitleBar
+        baseUrl={baseUrl}
+        connected={connected}
+        diagnostics={diagnostics}
+        diagnosticsError={diagnosticsError}
+        onRefreshDiagnostics={() => void refreshDiagnostics()}
+        onOpenDiagnostics={openDiagnostics}
+      />
+
+      <div className="grid min-h-0 grid-cols-[240px_1fr]">
         <Sidebar
           screen={screen}
           activeModuleKey={screen === "module" ? activeModule.key : undefined}
@@ -152,27 +231,70 @@ export function Dashboard() {
           onGoBrain={goBrain}
           onGoSettings={goSettings}
           onGoModule={goModule}
-          onOpenDiagnostics={openDiagnostics}
         />
 
-        <div style={{ minHeight: 0, minWidth: 0, overflow: "hidden" }}>
-          {screen === "home" && <Home onGoBoard={goBoard} onGoTerminals={goTerminals} onGoModule={goModule} />}
-          {screen === "board" && <BoardScreen onGoTerminals={goTerminals} />}
-          {screen === "terminals" && <Terminals />}
-          {screen === "brain" && <Brain />}
-          {screen === "settings" && <Settings />}
-          {screen === "module" && <ModuleScreen mod={activeModule} onGoHome={goHome} onGoTerminals={goTerminals} />}
+        {/* `.grid-ground` textures the pane the screens sit on. It is on the
+            container and not on each screen so a screen that paints its own
+            background simply covers it. */}
+        <div className="grid-ground min-h-0 min-w-0 overflow-hidden">
+          {/* One boundary around the screen rather than one per screen: a tab
+              that throws takes itself down and leaves the sidebar standing, and
+              the key means switching tabs is the way out of a broken one. */}
+          <ErrorBoundary
+            what={screenLabel(screen, activeModule)}
+            resetKey={screen}
+          >
+            {/* `mode="wait"` because the two screens share one pane: overlapping
+                them would put two scroll containers on top of each other for
+                200ms, and the outgoing one is the taller of the two often
+                enough that the pane would visibly jump. */}
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={key}
+                variants={swap}
+                initial="hidden"
+                animate="shown"
+                exit="gone"
+                className="h-full min-h-0"
+              >
+                {screen === "home" && (
+                  <Home
+                    onGoBoard={goBoard}
+                    onGoTerminals={goTerminals}
+                    onGoModule={goModule}
+                  />
+                )}
+                {screen === "board" && (
+                  <BoardScreen
+                    onGoTerminals={goTerminals}
+                    onGoCatalog={goCatalog}
+                  />
+                )}
+                {screen === "terminals" && <Terminals />}
+                {screen === "brain" && <Brain />}
+                {screen === "settings" && <Settings />}
+                {screen === "module" && (
+                  <ModuleScreen
+                    mod={activeModule}
+                    catalogImportID={catalogImportID}
+                    onGoHome={goHome}
+                    onGoTerminals={goTerminals}
+                    onGoBoard={goBoard}
+                  />
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </ErrorBoundary>
         </div>
       </div>
 
-      {overlayOpen && (
-        <DiagnosticsOverlay
-          baseUrl={baseUrl}
-          diagnostics={diagnostics}
-          error={diagnosticsError}
-          onClose={() => setOverlayOpen(false)}
-        />
-      )}
+      <DiagnosticsOverlay
+        open={overlayOpen}
+        baseUrl={baseUrl}
+        diagnostics={diagnostics}
+        error={diagnosticsError}
+        onClose={() => setOverlayOpen(false)}
+      />
     </div>
   );
 }
@@ -181,50 +303,196 @@ export function Dashboard() {
 // title bar + sidebar
 // ---------------------------------------------------------------------------
 
+/**
+ * The title bar.
+ *
+ * 38px, no brand mark, and the word "orchestration" set in caps at the left —
+ * which is to say the top of the application named a *category* rather than
+ * the product, and the one place every screen shares carried nothing anybody
+ * needed. 48px now, and it carries the symbol, the wordmark, and the daemon.
+ *
+ * The daemon reading is the part that actually changed. It used to open
+ * `DiagnosticsOverlay`: a modal, over a scrim, in the middle of the screen,
+ * dismissed before work could resume — for four lines of status. A status
+ * check is not a decision and should not be staged like one. It is a
+ * {@link Popover} now, hanging off the control that produced it, and the modal
+ * is still there behind a button in its footer for the times the answer is
+ * "something is broken, show me everything".
+ */
 function TitleBar({
   baseUrl,
   connected,
+  diagnostics,
+  diagnosticsError,
+  onRefreshDiagnostics,
   onOpenDiagnostics,
 }: {
   baseUrl: string | null;
   connected: boolean;
+  diagnostics: Diagnostics | null;
+  diagnosticsError: string | null;
+  onRefreshDiagnostics: () => void;
   onOpenDiagnostics: () => void;
 }) {
+  const pill = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 14,
-        height: 38,
-        padding: "0 14px",
-        background: "#16181c",
-        borderBottom: "1px solid #24272d",
-        WebkitUserSelect: "none",
-      }}
-    >
-      <span className="label" style={{ color: "#8a9099" }}>orchestration</span>
-      <div style={{ flex: 1 }} />
+    <div className="relative flex h-12 items-center gap-3 border-b border-edge bg-panel px-4 shadow-elev-1 select-none">
+      <Mark className="size-4 text-mist" />
+      <Wordmark className="h-3 w-auto text-mist/90" />
+      <span lang="en" className="label ml-1 text-muted/60">
+        orchestration
+      </span>
+
+      <div className="flex-1" />
+
+      {/* The one round thing at this end of the application. It is a status
+          reading rather than a button-shaped button, and it is also the
+          daemon's heartbeat: the dot ticks each time the shell hears back, so
+          a dot that has gone still is the reading, not a dot that has gone
+          red. */}
       <button
+        ref={pill}
         type="button"
-        onClick={onOpenDiagnostics}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 7,
-          background: "none",
-          border: "1px solid #24272d",
-          borderRadius: 999,
-          padding: "3px 9px 3px 8px",
-          cursor: "pointer",
-          font: "400 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace",
-          color: "#8a9099",
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => {
+          if (!open) onRefreshDiagnostics();
+          setOpen((was) => !was);
         }}
+        className={cn(
+          "focus-ring flex h-7 items-center gap-2 rounded-full pr-2.5 pl-2.5",
+          "font-mono text-xs transition-colors duration-[var(--dur-fast)]",
+          "outline outline-edge hover:outline-edge-strong",
+          open ? "bg-raised text-text" : "text-muted hover:text-text",
+        )}
       >
-        <span style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? "#c6f04a" : "#e5484d" }} />
+        <Pulse
+          tone={connected ? "ok" : "bad"}
+          beat={connected ? (baseUrl ?? "up") : undefined}
+        />
         {baseUrl ?? "bağlanıyor…"}
       </button>
+
+      <DaemonPopover
+        open={open}
+        anchor={pill}
+        baseUrl={baseUrl}
+        connected={connected}
+        diagnostics={diagnostics}
+        error={diagnosticsError}
+        onClose={() => setOpen(false)}
+        onOpenFull={() => {
+          setOpen(false);
+          onOpenDiagnostics();
+        }}
+      />
     </div>
+  );
+}
+
+/**
+ * The daemon, read without leaving the screen.
+ *
+ * Everything here comes from `GET /diagnostics` and from the shell's own
+ * handshake. There is no summary line computed from a mood: the transport
+ * either answered or it did not, and each dependency says for itself.
+ */
+function DaemonPopover({
+  open,
+  anchor,
+  baseUrl,
+  connected,
+  diagnostics,
+  error,
+  onClose,
+  onOpenFull,
+}: {
+  open: boolean;
+  anchor: React.RefObject<HTMLButtonElement | null>;
+  baseUrl: string | null;
+  connected: boolean;
+  diagnostics: Diagnostics | null;
+  error: string | null;
+  onClose: () => void;
+  onOpenFull: () => void;
+}) {
+  return (
+    <Popover
+      open={open}
+      onClose={onClose}
+      anchor={anchor}
+      align="end"
+      width={320}
+      label="Daemon durumu"
+    >
+      <PopoverHead
+        title="Daemon"
+        aside={
+          <Badge tone={connected ? "ok" : "bad"} shape="status" dot>
+            {connected ? "bağlı" : "yok"}
+          </Badge>
+        }
+      />
+      <PopoverBody flush className="flex flex-col gap-3.5">
+        <p className="font-mono text-xs break-all text-muted">
+          {baseUrl ?? "bağlanıyor…"}
+        </p>
+        <div className="h-px bg-edge" />
+        <HealthStrip diagnostics={diagnostics} error={error} />
+        {diagnostics && <DaemonFootnote diagnostics={diagnostics} />}
+      </PopoverBody>
+      <PopoverFoot>
+        <Button variant="quiet" size="sm" iconAfter="arrowRight" onClick={onOpenFull}>
+          Tam teşhis
+        </Button>
+      </PopoverFoot>
+    </Popover>
+  );
+}
+
+interface NavItem {
+  key: string;
+  label: string;
+  icon: IconName;
+  onSelect: () => void;
+  /** A count in the trailing position — open terminals, and nothing else so far. */
+  count?: number;
+  /** Modules are marked: they are what the daemon does, as against the parts
+   * of the shell itself. One dot each, and it does not move. */
+  module?: boolean;
+}
+
+/**
+ * The nav row, and the rail that slides between them.
+ *
+ * The selected row was `bg-raised` and a 2px Electric rail. Both halves were
+ * invisible: `raised` sat six luminance points above the ground it was drawn
+ * on, and Electric at #2547e8 against Carbon is a dark grey line. In practice
+ * the sidebar did not show which screen you were on.
+ *
+ * It now says so three times over — a filled surface, a 3px Lime rail, and the
+ * label going from `muted` to full Mist at medium weight — because "where am
+ * I" is the one question a sidebar exists to answer and it should not need to
+ * be squinted at. The rail is still one element shared across the rows by
+ * `layoutId`, so it *travels* to the row you picked rather than blinking out
+ * of one and into another.
+ */
+function NavRow({ item, on }: { item: NavItem; on: boolean }) {
+  return (
+    <RailItem
+      label={item.label}
+      icon={item.icon}
+      on={on}
+      onSelect={item.onSelect}
+      layoutId="nav-rail"
+      mark={
+        item.count !== undefined && item.count > 0 ? (
+          <span className="font-mono text-xs text-muted/60">{item.count}</span>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -238,7 +506,6 @@ function Sidebar({
   onGoBrain,
   onGoSettings,
   onGoModule,
-  onOpenDiagnostics,
 }: {
   screen: Screen;
   activeModuleKey?: string;
@@ -249,71 +516,76 @@ function Sidebar({
   onGoBrain: () => void;
   onGoSettings: () => void;
   onGoModule: (mod: ModuleDef) => void;
-  onOpenDiagnostics: () => void;
 }) {
-  return (
-    <div style={{ borderRight: "1px solid #24272d", background: "#101114", display: "grid", gridTemplateRows: "1fr auto", minHeight: 0 }}>
-      <div style={{ overflowY: "auto", padding: "14px 10px", display: "flex", flexDirection: "column", gap: 18 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-          <SidebarLabel>Mimir</SidebarLabel>
-          <button type="button" onClick={onGoHome} style={css(navStyle(screen === "home"))}>
-            <span style={navDotStyle(screen === "home")} />
-            Genel
-          </button>
-          <button type="button" onClick={onGoBoard} style={css(navStyle(screen === "board"))}>
-            <span style={navDotStyle(screen === "board")} />
-            Board
-          </button>
-          <button type="button" onClick={onGoTerminals} style={css(navStyle(screen === "terminals"))}>
-            <span style={navDotStyle(screen === "terminals")} />
-            Terminals
-            {terminalCount > 0 && (
-              <span style={{ marginLeft: "auto", font: "400 10px/1 ui-monospace,Menlo,monospace", color: "#4f545e" }}>
-                {terminalCount}
-              </span>
-            )}
-          </button>
-          <button type="button" onClick={onGoBrain} style={css(navStyle(screen === "brain"))}>
-            <span style={navDotStyle(screen === "brain")} />
-            Brain
-          </button>
-          <button type="button" onClick={onGoSettings} style={css(navStyle(screen === "settings"))}>
-            <span style={navDotStyle(screen === "settings")} />
-            Ayarlar
-          </button>
-        </div>
+  const { account, status } = useAccounts();
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-          <SidebarLabel>MODÜLLER</SidebarLabel>
-          {MODULES.map((mod) => (
-            <button key={mod.key} type="button" onClick={() => onGoModule(mod)} style={css(navStyle(screen === "module" && activeModuleKey === mod.key))}>
-              <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#c6f04a", flexShrink: 0 }} />
-              {mod.name}
-            </button>
+  const mimir: NavItem[] = [
+    { key: "home", label: "Genel", icon: "grid", onSelect: onGoHome },
+    { key: "board", label: "Board", icon: "board", onSelect: onGoBoard },
+    {
+      key: "terminals",
+      label: "Terminals",
+      icon: "terminal",
+      onSelect: onGoTerminals,
+      count: terminalCount,
+    },
+    { key: "brain", label: "Brain", icon: "brain", onSelect: onGoBrain },
+    { key: "settings", label: "Ayarlar", icon: "settings", onSelect: onGoSettings },
+  ];
+
+  const active = screen === "module" ? `module:${activeModuleKey}` : screen;
+  const identity = identityLabel(status) || account?.label || "hesap bağlı değil";
+
+  return (
+    <div className="grid min-h-0 grid-rows-[1fr_auto] border-r border-edge bg-ground">
+      <div className="flex flex-col gap-6 overflow-y-auto px-3 py-4">
+        <Rail label="Mimir" className="gap-1">
+          <SidebarLabel>Mimir</SidebarLabel>
+          {mimir.map((item) => (
+            <NavRow key={item.key} item={item} on={active === item.key} />
           ))}
-        </div>
+        </Rail>
+
+        <Rail label="Modüller" className="gap-1">
+          <SidebarLabel>Modüller</SidebarLabel>
+          {MODULES.map((mod) => (
+            <NavRow
+              key={mod.key}
+              item={{
+                key: `module:${mod.key}`,
+                label: mod.name,
+                icon: mod.icon,
+                module: true,
+                onSelect: () => onGoModule(mod),
+              }}
+              on={active === `module:${mod.key}`}
+            />
+          ))}
+        </Rail>
       </div>
 
-      <div style={{ borderTop: "1px solid #24272d", padding: 10 }}>
-        <HoverButton
-          base="display:flex;align-items:center;gap:9px;background:none;border:none;border-radius:6px;padding:7px 9px;cursor:pointer;font:450 12px/1 ui-sans-serif,system-ui;color:#8a9099;text-align:left;width:100%"
-          hover="background:#16181c;color:#eef0f2"
-          onClick={onOpenDiagnostics}
-        >
-          <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#c6f04a", flexShrink: 0 }} />
-          Daemon &amp; bağımlılıklar
-        </HoverButton>
+      {/* The foot used to hold the diagnostics button; that reading lives in
+          the title bar now, beside the connection it describes. What belongs
+          here is the identity every run is charged to — the one piece of state
+          the operator has to be able to see without opening anything. */}
+      <div className="flex items-center gap-2.5 border-t border-edge px-3 py-3">
+        <Orb size={26} live={Boolean(account)} />
+        <span className="min-w-0 flex-1 truncate text-sm text-muted" title={identity}>
+          {identity}
+        </span>
       </div>
     </div>
   );
 }
 
-function SidebarLabel({ children }: { children: ReactNode }) {
-  return (
-    <span style={{ font: "500 9.5px/1 ui-monospace,Menlo,monospace", letterSpacing: ".12em", color: "#4f545e", padding: "0 8px 6px" }}>
-      {children}
-    </span>
-  );
+/**
+ * The group heading above a run of nav rows.
+ *
+ * `Terminals.tsx` had a byte-identical copy of this called `SectionLabel`,
+ * differing only in its padding; it imports this one now.
+ */
+export function SidebarLabel({ children }: { children: ReactNode }) {
+  return <span className="label px-3 pb-1 text-muted/60">{children}</span>;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,18 +600,34 @@ function SidebarLabel({ children }: { children: ReactNode }) {
 // project, merged client-side, because the daemon has no cross-project route.
 // ---------------------------------------------------------------------------
 
-const COLUMN_COLOR: Record<ColumnID, string> = {
-  backlog: "#4f545e",
-  queued: "#e5a23d",
-  running: "#2547e8",
-  done: "#c6f04a",
-  failed: "#e5484d",
+/**
+ * The five columns, marked.
+ *
+ * `queued` was `#e5a23d` — an amber that exists in no token, in eleven places,
+ * and nobody had noticed it was a fifth colour. Queued is not a warning: it is
+ * work that is going to happen, which is what Electric reports here, so it
+ * takes Electric at half strength. Backlog is quieter still, because a card
+ * nobody has committed to is the one state that should not catch the eye.
+ */
+const COLUMN_DOT: Record<ColumnID, string> = {
+  backlog: "bg-muted/40",
+  queued: "bg-electric/60",
+  running: "bg-electric",
+  done: "bg-lime",
+  failed: "bg-bad",
 };
 
-function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
+function BoardScreen({
+  onGoTerminals,
+  onGoCatalog,
+}: {
+  onGoTerminals: () => void;
+  onGoCatalog: (importID: string) => void;
+}) {
   const terminals = useTerminals();
   const { models } = useModels();
-  const { runs, error, loading, refresh } = useRuns();
+  const providers = useProviders();
+  const { runs, limits, error, loading, refresh } = useRuns();
   const [selected, setSelected] = useState<BoardRun | null>(null);
   // Opening a card to read it and opening it to change it are the same overlay
   // and two intents: the card body opens the first, "düzenle" the second.
@@ -358,7 +646,10 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
 
   const say = (message: string) => {
     setNotice(message);
-    window.setTimeout(() => setNotice((current) => (current === message ? null : current)), 4000);
+    window.setTimeout(
+      () => setNotice((current) => (current === message ? null : current)),
+      4000,
+    );
   };
 
   const act = async (what: () => Promise<unknown>) => {
@@ -449,47 +740,48 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
   };
 
   return (
-    <div style={{ height: "100%", display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0 }}>
-      <div style={{ padding: "18px 22px 12px", display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid #24272d", flexWrap: "wrap" }}>
-        <h1 className="display" style={{ margin: 0, font: "400 18px/1.2 Aldrich,ui-sans-serif,system-ui", color: "#eef0f2" }}>
-          Board
-        </h1>
-        <span style={{ font: "400 11px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}>
-          {runs ? `${runs.length} kart` : "yükleniyor…"}
-        </span>
-        <div style={{ flex: 1 }} />
-        {notice && (
-          <span style={{ font: "400 11px/1.4 ui-monospace,Menlo,monospace", color: "#e5a23d", maxWidth: 460, textAlign: "right" }}>
-            {notice}
-          </span>
-        )}
-        <HoverButton
-          base="background:#2547e8;border:none;border-radius:5px;padding:6px 12px;cursor:pointer;font:500 11.5px/1 ui-sans-serif,system-ui;color:#eef0f2"
-          hover="background:#1d3ac4"
-          onClick={() => setComposing(true)}
-        >
-          + Yeni task
-        </HoverButton>
-        <HoverButton
-          base="background:none;border:1px solid #24272d;border-radius:5px;padding:6px 10px;cursor:pointer;font:400 10.5px/1 ui-monospace,Menlo,monospace;color:#8a9099"
-          hover="border-color:#343841;color:#eef0f2"
-          onClick={() => void refresh()}
-        >
-          {loading ? "…" : "yenile"}
-        </HoverButton>
+    <div className="grid h-full min-h-0 grid-rows-[auto_1fr]">
+      <div className="px-6 pt-5">
+        <Masthead
+          title="Board"
+          count={runs ? `${runs.length} kart` : "yükleniyor…"}
+          aside={
+            <>
+              {/* The notice sits with the controls that cause it rather than
+                  floating over the columns, and it is Electric because almost
+                  everything it says is "queued" — a refusal to move a card, or
+                  a card that will start when the current one ends. */}
+              {notice && (
+                <span className="max-w-[420px] text-right font-mono text-xs leading-[1.45] text-electric">
+                  {notice}
+                </span>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="refresh"
+                loading={loading}
+                onClick={() => void refresh()}
+              >
+                Yenile
+              </Button>
+              <Button icon="plus" onClick={() => setComposing(true)}>
+                Yeni task
+              </Button>
+            </>
+          }
+        />
       </div>
 
-      <div style={{ minHeight: 0, overflow: "auto", padding: "16px 22px 22px" }}>
+      <div className="min-h-0 overflow-auto px-8 pt-5 pb-8">
         {error && (
-          <p style={{ margin: "0 0 14px", font: "400 11.5px/1.5 ui-monospace,Menlo,monospace", color: "#e5484d" }}>{error}</p>
+          <p className="mb-4 font-mono text-xs leading-[1.5] text-bad">{error}</p>
         )}
 
         {runs === null ? (
-          <p style={{ margin: 0, font: "400 12px/1.6 ui-sans-serif,system-ui", color: "#6b7079" }}>
-            Kartlar yükleniyor…
-          </p>
+          <p className="text-sm leading-relaxed text-muted/70">Kartlar yükleniyor…</p>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(210px, 1fr))", gap: 12, alignItems: "start", minWidth: 1120 }}>
+          <div className="grid min-w-[1040px] grid-cols-[repeat(5,minmax(0,1fr))] items-start gap-4">
             {BOARD_COLUMNS.map((column) => (
               <div
                 key={column.id}
@@ -497,28 +789,30 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
                   if (column.droppable) e.preventDefault();
                 }}
                 onDrop={() => onDrop(column.id)}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 9,
-                  background: "#131518",
-                  border: `1px solid ${dragged && column.droppable ? "#2547e8" : "#1c1f24"}`,
-                  borderRadius: 8,
-                  padding: 10,
-                  minHeight: 140,
-                }}
+                className={cn(
+                  "flex min-h-[160px] flex-col gap-3 rounded-lg bg-sunken p-3",
+                  "outline transition-[outline-color] duration-[var(--dur-fast)] ease-decisive",
+                  // Only a column that will take the card lights up, and it
+                  // lights up in the colour of the operator's own actions. The
+                  // three runner-owned columns stay dark, which is the refusal
+                  // said before the drop rather than after it.
+                  dragged && column.droppable ? "outline-lime" : "outline-edge/70",
+                )}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: COLUMN_COLOR[column.id] }} />
-                  <span className="label" style={{ color: "#8a9099" }}>{column.label}</span>
-                  <span style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#4f545e" }}>
+                <div className="flex items-center gap-2 px-1">
+                  <span
+                    aria-hidden
+                    className={`size-1.5 rounded-full ${COLUMN_DOT[column.id]}`}
+                  />
+                  <span className="label text-muted">{column.label}</span>
+                  <span className="font-mono text-xs text-muted/60">
                     {grouped[column.id].length}
                   </span>
                 </div>
 
                 {grouped[column.id].length === 0 && (
-                  <span style={{ font: "400 11px/1.5 ui-sans-serif,system-ui", color: "#3b3f48" }}>
-                    {column.id === "backlog" ? "“+ Yeni task” ile başlayın" : "boş"}
+                  <span className="px-1 text-sm leading-[1.5] text-muted/50">
+                    {column.id === "backlog" ? "“Yeni task” ile başlayın" : "boş"}
                   </span>
                 )}
 
@@ -527,6 +821,7 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
                     key={run.id}
                     run={run as BoardRun}
                     now={now}
+                    held={heldLabel(run, limits)}
                     modelName={modelLabel(models, run.model)}
                     onOpen={() => {
                       setSelected(run as BoardRun);
@@ -541,12 +836,15 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
                     busy={busy}
                     onRun={() => void runCard(run as BoardRun)}
                     onStop={() => void act(() => api.stopCodingTask(run.id))}
-                    onDelete={() => void act(() => api.deleteCodingTask(run.id))}
+                    onDelete={() =>
+                      void act(() => api.deleteCodingTask(run.id))
+                    }
                     onTerminal={() => watch(run as BoardRun)}
                     onContinue={() => void retryCard(run as BoardRun, false)}
                     onRetry={() => void retryCard(run as BoardRun, true)}
                     onKick={() => void kickQueue()}
                     stalled={isStalled(run, runs, now)}
+                    beingDragged={dragged?.id === run.id}
                   />
                 ))}
               </div>
@@ -568,6 +866,7 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
         <RunDetailOverlay
           run={selected}
           models={models}
+          providers={providers}
           editing={editingCard}
           onEditingChange={setEditingCard}
           onClose={() => setSelected(null)}
@@ -581,10 +880,43 @@ function BoardScreen({ onGoTerminals }: { onGoTerminals: () => void }) {
             watch(selected);
             setSelected(null);
           }}
+          onGoResult={() => {
+            const p = catalogParams(selected);
+            if (!p?.import_id) return;
+            onGoCatalog(p.import_id);
+            setSelected(null);
+          }}
         />
       )}
     </div>
   );
+}
+
+/**
+ * The primary action for a card in this state.
+ *
+ * A card had up to eight buttons on it in a wrapping flex, and on a 210px
+ * column they wrapped to three rows — so a board of nine cards was a board of
+ * about forty controls with nowhere for the eye to land. They were also all the
+ * same weight, which said that "sil" and "run" were equally likely to be what
+ * you came here to do.
+ *
+ * Each status has exactly one verb you almost always want. That one is a
+ * button; the rest are a menu. The ranking lives here rather than inline so the
+ * card cannot disagree with itself between renders, and `actionsFor` remains
+ * the authority on which verbs are *legal* — this only orders the legal ones.
+ */
+function primaryAction(actions: string[], resumable: boolean, stalled: boolean): string | null {
+  if (actions.includes("run")) return "run";
+  if (actions.includes("stop")) return "stop";
+  // A queued card nothing is moving: the useful verb is the one that says why,
+  // not the one that takes it out of the queue.
+  if (stalled && actions.includes("kick")) return "kick";
+  if (actions.includes("continue") && resumable) return "continue";
+  if (actions.includes("retry")) return "retry";
+  if (actions.includes("terminal")) return "terminal";
+  if (actions.includes("kick")) return "kick";
+  return null;
 }
 
 function RunCard({
@@ -604,9 +936,20 @@ function RunCard({
   onKick,
   onEdit,
   stalled,
+  beingDragged,
+  held,
 }: {
   run: BoardRun;
   now: number;
+  /**
+   * When this queued card's work carries on, or empty.
+   *
+   * A parked card and a card that has simply not started yet are both `queued`,
+   * and an operator who cannot tell them apart reads an overnight pause as a
+   * hang. The answer is the daemon's own live holds, never a guess at the row's
+   * error text.
+   */
+  held: string;
   /** Which model this card will spend, or did. Empty when nothing is pinned. */
   modelName: string;
   /** Whether something is already running, which is what makes a retry wait. */
@@ -624,8 +967,13 @@ function RunCard({
   onEdit: () => void;
   /** Queued, with nothing running and nothing having moved it for a while. */
   stalled: boolean;
+  /** This card is the one under the pointer. The only thing here that casts. */
+  beingDragged: boolean;
 }) {
-  const actions = actionsFor(run.status);
+  const overflow = useRef<HTMLButtonElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const actions = actionsFor(run.status, run.agent);
   // Everything a drag can act on: the two operator columns, and a failure that
   // can be picked back up by dropping it in Queued.
   const draggable =
@@ -638,47 +986,127 @@ function RunCard({
   // The hint is where "it will wait" is said. Saying it on the button label
   // would make the two buttons change width as another card starts and stops.
   const waits = busy ? " — şu an bir task çalışıyor, kuyruğa alınır" : "";
-  const continueHint = `Oturumu kaldığı yerden sürdürür (--resume)${waits}`;
-  const kickHint = "Kuyruğu yeniden yoklar. Başlamıyorsa nedenini söyler — çoğunlukla bağlı hesap yoktur.";
-  const retryHint = `Oturumu atar, görevi baştan çalıştırır${waits}`;
+
+  const VERB: Record<string, { label: string; icon: IconName; act: () => void; hint?: string }> = {
+    run: { label: "Çalıştır", icon: "play", act: onRun },
+    kick: {
+      label: "Kuyruğu yokla",
+      icon: "refresh",
+      act: onKick,
+      hint: "Kuyruğu yeniden yoklar. Başlamıyorsa nedenini söyler — çoğunlukla bağlı hesap yoktur.",
+    },
+    stop: { label: "Durdur", icon: "stop", act: onStop },
+    dequeue: { label: "Kuyruktan çıkar", icon: "close", act: onStop },
+    continue: {
+      label: "Devam et",
+      icon: "play",
+      act: onContinue,
+      hint: `Oturumu kaldığı yerden sürdürür (--resume)${waits}`,
+    },
+    retry: {
+      label: "Baştan dene",
+      icon: "refresh",
+      act: onRetry,
+      hint: `Oturumu atar, görevi baştan çalıştırır${waits}`,
+    },
+    edit: {
+      label: "Düzenle",
+      icon: "settings",
+      act: onEdit,
+      hint: "Başlığı, isteği, modeli ve görselleri değiştirir",
+    },
+    terminal: { label: "Terminal", icon: "terminal", act: onTerminal },
+    delete: { label: "Sil", icon: "trash", act: onDelete },
+  };
+
+  const primary = primaryAction(actions, resumable, stalled);
+  // Everything else that is legal, in the order `actionsFor` gave it — the
+  // daemon's ordering, not a second opinion about it.
+  const rest = actions.filter(
+    (a) => a !== primary && VERB[a] && !(a === "continue" && !resumable),
+  );
 
   return (
-    <HoverDiv
-      base="background:#16181c;border:1px solid #24272d;border-radius:7px;padding:10px 11px;display:flex;flex-direction:column;gap:8;cursor:pointer"
-      hover="border-color:#343841"
+    // `layout` is what makes a drop land. Without it a card that changes column
+    // is unmounted from one list and mounted in another, which reads as a jump
+    // and leaves the operator unsure whether the drop took. The spring carries
+    // it, so the answer is visible in the motion itself.
+    <motion.div
+      layout
+      layoutId={run.id}
+      transition={SETTLE}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onOpen}
+      className={cn(
+        "flex cursor-pointer flex-col gap-2.5 rounded-lg bg-panel p-3.5 shadow-elev-1",
+        "outline outline-transparent",
+        "transition-[outline-color,box-shadow] duration-[var(--dur-fast)] ease-decisive",
+        "hover:outline-edge-strong",
+        // Only while it is genuinely off the page does it cast a shadow.
+        beingDragged && "shadow-elev-2 outline-lime",
+      )}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-        <span style={{ font: "400 10px/1 ui-monospace,Menlo,monospace", color: "#4f545e" }}>
-          {run.id.slice(0, 8)}
-        </span>
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-xs text-muted/60">{run.id.slice(0, 8)}</span>
         {run.status === "stopped" && (
-          <span style={{ font: "400 9.5px/1 ui-monospace,Menlo,monospace", color: "#8a9099", border: "1px solid #3b3f48", borderRadius: 3, padding: "2px 4px" }}>
-            DURDURULDU
+          <Badge tone="muted" className="px-1.5 py-0.5">
+            durduruldu
+          </Badge>
+        )}
+        <div className="flex-1" />
+        {run.attachments && run.attachments.length > 0 && (
+          <span className="flex items-center gap-1 font-mono text-xs text-muted/60">
+            <Icon name="image" size={12} />
+            {run.attachments.length}
           </span>
         )}
-        <div style={{ flex: 1 }} />
         {run.status === "running" && (
-          <span style={{ font: "400 10px/1 ui-monospace,Menlo,monospace", color: "#2547e8" }}>
-            {elapsedLabel(run.started_at, now)}
-          </span>
-        )}
-        {(run.attachments?.length ?? 0) > 0 && (
-          <span style={{ font: "400 10px/1 ui-monospace,Menlo,monospace", color: "#8a9099" }}>
-            🖼 {run.attachments?.length}
-          </span>
+          <span className="figure text-xs text-lime">{elapsedLabel(run.started_at, now)}</span>
         )}
       </div>
 
-      <p style={{ margin: 0, font: "450 12px/1.5 ui-sans-serif,system-ui", color: "#eef0f2", textWrap: "pretty" }}>
-        {cardTitle(run)}
-      </p>
+      <span className="text-base leading-[1.45] text-text">{cardTitle(run)}</span>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 7, font: "400 10px/1 ui-monospace,Menlo,monospace", color: "#4f545e" }}>
-        <span>{run.projectName}</span>
+      {/* What a lead-gen card will actually search. The prompt is the
+          operator's sentence; this is the region and category the executor was
+          handed, and the router has often read one into the other. */}
+      {leadgenSummary(run) && (
+        <span className="font-mono text-xs leading-[1.45] text-muted">
+          ⌖ {leadgenSummary(run)}
+        </span>
+      )}
+
+      {/* What a catalog card will rewrite, read from the card's own params.
+          Never a second request: task-80 removed the board's 1+N fan-out, and
+          a card body that fetched its own import would put it back one card at
+          a time. */}
+      {catalogSummary(run) && (
+        <span className="font-mono text-xs leading-[1.45] text-muted">
+          ⌖ {catalogSummary(run)}
+        </span>
+      )}
+
+      {/* The pause, said out loud. "queued" alone cannot distinguish work that
+          has not started from work the model budget stopped, and only one of
+          them ends by itself. */}
+      {held && (
+        <Badge tone="warn" className="self-start px-1.5 py-0.5">
+          {held}
+        </Badge>
+      )}
+
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-muted/60">
+        {/* Which sub-agent will do this, and under which instructions. Shown
+            on every card rather than only the unusual ones: "coding" is a
+            choice now, and a chip that appears only when the answer is
+            surprising teaches the operator to read its absence as nothing. */}
+        <AgentChip agent={run.agent} skills={run.skills} />
+        {/* A card with no project names none — a sub-agent that opens no
+            folder has nothing to put here, and an empty span would read as a
+            project whose name failed to load. */}
+        {run.projectName && <span>· {run.projectName}</span>}
         {modelName && <span>· {modelName}</span>}
         {when && <span>· {formatRelativeTime(when)}</span>}
       </div>
@@ -686,65 +1114,66 @@ function RunCard({
       {/* Said on the card rather than in a toast: this is the state the card is
           in, and it is still in it after the toast has gone. */}
       {stalled && (
-        <p style={{ margin: 0, font: "400 10px/1.4 ui-monospace,Menlo,monospace", color: "#e5a23d" }}>
+        <p className="font-mono text-xs leading-[1.45] text-warn/80">
           kuyrukta bekliyor, çalışan yok — “kuyruğu yokla” nedenini söyler
         </p>
       )}
 
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
-        {actions.includes("run") && <CardButton tone="accent" onClick={onRun}>▶ run</CardButton>}
-        {actions.includes("kick") && (
-          <CardButton tone={stalled ? "accent" : undefined} onClick={onKick} title={kickHint}>
-            kuyruğu yokla
-          </CardButton>
-        )}
-        {actions.includes("stop") && <CardButton tone="bad" onClick={onStop}>stop</CardButton>}
-        {actions.includes("dequeue") && <CardButton onClick={onStop}>kuyruktan çıkar</CardButton>}
-        {/* Continue is offered only when there is a session to resume; without
-            one the card would promise to carry on and quietly start over. */}
-        {actions.includes("continue") && resumable && (
-          <CardButton tone="accent" onClick={onContinue} title={continueHint}>
-            ▶ devam et
-          </CardButton>
-        )}
-        {actions.includes("retry") && (
-          <CardButton onClick={onRetry} title={retryHint}>
-            baştan dene
-          </CardButton>
-        )}
-        {actions.includes("edit") && (
-          <CardButton onClick={onEdit} title="Başlığı, isteği, modeli ve görselleri değiştirir">
-            düzenle
-          </CardButton>
-        )}
-        {actions.includes("terminal") && <CardButton onClick={onTerminal}>terminal</CardButton>}
-        {actions.includes("delete") && <CardButton onClick={onDelete}>sil</CardButton>}
-      </div>
-    </HoverDiv>
-  );
-}
+      {/* The run's own stream, on the card that is producing it. */}
+      {run.status === "running" && <Stream />}
 
-function CardButton({
-  children,
-  onClick,
-  tone,
-  title,
-}: {
-  children: ReactNode;
-  onClick: () => void;
-  tone?: "accent" | "bad";
-  title?: string;
-}) {
-  const color = tone === "accent" ? "#2547e8" : tone === "bad" ? "#e5484d" : "#8a9099";
-  return (
-    <HoverButton
-      base={`background:none;border:1px solid ${tone ? color : "#24272d"};border-radius:4px;padding:3px 7px;cursor:pointer;font:400 10px/1 ui-monospace,Menlo,monospace;color:${color}`}
-      hover="background:#1c1f24"
-      onClick={onClick}
-      title={title}
-    >
-      {children}
-    </HoverButton>
+      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+        {primary && (
+          <Button
+            size="sm"
+            variant={primary === "stop" ? "danger" : primary === "run" ? "primary" : "ghost"}
+            icon={VERB[primary].icon}
+            title={VERB[primary].hint}
+            onClick={VERB[primary].act}
+          >
+            {VERB[primary].label}
+          </Button>
+        )}
+        <div className="flex-1" />
+        {rest.length > 0 && (
+          <>
+            <IconButton
+              ref={overflow}
+              name="more"
+              label="Diğer işlemler"
+              size="sm"
+              aria-haspopup="menu"
+              active={menuOpen}
+              activeAria="expanded"
+              onClick={() => setMenuOpen((was) => !was)}
+            />
+            <Popover
+              open={menuOpen}
+              onClose={() => setMenuOpen(false)}
+              anchor={overflow}
+              align="end"
+              width={220}
+              label="Kart işlemleri"
+            >
+              <MenuList label="Kart işlemleri">
+                {rest.map((key) => (
+                  <MenuItem
+                    key={key}
+                    icon={VERB[key].icon}
+                    title={VERB[key].label}
+                    tone={key === "delete" ? "danger" : "normal"}
+                    onSelect={() => {
+                      setMenuOpen(false);
+                      VERB[key].act();
+                    }}
+                  />
+                ))}
+              </MenuList>
+            </Popover>
+          </>
+        )}
+      </div>
+    </motion.div>
   );
 }
 
@@ -762,19 +1191,27 @@ function CardButton({
 function RunDetailOverlay({
   run,
   models,
+  providers,
   editing,
   onEditingChange,
   onClose,
   onTerminal,
   onSaved,
+  onGoResult,
 }: {
   run: BoardRun;
   models: CodingModel[] | null;
+  /** The daemon's own providers, for a card whose model is one of those rather
+   *  than a coding model. Null when the daemon did not answer, and then the
+   *  card simply offers no model control — the pass still routes. */
+  providers: LLMProviderList | null;
   editing: boolean;
   onEditingChange: (next: boolean) => void;
   onClose: () => void;
   onTerminal: () => void;
   onSaved: (updated: Run) => void;
+  /** Opens the screen that owns this card's result. */
+  onGoResult: () => void;
 }) {
   const [attachments, setAttachments] = useState<Attached[]>([]);
   const [title, setTitle] = useState(run.title ?? "");
@@ -784,6 +1221,13 @@ function RunDetailOverlay({
   const [problem, setProblem] = useState<string | null>(null);
 
   const editable = canEdit(run.status);
+  const control = modelControlFor(run);
+  // A catalog card's model lives in its params, not in the column: the column
+  // is rewritten with whatever the *last* attempt spent, so a card re-run after
+  // a model change would show the old model until the new pass finished.
+  const saved = catalogSelection(run);
+  const [provider, setProvider] = useState(saved.provider);
+  const [llmModel, setLLMModel] = useState(saved.model);
 
   // The form follows the card. It is re-seeded when the card itself changes —
   // a save returns a new row, and a poll can bring one in underneath — rather
@@ -792,8 +1236,11 @@ function RunDetailOverlay({
     setTitle(run.title ?? "");
     setPrompt(run.prompt);
     setModel(run.model ?? "");
+    const next = catalogSelection(run);
+    setProvider(next.provider);
+    setLLMModel(next.model);
     setProblem(null);
-  }, [run.id, run.title, run.prompt, run.model]);
+  }, [run.id, run.title, run.prompt, run.model, run.params]);
 
   useEffect(() => {
     if (!run.attachments || run.attachments.length === 0) {
@@ -803,11 +1250,17 @@ function RunDetailOverlay({
     void loadAttachments(run.attachments).then(setAttachments);
   }, [run.attachments]);
 
+  const selectionChanged =
+    control === "catalog" &&
+    (provider !== saved.provider || llmModel !== saved.model);
+
   const dirty =
     title.trim() !== (run.title ?? "").trim() ||
     prompt.trim() !== run.prompt.trim() ||
-    model !== (run.model ?? "") ||
-    attachments.map((a) => a.id).join(",") !== (run.attachments ?? []).join(",");
+    (control === "coding" && model !== (run.model ?? "")) ||
+    selectionChanged ||
+    attachments.map((a) => a.id).join(",") !==
+      (run.attachments ?? []).join(",");
 
   const save = async () => {
     if (!prompt.trim()) return;
@@ -817,8 +1270,17 @@ function RunDetailOverlay({
       const updated = await api.editCodingTask(run.id, {
         title: title.trim(),
         prompt: prompt.trim(),
-        model,
+        // The column and the params say the same thing when the model is
+        // what changed: the executor reads the params, and every screen
+        // already draws the column. Sent only then — a catalog card's column
+        // holds whatever the last attempt actually spent, and overwriting that
+        // while renaming the card would erase a true fact about it.
+        model: control === "coding" ? model : selectionChanged ? llmModel : undefined,
         attachment_ids: attachments.map((a) => a.id),
+        params:
+          selectionChanged
+            ? (withCatalogSelection(run, provider, llmModel) ?? undefined)
+            : undefined,
       });
       onSaved(updated);
       onEditingChange(false);
@@ -833,6 +1295,8 @@ function RunDetailOverlay({
     setTitle(run.title ?? "");
     setPrompt(run.prompt);
     setModel(run.model ?? "");
+    setProvider(saved.provider);
+    setLLMModel(saved.model);
     setProblem(null);
     if (run.attachments && run.attachments.length > 0) {
       void loadAttachments(run.attachments).then(setAttachments);
@@ -845,51 +1309,147 @@ function RunDetailOverlay({
   const rows: [string, string][] = [
     ["proje", run.projectName],
     ["durum", run.status],
-    ["model", modelLabel(models, run.model) || run.model || "—"],
+    // What the *next* attempt will spend, for a card that carries its own
+    // choice; what the last one did for everyone else. A card re-run under a
+    // new model used to read as unchanged here until the pass finished.
+    [
+      "model",
+      control === "catalog"
+        ? saved.model || "ayarlardaki model"
+        : modelLabel(models, run.model) || run.model || "—",
+    ],
     ["oturum", run.session_id ?? "—"],
     ["maliyet", run.cost_usd ? `$${run.cost_usd.toFixed(4)}` : "—"],
     ["tur", run.num_turns ? String(run.num_turns) : "—"],
-    ["oluşturuldu", isSetTime(run.created_at) ? formatRelativeTime(run.created_at as string) : "—"],
-    ["başladı", isSetTime(run.started_at) ? formatRelativeTime(run.started_at as string) : "—"],
-    ["bitti", isSetTime(run.ended_at) ? formatRelativeTime(run.ended_at as string) : "—"],
+    [
+      "oluşturuldu",
+      isSetTime(run.created_at)
+        ? formatRelativeTime(run.created_at as string)
+        : "—",
+    ],
+    [
+      "başladı",
+      isSetTime(run.started_at)
+        ? formatRelativeTime(run.started_at as string)
+        : "—",
+    ],
+    [
+      "bitti",
+      isSetTime(run.ended_at)
+        ? formatRelativeTime(run.ended_at as string)
+        : "—",
+    ],
   ];
 
   return (
-    <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(10,11,13,.86)", display: "grid", placeItems: "center", padding: 28 }}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ width: 600, maxWidth: "100%", maxHeight: "80vh", overflowY: "auto", background: "#16181c", border: "1px solid #24272d", borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", gap: 13 }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ font: "400 11px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}>{run.id}</span>
-          <div style={{ flex: 1 }} />
+    <Overlay
+      open
+      onClose={onClose}
+      width={600}
+      title={cardTitle(run)}
+      subtitle={<span className="font-mono">{run.id}</span>}
+      aside={
+        <>
           {editable && !editing && (
-            <HoverButton
-              base="background:none;border:1px solid #24272d;border-radius:5px;padding:4px 9px;cursor:pointer;font:400 10.5px/1 ui-monospace,Menlo,monospace;color:#8a9099"
-              hover="border-color:#343841;color:#eef0f2"
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => onEditingChange(true)}
             >
               düzenle
-            </HoverButton>
+            </Button>
           )}
-          <HoverButton
-            base="background:none;border:1px solid #24272d;border-radius:5px;padding:4px 9px;cursor:pointer;font:400 10.5px/1 ui-monospace,Menlo,monospace;color:#8a9099"
-            hover="border-color:#343841;color:#eef0f2"
-            onClick={onTerminal}
-          >
+          {/* A finished catalog card has a result somewhere else, and the
+              board is not where it can be read. The door is offered only once
+              there is something behind it — on a card still queued it would
+              open an import with no drafts in it. */}
+          {catalogParams(run) && run.status === "completed" && (
+            <Button variant="ghost" size="sm" onClick={onGoResult}>
+              ürünleri gör
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onTerminal}>
             terminali aç
-          </HoverButton>
-          <HoverButton base="background:none;border:none;cursor:pointer;font:400 13px/1 ui-monospace,Menlo,monospace;color:#6b7079" hover="color:#eef0f2" onClick={onClose}>
-            ✕
-          </HoverButton>
-        </div>
-
+          </Button>
+        </>
+      }
+      footer={
+        editable && editing ? (
+          <>
+            <span className="mr-auto font-mono text-xs leading-[1.45] text-muted/60">
+              {run.status === "queued"
+                ? "kuyrukta — başlarsa kaydetme reddedilir"
+                : "⌘↵ ile kaydet"}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={saving}
+              onClick={cancel}
+            >
+              Vazgeç
+            </Button>
+            <Button
+              size="sm"
+              loading={saving}
+              disabled={!dirty || !prompt.trim()}
+              onClick={() => void save()}
+            >
+              Kaydet
+            </Button>
+          </>
+        ) : undefined
+      }
+    >
+      <div className="flex flex-col gap-3">
         {editable && editing ? (
           <>
-            <label style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
-              <span className="label" style={{ color: "#6b7079" }}>MODEL</span>
-              <ModelSelect models={models} value={model} onChange={setModel} disabled={saving} />
-            </label>
+            {control === "coding" && (
+              <label className="flex min-w-0 flex-col gap-1.5">
+                <span className="label text-muted">MODEL</span>
+                <ModelSelect
+                  models={models}
+                  value={model}
+                  onChange={setModel}
+                  disabled={saving}
+                />
+              </label>
+            )}
+
+            {/* A catalog card spends the daemon's own provider, never a coding
+                model, so this is the picker it gets — and changing it here is
+                the whole point: a failed card is edited and then re-run, and
+                the next attempt reads exactly this. */}
+            {control === "catalog" && (
+              <div className="flex flex-col gap-2">
+                <ProviderModelPicker
+                  providers={providers}
+                  provider={provider}
+                  model={llmModel}
+                  routedLabel="Ayarlardaki model"
+                  onProvider={(next) => {
+                    setProvider(next);
+                    setLLMModel(modelForProvider(providers, next));
+                  }}
+                  onModel={setLLMModel}
+                />
+                {modelChangeWarning(saved.model, llmModel) && (
+                  <p className="max-w-[76ch] text-xs leading-relaxed text-warn">
+                    {modelChangeWarning(saved.model, llmModel)}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* The honest answer for a card with no per-card choice: the
+                control it used to be offered edited a field its executor never
+                read, which is worse than no control at all. */}
+            {control === "daemon" && (
+              <p className="max-w-[76ch] text-xs leading-relaxed text-muted">
+                Bu kart daemon'ın kendi modelini harcar; hangisi olduğu
+                Ayarlar → Yönlendirme'de seçilir.
+              </p>
+            )}
 
             {/* The same composer the new-task form uses, so an image added
                 after the fact arrives the way the first ones did: paste, drop
@@ -907,70 +1467,50 @@ function RunDetailOverlay({
             />
 
             {problem && (
-              <p style={{ margin: 0, font: "400 11px/1.5 ui-monospace,Menlo,monospace", color: "#e5484d" }}>{problem}</p>
+              <p className="font-mono text-xs leading-[1.5] text-bad">
+                {problem}
+              </p>
             )}
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <HoverButton
-                base="background:#2547e8;border:none;border-radius:5px;padding:7px 13px;cursor:pointer;font:500 11.5px/1 ui-sans-serif,system-ui;color:#eef0f2"
-                hover="background:#1d3ac4"
-                disabled={saving || !dirty || !prompt.trim()}
-                onClick={() => void save()}
-              >
-                {saving ? "kaydediliyor…" : "Kaydet"}
-              </HoverButton>
-              <HoverButton
-                base="background:none;border:1px solid #24272d;border-radius:5px;padding:7px 13px;cursor:pointer;font:450 11.5px/1 ui-sans-serif,system-ui;color:#8a9099"
-                hover="border-color:#343841;color:#eef0f2"
-                disabled={saving}
-                onClick={cancel}
-              >
-                Vazgeç
-              </HoverButton>
-              <span style={{ font: "400 10.5px/1.4 ui-monospace,Menlo,monospace", color: "#4f545e" }}>
-                {run.status === "queued"
-                  ? "kuyrukta — başlarsa kaydetme reddedilir"
-                  : "⌘↵ ile kaydet"}
-              </span>
-            </div>
           </>
         ) : (
           <>
-            <h2 style={{ margin: 0, font: "500 14px/1.4 ui-sans-serif,system-ui", color: "#eef0f2" }}>{cardTitle(run)}</h2>
-
-            <pre style={{ margin: 0, font: "400 11.5px/1.6 ui-monospace,Menlo,monospace", color: "#8a9099", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            <pre className="font-mono text-sm leading-[1.6] break-words whitespace-pre-wrap text-muted">
               {run.prompt}
             </pre>
 
             {attachments.length > 0 && (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <div className="flex flex-wrap gap-2">
                 {attachments.map((att) => (
                   <img
                     key={att.id}
                     src={att.previewURI}
                     alt={att.filename}
-                    style={{ width: 92, height: 92, objectFit: "cover", borderRadius: 6, border: "1px solid #24272d" }}
+                    className="size-[92px] rounded-sm border border-edge object-cover"
                   />
                 ))}
               </div>
             )}
 
             {run.error && (
-              <p style={{ margin: 0, font: "400 11.5px/1.6 ui-monospace,Menlo,monospace", color: "#e5484d", whiteSpace: "pre-wrap" }}>{run.error}</p>
+              <p className="font-mono text-sm leading-[1.6] whitespace-pre-wrap text-bad">
+                {run.error}
+              </p>
             )}
           </>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "5px 14px" }}>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3.5 gap-y-1.5 border-t border-edge pt-3">
           {rows.map(([key, value]) => (
             <Fragment key={key}>
-              <span className="label" style={{ color: "#4f545e" }}>{key}</span>
-              <span style={{ font: "400 11.5px/1.4 ui-monospace,Menlo,monospace", color: "#8a9099" }}>{value}</span>
+              <dt className="label text-muted/60">{key}</dt>
+              <dd className="font-mono text-sm leading-[1.45] break-words text-muted">
+                {value}
+              </dd>
             </Fragment>
           ))}
-        </div>
+        </dl>
       </div>
-    </div>
+    </Overlay>
   );
 }
 
@@ -980,35 +1520,82 @@ function RunDetailOverlay({
 
 function ModuleScreen({
   mod,
+  catalogImportID,
   onGoHome,
   onGoTerminals,
+  onGoBoard,
 }: {
   mod: ModuleDef;
+  /** The import a finished card sent the operator here to look at. */
+  catalogImportID?: string;
   onGoHome: () => void;
   onGoTerminals: () => void;
+  /** Katalog links to the card it queued; nothing else here needs it. */
+  onGoBoard: () => void;
 }) {
   return (
-    <div style={{ height: "100%", display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0 }}>
-      <div style={{ padding: "14px 20px 12px", display: "flex", flexDirection: "column", gap: 6, borderBottom: "1px solid #24272d" }}>
-        <HoverButton
-          base="align-self:flex-start;background:none;border:none;padding:0;cursor:pointer;font:400 10.5px/1 ui-monospace,Menlo,monospace;color:#6b7079"
-          hover="color:#2547e8"
+    <div className="grid h-full min-h-0 grid-rows-[auto_1fr]">
+      <div className="flex flex-col gap-1.5 px-6 pt-4">
+        <Button
+          variant="quiet"
+          size="sm"
+          className="self-start"
           onClick={onGoHome}
         >
           ← genel
-        </HoverButton>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 11, flexWrap: "wrap" }}>
-          <h1 className="display" style={{ margin: 0, font: "400 18px/1.2 Aldrich,ui-sans-serif,system-ui", color: "#eef0f2" }}>{mod.name}</h1>
-          <span style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}>
-            {mod.route} · {mod.tools}
-          </span>
-        </div>
+        </Button>
+        {/* The module's own route, which is what says it is wired to something
+            rather than a placeholder. The tool list is joined only when there
+            is one — "· —" was a separator with nothing on the other side. */}
+        <Masthead
+          title={mod.name}
+          count={mod.tools === "—" ? mod.route : `${mod.route} · ${mod.tools}`}
+        />
       </div>
-      <div style={{ minHeight: 0, overflow: "hidden" }}>
+      <div className="min-h-0 overflow-hidden">
         {mod.key === "coding" && <Workspace onGoTerminals={onGoTerminals} />}
         {mod.key === "leadgen" && <Leadgen />}
+        {mod.key === "catalog" && (
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center">
+                <p className="text-xs text-muted/60">katalog yükleniyor…</p>
+              </div>
+            }
+          >
+            <Catalog importID={catalogImportID} onGoBoard={onGoBoard} />
+          </Suspense>
+        )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The sub-agent a card belongs to, and the skills it is held to.
+ *
+ * The skills are shown because the mandate is only worth having if it is
+ * visible: a card that was run under instructions nobody can see is a card
+ * whose output nobody can check. They are read-only here — the agent's
+ * contract, not a second decision.
+ */
+function AgentChip({ agent, skills }: { agent?: string; skills?: string }) {
+  const key = agent ?? "coding";
+  const names = (skills ?? "").split(",").filter(Boolean);
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Badge
+        tone={key === "coding" ? "muted" : "accent"}
+        className="px-1.5 py-0.5"
+      >
+        {key}
+      </Badge>
+      {names.length > 0 && (
+        <span title={`Bu kart şu skill'lere bağlı: ${names.join(", ")}`}>
+          {names.join(" · ")}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -1020,94 +1607,78 @@ function ModuleScreen({
 // it is the row an operator has to look at before any of the others. pdftotext
 // is optional in the same sense the maps sidecar is — absent, PDFs are skipped
 // and everything else still works.
-const DEP_NAMES = ["agy", "crawl4ai", "claude", "pdftotext", "duckduckgo", "maps_scraper"] as const;
+const DEP_NAMES = [
+  "agy",
+  "crawl4ai",
+  "claude",
+  "pdftotext",
+  "duckduckgo",
+  "maps_scraper",
+] as const;
 
 function DiagnosticsOverlay({
+  open,
   baseUrl,
   diagnostics,
   error,
   onClose,
 }: {
+  open: boolean;
   baseUrl: string | null;
   diagnostics: Diagnostics | null;
   error: string | null;
   onClose: () => void;
 }) {
   return (
-    <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "#101114", display: "grid", placeItems: "center", padding: 28 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 520, maxWidth: "100%", display: "flex", flexDirection: "column", gap: 14 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-          <Wordmark className="h-3.5 w-auto text-mist" />
-          <span style={{ font: "400 11px/1.5 ui-monospace,Menlo,monospace", color: "#8a9099" }}>
-            mimir-daemon launchd altında sürekli çalışır; uygulama ona bağlanır.
-          </span>
-        </div>
-
-        <div style={{ border: "1px solid #24272d", borderRadius: 9, background: "#16181c", overflow: "hidden" }}>
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14, padding: "12px 14px", borderBottom: "1px solid #24272d" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-              <span style={{ font: "600 12.5px/1 ui-sans-serif,system-ui" }}>Daemon</span>
-              <span style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#8a9099" }}>{baseUrl ?? "…"}</span>
-            </div>
-            <span style={{ border: "1px solid rgba(78,168,122,.4)", borderRadius: 999, padding: "3px 9px", font: "500 10.5px/1 ui-monospace,Menlo,monospace", color: "#c6f04a" }}>
-              ready
-            </span>
-          </div>
-          <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
-            <span style={{ font: "400 12px/1.6 ui-sans-serif,system-ui", color: "#8a9099", textWrap: "pretty" }}>
+    <Overlay
+      open={open}
+      onClose={onClose}
+      width={520}
+      title={<Wordmark className="h-3.5 w-auto text-mist" />}
+      subtitle="mimir-daemon launchd altında sürekli çalışır; uygulama ona bağlanır."
+    >
+      <div className="flex flex-col gap-3.5">
+        <Card>
+          <CardHeader
+            title="Daemon"
+            subtitle={baseUrl ?? "…"}
+            aside={
+              <Badge tone={baseUrl ? "ok" : "muted"} shape="status">
+                {baseUrl ? "ready" : "…"}
+              </Badge>
+            }
+          />
+          <CardBody>
+            <p className="text-xs leading-relaxed text-muted">
               Bağlandı. Token kabukta ve bu istemcide kalır — URL'e hiç girmez.
-            </span>
-            <HoverButton
-              base="align-self:flex-start;background:#2547e8;border:none;color:#101114;border-radius:6px;padding:8px 13px;font:600 11.5px/1 ui-sans-serif,system-ui;cursor:pointer"
-              onClick={onClose}
-            >
-              Kapat
-            </HoverButton>
-          </div>
-        </div>
+            </p>
+          </CardBody>
+        </Card>
 
-        <div style={{ border: "1px solid #24272d", borderRadius: 9, background: "#16181c", overflow: "hidden" }}>
-          <div style={{ padding: "11px 14px", borderBottom: "1px solid #24272d", display: "flex", flexDirection: "column", gap: 3 }}>
-            <span style={{ font: "600 12.5px/1 ui-sans-serif,system-ui" }}>Bağımlılıklar</span>
-            <span style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#8a9099" }}>daemon'ın kendi diagnostics çıktısı</span>
-          </div>
-          <div style={{ padding: "11px 14px", display: "flex", flexDirection: "column", gap: 9 }}>
-            {error && <span style={{ font: "400 12px/1.6 ui-sans-serif,system-ui", color: "#e5484d" }}>{error}</span>}
+        <Card>
+          <CardHeader
+            title="Bağımlılıklar"
+            subtitle="daemon'ın kendi diagnostics çıktısı"
+          />
+          <CardBody className="flex flex-col gap-2.5">
+            {error && (
+              <p className="text-xs leading-relaxed text-bad">{error}</p>
+            )}
             {!error && !diagnostics && (
-              <span style={{ font: "400 12px/1.6 ui-sans-serif,system-ui", color: "#6b7079" }}>yükleniyor…</span>
+              <p className="text-xs text-muted/70">yükleniyor…</p>
             )}
             {diagnostics &&
               DEP_NAMES.map((name) => {
-                const dep = diagnostics.dependencies?.[name] as DiagnosticsDependency | undefined;
-                if (!dep) return null;
-                return (
-                  <div key={name} style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ font: "450 12px/1.4 ui-sans-serif,system-ui" }}>{name}</div>
-                      {dep.detail && <div style={{ font: "400 10.5px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}>{dep.detail}</div>}
-                    </div>
-                    <span
-                      style={{
-                        border: `1px solid ${dep.ok ? "rgba(78,168,122,.4)" : "#2c3037"}`,
-                        borderRadius: 999,
-                        padding: "3px 8px",
-                        font: "500 10px/1 ui-monospace,Menlo,monospace",
-                        color: dep.ok ? "#c6f04a" : "#8a9099",
-                      }}
-                    >
-                      {dep.ok ? "ok" : dep.optional ? "optional, down" : "down"}
-                    </span>
-                  </div>
-                );
+                const dep = diagnostics.dependencies?.[name] as
+                  DiagnosticsDependency | undefined;
+                return dep ? (
+                  <DependencyRow key={name} name={name} dep={dep} />
+                ) : null;
               })}
-            {diagnostics && (
-              <span style={{ font: "400 10.5px/1.5 ui-monospace,Menlo,monospace", color: "#4f545e", paddingTop: 2 }}>
-                store {diagnostics.daemon.store} · {diagnostics.daemon.projects} proje · v{diagnostics.daemon.version}
-              </span>
-            )}
-          </div>
-        </div>
+            {diagnostics && <DaemonFootnote diagnostics={diagnostics} />}
+          </CardBody>
+        </Card>
       </div>
-    </div>
+    </Overlay>
   );
 }

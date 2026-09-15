@@ -160,6 +160,24 @@ func TestScanPolicy_EmptyRootsSurviveARead(t *testing.T) {
 	}
 }
 
+// Neither list carries omitempty, so a nil slice would be served as `null`.
+// The desktop's types say `string[]`, and `policy.roots` reaching a length
+// check as null is one of the two ways the Brain tab used to empty the window.
+func TestScanPolicy_EmptyListsAreServedAsListsNotNull(t *testing.T) {
+	h, _ := policyServer(t, nil)
+
+	if w := do(h, "PUT", "/brain/scan/policy", testToken, `{"roots":[],"excludes":[]}`); w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	body := do(h, "GET", "/brain/scan/policy", testToken, "").Body.String()
+	for _, want := range []string{`"roots":[]`, `"excludes":[]`, `"default_roots":[]`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body does not contain %s: %s", want, body)
+		}
+	}
+}
+
 func TestScanPolicy_ResetRestoresTheShippedRoots(t *testing.T) {
 	shipped := t.TempDir()
 	other := t.TempDir()

@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,6 +75,15 @@ func (c *Claude) environ() []string {
 
 func (c *Claude) Name() string  { return "claude" }
 func (c *Claude) Model() string { return c.model }
+
+// Capabilities: the claude CLI honours a schema through its prompt envelope,
+// and it is the agentic one — `internal/coderunner` runs the same binary for a
+// board card. This package's use of it is deliberately not agentic
+// (`--disallowedTools`), but the capability describes the CLI, not one caller's
+// flags, because task-95's runner reads the same table.
+func (c *Claude) Capabilities() Capabilities {
+	return Capabilities{StructuredOutput: true, Agentic: true}
+}
 
 // WithModel returns the same provider bound to a different model.
 //
@@ -175,33 +183,15 @@ func (c *Claude) Complete(ctx context.Context, r Request) (Response, error) {
 		"--disallowedTools", strings.Join(disallowedTools, " "),
 	}
 
-	var stdout, stderr bytes.Buffer
-	var lastErr error
-
-	for attempt := 1; attempt <= 2; attempt++ {
-		stdout.Reset()
-		stderr.Reset()
-
-		runCtx, cancel := context.WithTimeout(ctx, c.timeout)
-		cmd := exec.CommandContext(runCtx, c.cliPath, args...)
-		cmd.Env = c.environ()
-		cmd.Stdin = strings.NewReader(r.User)
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		lastErr = cmd.Run()
-		cancel()
-
-		if lastErr == nil {
-			break
-		}
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return Response{}, ctx.Err()
-		}
-		if attempt < 2 {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
+	stdout, stderr, lastErr := runCLI(ctx, cliRun{
+		path:    c.cliPath,
+		args:    args,
+		env:     c.environ(),
+		stdin:   r.User,
+		timeout: c.timeout,
+	})
+	if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+		return Response{}, lastErr
 	}
 
 	if lastErr != nil {
@@ -210,14 +200,14 @@ func (c *Claude) Complete(ctx context.Context, r Request) (Response, error) {
 		// a spent quota exits 1 with an empty stderr, so reporting stderr alone
 		// turned "you've hit your session limit" into "run `claude login`".
 		var raw claudeResult
-		if json.Unmarshal(stdout.Bytes(), &raw) == nil && raw.IsError {
+		if json.Unmarshal(stdout, &raw) == nil && raw.IsError {
 			return Response{}, c.reportedError(raw)
 		}
-		return Response{}, c.unavailable(fmt.Errorf("%w: %s", lastErr, stderr.String()))
+		return Response{}, c.unavailable(fmt.Errorf("%w: %s", lastErr, string(stderr)))
 	}
 
 	var raw claudeResult
-	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(stdout, &raw); err != nil {
 		return Response{}, fmt.Errorf("failed to parse claude CLI JSON output: %w", err)
 	}
 	if raw.IsError {

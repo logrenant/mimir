@@ -57,19 +57,27 @@ type RunRow struct {
 	AccountID          string
 	TranscriptPath     string
 	Attachments        string // JSON array of attachment ids, "" when there are none
-	CostUSD            float64
-	NumTurns           int
-	Error              string
-	CreatedAt          time.Time
-	QueuedAt           time.Time
-	StartedAt          time.Time
-	EndedAt            time.Time
+	// Agent is which sub-agent runs this row — the only thing the dispatcher
+	// routes on. Skills is what it ran under, "" until it has. Params is the
+	// executor's own input, a JSON object, empty for an agent that reads the
+	// prompt directly.
+	Agent     string
+	Skills    string
+	Params    string
+	CostUSD   float64
+	NumTurns  int
+	Error     string
+	CreatedAt time.Time
+	QueuedAt  time.Time
+	StartedAt time.Time
+	EndedAt   time.Time
 }
 
 // runColumns is positional: it and scanRun are read together, and a column
 // added to one without the other silently shifts every field after it.
 const runColumns = `id, project_id, title, prompt, status, session_id, model,
 	requested_account_id, account_id, transcript_path, attachments,
+	agent, skills, params,
 	cost_usd, num_turns, error, created_at, queued_at, started_at, ended_at`
 
 // CodingRunStats is a lightweight cost/usage rollup for the daemon's
@@ -118,11 +126,13 @@ func (s *Store) InsertRun(ctx context.Context, r RunRow) error {
 		INSERT INTO coding_runs
 			(id, project_id, title, prompt, status, session_id, model,
 			 requested_account_id, account_id, transcript_path, attachments,
+			 agent, skills, params,
 			 cost_usd, num_turns, error,
 			 created_at, queued_at, started_at, ended_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.ProjectID, r.Title, r.Prompt, r.Status, r.SessionID, r.Model,
 		r.RequestedAccountID, r.AccountID, r.TranscriptPath, r.Attachments,
+		r.Agent, r.Skills, r.Params,
 		r.CostUSD, r.NumTurns, r.Error,
 		unixOrZero(r.CreatedAt), unixOrZero(r.QueuedAt),
 		unixOrZero(r.StartedAt), unixOrZero(r.EndedAt))
@@ -178,7 +188,8 @@ func scanRun(scan func(dest ...any) error) (RunRow, error) {
 	if err := scan(
 		&r.ID, &r.ProjectID, &r.Title, &r.Prompt, &r.Status, &r.SessionID,
 		&r.Model, &r.RequestedAccountID, &r.AccountID, &r.TranscriptPath,
-		&r.Attachments, &r.CostUSD, &r.NumTurns, &r.Error,
+		&r.Attachments, &r.Agent, &r.Skills, &r.Params,
+		&r.CostUSD, &r.NumTurns, &r.Error,
 		&createdAt, &queuedAt, &startedAt, &endedAt,
 	); err != nil {
 		return RunRow{}, err
@@ -206,6 +217,46 @@ func (s *Store) GetRun(ctx context.Context, id string) (RunRow, bool, error) {
 		return RunRow{}, false, unavailable(err)
 	}
 	return r, true, nil
+}
+
+// ListRuns returns every project's runs, most recent first.
+//
+// The board has always wanted this and never had it: the desktop asked for one
+// project at a time and merged the answers, because "internal/store only
+// indexes runs by project". That was true and is no longer sufficient — a job
+// on the worker lane names no project at all, so there is nothing to fan out
+// over.
+func (s *Store) ListRuns(ctx context.Context, limit int) ([]RunRow, error) {
+	if s == nil || s.db == nil {
+		return nil, unavailable(errors.New("store not open"))
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	// The same ordering as ListRunsByProject, and for the same reason: a
+	// backlog card has never started, and ordering by started_at alone would
+	// bury every one of them under the oldest finished run.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM coding_runs
+		 ORDER BY MAX(started_at, queued_at, created_at) DESC, rowid DESC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RunRow
+	for rows.Next() {
+		r, err := scanRun(rows.Scan)
+		if err != nil {
+			return nil, unavailable(err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return out, nil
 }
 
 // ListRunsByProject returns a project's runs, most recent first.
@@ -291,6 +342,11 @@ type RunEdit struct {
 	Prompt      string
 	Model       string
 	Attachments string // JSON array of attachment ids, "" when there are none
+	// Agent and Params are editable for the same reason the prompt is, and
+	// under the same guard: until tokens have been spent, what a card asks for
+	// is still the operator's to change. EditableStatuses covers both.
+	Agent  string
+	Params string
 }
 
 // EditRun rewrites what a card asks for, reporting whether the row moved.
@@ -304,14 +360,15 @@ func (s *Store) EditRun(ctx context.Context, id string, e RunEdit) (bool, error)
 	if s == nil || s.db == nil {
 		return false, unavailable(errors.New("store not open"))
 	}
-	args := []any{e.Title, e.Prompt, e.Model, e.Attachments, id}
+	args := []any{e.Title, e.Prompt, e.Model, e.Attachments, e.Agent, e.Params, id}
 	placeholders := make([]string, 0, len(EditableStatuses))
 	for _, status := range EditableStatuses {
 		args = append(args, status)
 		placeholders = append(placeholders, "?")
 	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE coding_runs SET title = ?, prompt = ?, model = ?, attachments = ?
+		`UPDATE coding_runs SET title = ?, prompt = ?, model = ?, attachments = ?,
+		        agent = ?, params = ?
 		 WHERE id = ? AND status IN (`+strings.Join(placeholders, ", ")+`)`, args...)
 	if err != nil {
 		return false, unavailable(err)
@@ -430,7 +487,11 @@ func (s *Store) RunningAccountIDs(ctx context.Context) ([]string, error) {
 		return nil, unavailable(errors.New("store not open"))
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT account_id FROM coding_runs WHERE status = ?`, RunStatusRunning)
+		// account_id <> '' because a job on the worker lane claims with an
+		// empty one: it spends no identity, so it occupies no slot, and
+		// reporting '' here would tell a caller that a slot named "" is busy.
+		`SELECT DISTINCT account_id FROM coding_runs
+		 WHERE status = ? AND account_id <> ''`, RunStatusRunning)
 	if err != nil {
 		return nil, unavailable(err)
 	}
