@@ -157,6 +157,14 @@ func (f *fakeRunner) List(_ context.Context, projectID string, _ int) ([]coderun
 	return f.list, f.err
 }
 
+// ListAll answers the cross-project read. lastProjectID stays empty, which is
+// how a test tells the two paths apart.
+func (f *fakeRunner) ListAll(_ context.Context, _ int) ([]coderunner.Run, error) {
+	f.calls++
+	f.lastProjectID = ""
+	return f.list, f.err
+}
+
 type fakeHealther struct{ err error }
 
 func (f fakeHealther) Health(context.Context) error { return f.err }
@@ -416,16 +424,34 @@ func TestGetCodingTask_UnknownRunIs404(t *testing.T) {
 	}
 }
 
-func TestListCodingTasks_RequiresProjectID(t *testing.T) {
-	runner := &fakeRunner{}
+// An absent project_id used to be a 400, because internal/store only indexed
+// runs by project and there was nothing to answer with. It is now the board's
+// own read: a card on the worker lane belongs to no project, so no per-project
+// query could ever have shown it.
+func TestListCodingTasks_WithoutAProjectIDReturnsEveryProjectsCards(t *testing.T) {
+	runner := &fakeRunner{list: []coderunner.Run{
+		{ID: "r1", ProjectID: "proj-1", Agent: "coding"},
+		{ID: "r2", ProjectID: "", Agent: "leadgen"},
+	}}
 	h := New(testConfig(), Deps{Runner: runner}).Handler()
 	w := do(h, http.MethodGet, "/coding-tasks", testToken, "")
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", w.Code)
 	}
-	if runner.calls != 0 {
-		t.Errorf("runner was queried from a rejected request")
+	if runner.lastProjectID != "" {
+		t.Errorf("the per-project read answered a cross-project request")
+	}
+
+	var got codingTaskListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Runs) != 2 {
+		t.Fatalf("got %d cards, want both", len(got.Runs))
+	}
+	if got.Runs[1].ProjectID != "" {
+		t.Error("a card with no project did not survive the round trip")
 	}
 }
 

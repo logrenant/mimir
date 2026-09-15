@@ -14,7 +14,7 @@ import (
 func TestIntegration_DuckDuckGo(t *testing.T) {
 	cfg := config.Load()
 	// Force it to use real URLs
-	
+
 	client := search.New(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

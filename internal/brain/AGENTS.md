@@ -185,6 +185,30 @@ undirected once written. Widening the global candidate search would put every
 project's node titles into one relation prompt, which is a bigger decision than
 this asymmetry is a problem.
 
+It is now held by `relate.go#candidates` itself rather than by the store: an
+empty path means "everywhere" to `SearchBrainNodes`, which is what a reader
+asking the whole machine a question needs. The filter is there so this decision
+stays a decision instead of arriving as a side effect of a search-scope fix.
+
+## Asking the graph a question
+
+`Query` runs on facts, never a model call, and its expansion is the part that
+decides whether an answer is possible at all. Three rules, each of which was
+learned by breaking it:
+
+- **The vocabulary check asks the index.** Not the titles of the best matches —
+  the index covers title, assessment, tags, aliases and body, and a check that
+  reads one of them declares four fifths of the graph absent. `popover`, written
+  into eight assessments in this repository, was reported as a word the graph had
+  never heard of.
+- **Split words before folding them, and keep combining marks inside the word.**
+  `wordRE` includes `\p{M}` for that reason: decomposed text arrives from the
+  filesystem, and a mark treated as a separator cuts one word into three.
+- **A word the check keeps must be a word the seed search can find.** They take
+  the same two steps in the store for exactly this reason; if you change one,
+  change the other, or the console will say "the words matched but no node was
+  found", which is a sentence no reader can act on.
+
 ## Reviewer focus
 
 SD-2/SD-7 (all four responses are gateable and budgeted — see

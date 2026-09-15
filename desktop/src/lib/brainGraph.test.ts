@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import type { BrainGraphEdge, BrainGraphNode } from "./daemon";
 import {
+  byDegree,
   degrees,
   fitView,
   formatBytes,
   hitTest,
   initialView,
   kindStyle,
+  mix,
   layout,
+  startLayout,
+  ticksFor,
   MAX_SCALE,
   MIN_SCALE,
   pollInterval,
@@ -133,12 +137,49 @@ describe("hitTest", () => {
 });
 
 describe("kindStyle", () => {
-  it("stays inside the brand's colours and names an unknown kind rather than throwing", () => {
-    const allowed = new Set(["#8a9099", "#c6f04a", "#6f7b3f", "#2547e8", "#5b74f0", "#eef0f2", "#4f545e"]);
-    for (const kind of ["file", "session", "commit", "decision", "research", "note", "invented"]) {
-      expect(allowed.has(kindStyle(kind).fill)).toBe(true);
+  // The four, exactly as `index.css` declares them. If these drift the graph
+  // has quietly stopped being drawn in the brand's colours.
+  const CARBON = "#101114";
+  const MIST = "#eef0f2";
+  const ELECTRIC = "#2547e8";
+  const LIME = "#c6f04a";
+
+  it("names every kind, including one it has never seen", () => {
+    for (const kind of ["file", "symbol", "session", "commit", "decision", "research", "note", "invented"]) {
       expect(kindStyle(kind).label).not.toBe("");
+      expect(kindStyle(kind).fill).toMatch(/^#[0-9a-f]{6}$/);
     }
+  });
+
+  // The stronger version of the old allow-list: rather than listing the eight
+  // literals that happened to be in the table — three of which were off the
+  // palette and nobody noticed — every fill has to be reachable from one of
+  // the four by a blend with Carbon or Mist.
+  it("draws every kind out of the four colours and no fifth", () => {
+    const reachable = new Set<string>();
+    for (const base of [MIST, ELECTRIC, LIME]) {
+      reachable.add(base);
+      for (let i = 0; i <= 100; i++) {
+        reachable.add(mix(base, CARBON, i / 100));
+        reachable.add(mix(base, MIST, i / 100));
+      }
+    }
+    for (const kind of ["file", "symbol", "session", "commit", "decision", "research", "note", "invented"]) {
+      expect(reachable.has(kindStyle(kind).fill)).toBe(true);
+    }
+  });
+
+  it("keeps each pair on one hue, with the second stepped back", () => {
+    // A symbol is a file's grey a step darker; a commit is its session's lime a
+    // step darker. Same hue, less weight — the pairing is the point.
+    expect(kindStyle("symbol").fill).not.toBe(kindStyle("file").fill);
+    expect(kindStyle("commit").fill).not.toBe(kindStyle("session").fill);
+    expect(kindStyle("research").fill).not.toBe(kindStyle("decision").fill);
+  });
+
+  it("mixes at the ends without rounding away from them", () => {
+    expect(mix(MIST, CARBON, 1)).toBe(MIST);
+    expect(mix(MIST, CARBON, 0)).toBe(CARBON);
   });
 });
 
@@ -223,7 +264,7 @@ describe("visibleLabels", () => {
     const { nodes, edges } = graph(200);
     const placed = layout(nodes, edges, { ...worldSize(200), ticks: 60, seed: 9 });
     const view = fitView(placed, 800, 600);
-    const labels = visibleLabels(placed, view, 800, 600, 40);
+    const labels = visibleLabels(byDegree(placed), view, 800, 600, 40);
 
     expect(labels.length).toBeLessThanOrEqual(40);
     for (const l of labels) {
@@ -260,7 +301,7 @@ describe("visibleLabels", () => {
     placed[1].degree = 0;
     placed[1].x = placed[0].x + 1;
     placed[1].y = placed[0].y;
-    const labels = visibleLabels(placed, { scale: 1, x: 0, y: 0 }, 4000, 4000, 40);
+    const labels = visibleLabels(byDegree(placed), { scale: 1, x: 0, y: 0 }, 4000, 4000, 40);
     expect(labels[0].node.id).toBe("hub");
   });
 });
@@ -330,5 +371,72 @@ describe("the version timeline", () => {
     expect(formatBytes(900)).toBe("900 B");
     expect(formatBytes(2048)).toBe("2 KB");
     expect(formatBytes(3 * 1024 * 1024)).toBe("3.0 MB");
+  });
+});
+
+describe("startLayout", () => {
+  // The batch form is now a loop over the stepwise one, so the two must not be
+  // allowed to drift: the same seed and the same budget is the same picture.
+  it("settles to the same picture as the batch form", () => {
+    const { nodes, edges } = graph(60);
+    const opts = { ...worldSize(60), ticks: 80, seed: 7 };
+
+    const run = startLayout(nodes, edges, opts);
+    while (run.advance(0));
+
+    const batch = layout(nodes, edges, opts);
+    expect(run.nodes.map((n) => [n.id, n.x, n.y])).toEqual(
+      batch.map((n) => [n.id, n.x, n.y]),
+    );
+  });
+
+  it("reports progress and finishes exactly once", () => {
+    const { nodes, edges } = graph(20);
+    const run = startLayout(nodes, edges, { ...worldSize(20), ticks: 20, seed: 2 });
+
+    expect(run.progress).toBe(0);
+    expect(run.done).toBe(false);
+
+    let guard = 0;
+    while (run.advance(0)) {
+      expect(guard++).toBeLessThan(100);
+    }
+
+    expect(run.done).toBe(true);
+    expect(run.progress).toBe(1);
+    // Advancing a finished run is a no-op rather than another separation pass.
+    expect(run.advance(0)).toBe(false);
+  });
+
+  // A zero budget must still make progress, or a caller that yields every
+  // frame would sit at nought per cent forever.
+  it("runs at least one tick however small the budget", () => {
+    const { nodes, edges } = graph(30);
+    const run = startLayout(nodes, edges, { ...worldSize(30), ticks: 50, seed: 4 });
+    run.advance(0);
+    expect(run.progress).toBeGreaterThan(0);
+  });
+
+  it("is done immediately on an empty graph", () => {
+    const run = startLayout([], [], worldSize(0));
+    expect(run.done).toBe(true);
+    expect(run.progress).toBe(1);
+    expect(run.nodes).toEqual([]);
+    expect(run.advance(Infinity)).toBe(false);
+  });
+});
+
+describe("ticksFor", () => {
+  it("gives a small graph the full budget and a large one less", () => {
+    expect(ticksFor(20)).toBe(320);
+    expect(ticksFor(3000)).toBeLessThan(320);
+  });
+
+  it("never drops below the floor, however large the graph", () => {
+    expect(ticksFor(1_000_000)).toBe(120);
+  });
+
+  it("asks for nothing when there is nothing to lay out", () => {
+    expect(ticksFor(0)).toBe(0);
   });
 });

@@ -6,6 +6,748 @@ kuralını izler.
 
 ## [Yayımlanmadı]
 
+## [2.13.0] — 2026-09-15
+
+**Katalog: bir Shopify ya da IKAS ürün export'unu okuyup markanın kendi etiket ve
+ses sözlüğünü ondan çıkaran katman, onu markanın kendi biçimlendirmesinin içinde
+düzenletip dosyayı bayt bayt geri yazan ekran, ve yarıda kaldığında kaldığı
+yerden süren bir toplu yeniden yazım.**
+
+### Değiştirildi
+
+- **Ürünler tablosu artık sabit değil, dosyanın kendi şeklini çiziyor
+  (task-116).** Sütunlar JSX'e gömülüydü (`ürün · kategori · durum`), oysa her
+  export farklı bir tablo demek: ekrandaki IKAS özel-alanlar dosyasının kategori
+  sütunu hiç yok ve on satır boyunca `—` çiziliyordu, SKU ise vardı ama
+  gösterilmiyordu. Sütunlar artık kaynak dilin `columns` haritasından türüyor —
+  dosyanın taşımadığı sütun çizilmiyor, taşıdığı her dil kendi durum sütununu
+  alıyor. `handle` ve `group_id` bilerek sütun değil: biri URL (başlığın altında
+  okunur), diğeri varyantları gruplayan UUID.
+- **Dil bir mod değil, bir sütun.** Ürünler araç çubuğundaki dil şeridi
+  seçildiği dilde satırları yeniden çekiyordu; o dilde içerik yoksa `contentFor`
+  bilerek boş dönüyor ve ekranda hiçbir şey değişmiyordu — şeridin operatöre
+  "işlevsiz" görünmesinin sebebi buydu. Şerit kalktı: her dilin kararı aynı
+  satırda kendi hücresinde duruyor (`GET /catalog/products` artık dil başına
+  durum haritası taşıyor, `catalog_product_langs`'tan tek ek okuma ile) ve bir
+  hücreye tıklamak tezgahı o dilde açıyor. Durum çipleri buna göre yeniden
+  tanımlandı: bir satır, taşıdığı dillerden **herhangi biri** o durumdaysa
+  eşleşiyor — çok dilli dosyada sayılar bu yüzden satır sayısından fazla
+  toplanıyor, tek dilli dosyada davranış birebir aynı.
+- **Sütun eşlemesinde dil seçimi kalktı.** Eşlenen tek bir tablo olmasına rağmen
+  form dil başına sekmeleniyordu; artık bütün diller tek ekranda, her dil kendi
+  başlığının altında bütün satırlarıyla. Bu ekran sıfırdan içerik üretmek için
+  değil var olanı eşlemek için, ve formun POST ettiği her anahtarı çizmesi
+  "çizmediğini silen kayıt" tuzağını da kapatıyor.
+- **Yeniden yaz çubuğu tablonun üstünde kalıcı.** Çubuk yalnızca seçim varken
+  çiziliyordu, model ayarları da onunla birlikte kayboluyordu — oysa model
+  seçimi tabloyu okurken verilen bir karar. Seçim yokken sağlayıcı ve model
+  seçicileri etkin (model seçmek para harcamaz), harcayan düğme kapalı ve
+  yanında neden kapalı olduğu yazıyor: açıklamasız devre dışı düğme bırakılmadı.
+  Sol kenardaki lime şerit yalnızca seçim varken çiziliyor.
+
+### Eklendi
+
+- **Marka kimliği canlı mağazadan okunuyor (task-116).** Marka sekmesine
+  mağazanın adresi veriliyor, daemon ana sayfadan bir ürün sayfası bulup orayı
+  ölçüyor: zemin, metin, bağlantı, vurgu ve kenar renkleri, font yığını, punto,
+  satır yüksekliği, açıklama kabuğunun ölçüsü ve hizası. Ölçüm crawl4ai'nin
+  kendi tarayıcısında çalışan bir probe ile alınıyor (`js_code`, cevap belge
+  kökündeki bir nitelikten geri okunuyor). Kabuk markup'ı bilerek
+  kopyalanmıyor: o sınıf adları temanın stylesheet'i olmadan ölü, önizleme
+  çerçevesi dış stylesheet yükleyemiyor (CSP izin vermiyor, `srcdoc` onu
+  devralıyor), ve bir temayı satır içine almak yüzlerce KB. Cascade'i tarayıcı
+  çözüyor; bu paket CSS ayrıştırmıyor. Tarama `catalog_imports.site_json`'da
+  duruyor (`0027_catalog_site.sql`).
+  - **Tarama `Vocabulary`'ye dokunmuyor**: `Render`'ın izin listesi CSV'nin
+    kendi HTML'inden türemeye devam ediyor — paketin ana güvencesi bu.
+  - **Tarama `BrandKit.hash`'e girmiyor**: girseydi her yeniden tarama
+    katalogdaki her taslağı geçersiz kılardı. İki kırmızı çizgi de testli.
+- **Önizleme mağazanın kendi zemininde çiziliyor.** `previewDocument` tarama
+  varsa stil bloğunu taranmış değerlerden üretiyor, tarama yoksa okunur koyu
+  varsayılan aynen kalıyor. Çerçevenin `sandbox=""` kısıtı değişmedi ve taranan
+  hiçbir değer stile doğrudan geçmiyor: her biri dar bir karakter listesinden ve
+  `url(` / `@import` / `expression` / `javascript:` reddinden geçiyor.
+
+### Güvenlik
+
+- **Operatörün verdiği adrese daemon'dan istek çıkıyor, yani tarama bir SSRF
+  yüzeyi (task-116).** Adres üç kapıdan geçiyor: şema izin listesi, çözülen
+  IP'nin sınıflandırması (özel, loopback, link-local, multicast ve stdlib'in
+  "global unicast" saydığı RFC 6598 `100.64.0.0/10` dahil), ve **getiriden
+  sonra** iniş adresinin yeniden yargılanması — crawler yönlendirme takip
+  ediyor, yani yalnızca yazılan adresi kontrol etmek yetmiyordu. Kök sayfa ve
+  ürün sayfası aynı kapıdan geçiyor; reddedilen adres 400, okunamayan mağaza
+  502. Kalan bilinen risk yazıldı: kapının çözümü ile crawler konteynerinin
+  kendi çözümü arasındaki DNS rebinding bu katmanda kapatılamıyor (IP sabitlemek
+  her meşru mağazada TLS SNI'yi bozar).
+
+### Eklendi
+
+- **Onay artık dil başına, ve dışa aktarım dosyanın taşıdığı her dili yazıyor.**
+  Motor task-105'ten beri Arapça üretiyor ve task-107'den beri dil kapısından
+  geçiriyordu, ama üretilen hiçbir zaman dosyaya ulaşamıyordu: `Studio.Export`
+  tek bir sürüm — kaynak dilinkini — çözüyordu, çünkü onay tek bir sütunda
+  duruyordu ve Türkçe kopyayı onaylamak kimsenin okumadığı bir Arapça kopyayı
+  yayına göndermemeliydi. Kaynak dilin kararı olduğu yerde kaldı, hedef dillerin
+  kararı kendi tablosuna taşındı (`catalog_product_langs`) — taslak anahtarının
+  kendi gerekçesiyle aynı: dil bir son ektir ve yalnızca hedef için. Karar
+  verilmemiş dil **bekliyor** okunuyor: satırın yokluğu cevabın kendisi, ve
+  `INNER JOIN` "hiç bekleyen yok" derdi. Arapçayı onaylamak Türkçeyi
+  kıpırdatmıyor, tersi de.
+- **`GET /catalog/outputs` — yazılmış her taslak, bütün dosyaların üstünden.**
+  Üretilmiş içerik yalnızca tek ürün tezgâhında, geldiği dosyanın ekranında
+  okunabiliyordu; "Arapçada beni ne bekliyor" sorusu dosyaları tek tek açıp
+  saymakla cevaplanıyordu. Dile, dosya profiline ve duruma göre süzülüyor —
+  profil dosyanın özelliği olduğu için bu süzgeç ancak burada anlam kazanıyor.
+  Bir taslak tek bir (dosya, dil) çifti için güncel ve sürüm satırdan
+  türetilemiyor, bu yüzden anahtarları stüdyo besteliyor ve depo onları satır
+  içi bir tablo olarak join ediyor; kısıt **çift** üzerinde, çünkü aynı sürüm
+  bir dosya için güncel, başka bir dosya için bayat olabiliyor. Katalog ne kadar
+  büyürse büyüsün tam iki depo okuması.
+- **Masaüstünde Kataloglar'ın yanında Çıktılar sekmesi.** Satır çıktının kendi
+  dilinde ve kendi yönünde yazıyor — Arapça satır sağdan sola akıyor —, hangi
+  dosyadan geldiğini ve o dosyanın profilini söylüyor, neyin değiştiğini
+  adlandırıyor, ve tıklandığında o dosyayı o dilde ve o üründe açıyor.
+
+### Düzeltildi
+
+- **Operatörün elle düzenlediği Arapça taslak yönünü sessizce kaybediyordu.**
+  `stripDirectionWrapper`'ın üretimde hiçbir çağıranı yoktu: `SaveDraft`
+  `Render` çağırıyordu, `RenderLang` değil, yani `<div dir="rtl" lang="ar">`
+  zarfa ayrışıyor ve `sanitizeAttrs` `dir`'i düşürüyordu. Hiçbir şey hata
+  vermiyordu; metin yalnızca soldan sağa kaydediliyordu.
+- **Dil kapısı operatörün yolundan hiç geçmiyordu**, `rewrite.go`'nun kendi
+  yorumu "bu yolda ve operatörün yolunda çalışır, yani kapıyı atlamış bir
+  taslağı saklamanın yolu yoktur" dediği hâlde. Artık geçiyor, ve bulguları
+  **not** olarak ekleniyor: bir insanın Arapçasını oran sezgisi beğenmedi diye
+  reddetmek, kaydet düğmesini sessizce çalışmayan bir düğme yapardı.
+- **Arapça geçişte başarısız olan ürün, Türkçe ürünü başarısız işaretliyordu.**
+  `rewriteOne` durumu dil bilmeden yazıyordu; bir dil kapısı reddi verilmiş bir
+  onayı siliyor, `reason`'ını başka bir dil hakkındaki cümleyle eziyor ve ürünü
+  operatörün süzgecinden çıkarıyordu.
+- **"Bu 'Çevrilecek …' sütunları hangi dile ait?" sorusu sorulamıyordu.** Ekranı
+  çizen koşul `pending_target` alanıydı ve daemon o alanı hiç göndermiyordu, yani
+  1013 satırlık gerçek IKAS çeviri export'unda hedef dil hiç adlandırılamıyor,
+  dolayısıyla hiçbir çeviri okunamıyordu.
+- **Eşleme formu, dosyanın zaten çözdüğü dillerden başkasını sunmuyordu** —
+  kendi doc yorumu "bu build'in yazabildiği her dil" dediği hâlde. Mağazanın
+  kendi açtığı `Html:Detay-EN` sütunu bu yüzden hiçbir zaman eşlenemiyordu.
+- **Ürün tablosu ve tezgâh, Arapça sekmesinde Türkçe başlığı yazıyordu**, arama
+  da Türkçe başlıkta arıyordu: Arapçayı incelemek için açılan ekranda hiç Arapça
+  görünmüyordu.
+- Tek dilli bir dosyada dil şeridi hiç çizilmiyordu, yani operatör modülün başka
+  bir dil yazabildiğini ve sütunun kendisine ait olduğunu hiç öğrenmiyordu.
+
+- **Katalog artık tek ekran değil: Kataloglar → Ürünler / Kurulum / Marka →
+  Ürün tezgâhı.** Modülün yapabildiği her şey tek pencereyi paylaşıyordu —
+  önünde dosya listesi, üstünde sütun eşlemesi ve alan anahtarları, başlığına
+  katlanmış marka kimliği, solda durum rayı, ortada tablo, sağda 26rem'lik
+  önce/sonra sütunu; hepsi altı üst üste şeridin altında. Operatörün deyimiyle
+  "boğucu"ydu, ve haklıydı: ekran dört farklı ritimde yapılan dört işi birden
+  taşıyordu ve her biri diğerinden yer alıyordu. Bölme veriyi değil ritmi
+  izliyor — kurulum dosya başına bir kez, inceleme ürün başına bir kez, tablo
+  her gün. Dört üst şerit (masthead, breadcrumb, tam genişlik profil seçici,
+  meta + dört düğme) tek başlık oldu; durum rayı tek satır çipe indi ve tablo
+  tam genişliğe çıktı; model seçici kalıcı mobilya olmaktan çıkıp seçim
+  çubuğuyla birlikte, harcayacağı seçimin yanında beliriyor; detay paneli
+  yerine satır tıklaması tezgâhı açıyor — önce ve sonra eşit genişlikte, üstte
+  `3 / 51` ve ileri-geri, yani inceleme tabloya dönüp gelmek yerine bir akış.
+- **Kataloglar listesi hangi dosyayı açacağını söylüyor.** `GET /catalog/imports`
+  artık her satırda o dosyanın durum sayımlarını taşıyor ("50 bekliyor ·
+  1 taslak", başarısız varsa önce o) ve eşleşen profili. Sayımlar bütün liste
+  için tek bir `GROUP BY` — satır başına okuma, task-80'in panodan kaldırdığı
+  1+N yayılımıdır ve liste anket ediliyor. Dosya gövdesi listeye hâlâ
+  gelmiyor: bir listeyi açmak her import'u birden açmak kadar pahalı olamaz,
+  o yüzden çerçeve (kodlama, ayraç, satır sonu) dosyanın kendi ekranında
+  kalıyor. Sayımı okuyamayan bir depo satırı özetsiz bırakıyor, ekranı
+  düşürmüyor (SD-6). Son geçiş zamanı ise panodan okunuyor — uygulamanın zaten
+  anket ettiği kartlardan, ikinci bir istekten değil.
+- **Modeli karta yazan seçici: bir katalog pası artık kendi modelini taşıyor.**
+  Operatör modeli değiştiriyor, pas aynı modelle devam ediyordu — kartın
+  üzerindeki tek model kontrolü *kodlama* modelini düzenliyordu ve hiçbir
+  katalog pası onu harcamıyor. Pas ise her çağrıda ayar dosyasını yeniden
+  okuyordu: pas sürerken yapılan bir ayar değişikliği onu **ortasından**
+  taşıyabiliyordu (şema kapısı eski değerle geçip ilk taslak çağrısı yenisine
+  düşünce kart, "bu sağlayıcı yapılandırılmış çıktı veremiyor" duvarına ürün
+  ürün çarpıyor). Artık seçim `POST /catalog/rewrite` ile kartın `params`'ına
+  yazılıyor ve pas onu okuyor; boş bırakmak eskisi gibi "ayarlardaki model"
+  demek, ama kartın adlandırdığı çift, kart yarın yeniden çalıştırıldığında da
+  o çift. Şema kapısı da artık kartın kendi sağlayıcısına soruluyor — yoksa
+  operatörün o duvarı aşmak için yaptığı seçim, aynı duvar tarafından
+  reddediliyordu. Çift, her per-run seçimin geçtiği izin listesinden geçiyor
+  (iki ad da bir alt sürece argv olarak gidiyor) ve dispatch'ten önce bir kez
+  daha: kartın params'ı, onu yazan isteği aşan bir satır.
+- **Katalog ekranında model seçici ve başarısız pası seçili modelle yeniden
+  çalıştırma.** Seçim, harcayan düğmenin yanında: "varsayılan olarak kim
+  hizmet veriyor" ile "bu kataloğu kim yazıyor" iki ayrı soru, ve operatör
+  ikincisini yanıtlamak için birincisini — daemon'ın yaptığı her iş için —
+  değiştirmek zorundaydı. Başarısız satırdaki düğme kartı seçili modele
+  yönlendirip yeniden kuyruğa alıyor, yani iki yüz ürünü yeniden işaretlemek
+  gerekmiyor. Taslak önbelleği modele göre anahtarlandığı için model değişimi
+  önbelleği geçersiz kılar; bu, değişikliğin yapıldığı yerde yazıyor.
+- **Pano kartı, kartın gerçekten harcadığı kontrolü sunuyor.** Katalog kartı
+  sağlayıcı/model seçicisi alıyor (ve kaydı hem `params`'a hem sütuna yazıyor),
+  lead-gen kartı kararın nerede olduğunu söyleyen bir cümle, claude oturumu
+  eskisi gibi kodlama modeli listesi. Worker şeridindeki bir kart artık kodlama
+  modeli listesine zorlanmıyor: `claude-sonnet-5` sütuna yazılıyordu ve her
+  ekran kartın harcamayacağı bir modeli rapor ediyordu. Terminalin ilk satırı
+  da (`run started · …`) pasın gerçekten harcayacağı modeli anıyor.
+- **Dört gerçek IKAS dışa aktarımı, iki yeni profil ve dili sorulan çeviri
+  sütunları (task-111).** Operatörün kendi dosyaları geldi. **Çeviriler**
+  dışa aktarımı beklenen uzun format değil, geniş format çıktı — `İsim, Açıklama,
+  Meta Başlığı, …` yanında `Çevrilecek …` sütunları, 1013 ürün, 1009'u dolu — ve
+  ek koda ihtiyaç duymadı. Ama dosya **hangi dile** çevrildiğini yazmıyor:
+  operatör onu ikas panelinde dışa aktarırken seçmiş. İçerikten tahmin etmek bu
+  pakette olmayan ve olmaması gereken bir dil algılayıcısı olurdu, ve yanlış
+  tahmin Arapçayı Almanca sütununa yazar — bin satır boyunca, sessizce. Bu
+  yüzden soruluyor. Varyant düzeyinde özel alanlar da ayrı bir profil oldu;
+  imzası ürün düzeyindekini kapsadığı için tablonun **önüne** kondu.
+- **Hangi alanların yeniden yazılacağı artık yapılandırılabilir ve kaydediliyor
+  (task-111).** Bir ürün export'unun sabit bir alan kümesi yok: bu mağazanın
+  dosyasında `SKU` tamamen boş, `Satış Kanalı:meletiorient` mağazaya özel,
+  `Html:Detay` ve `Html:Detay-AR` sütunları var ama hiç dolu değil. Bu yüzden
+  açılabilecek alanlar **dosyadan** okunuyor — sütunu olmayan alan kapalı olarak
+  değil, hiç gösterilmiyor. Yapılandırma bir varsayılan değil **kapı**: kart o
+  alanı istese bile kapalıysa yazılmıyor ve pas neyi atladığını söylüyor. Boş bir
+  küme "hiçbiri" değil "yapılandırılmadı" demek — yani hepsi — o yüzden boşa
+  normalleşen bir seçim kaydedilmiyor, saklansaydı operatörün az önce kapattığı
+  her anahtarı geri açardı.
+- **Katalog ekranında dil sekmeleri, RTL düzenleme ve preset seçici
+  (task-102, task-104).** Platform artık bir rozet değil, seçilebilir bir
+  liste — ve liste ekranın kendi kopyası değil, daemon'ın. Ekran profil adlarını
+  kendi sabitinde tutuyordu ve o kopya bayatlamıştı. Dil sekmeleri yalnızca
+  dosya birden fazla dil taşıyorsa çiziliyor, yani tek dilli bir katalog bugüne
+  kadar göründüğü gibi görünüyor. Arapça sekmesinde önizleme ve editör sağdan
+  sola çalışıyor — yön yazma yüzeyinde, araç çubuğunda değil — ve "şimdiki"
+  değer Türkçe gövde değil, o dilin kendi hücresi: aksi hâlde "zaten çevrilmiş"
+  ile "henüz çevrilmemiş" aynı görünürdü. Sütun formu, profilin adlandırmadığı
+  bir dil sütununu (mağazanın kendi açtığı `Html:Detay-EN` gibi) seçtirebiliyor.
+- **İngilizce ve Arapça ürün içeriği (task-105).** Yeniden yazım artık bir hedef
+  dil alıyor. Arapça kayıt Modern Standart Arapça (الفصحى), Körfez e-ticaretinde
+  yazıldığı biçimiyle: Arapça noktalama (`، ؛ ؟`), Batı rakamı, kaşide ve hareke
+  yok, marka/model/birim Latin harfle. İngilizce Amerikan yazımı. Markanın hitap
+  ekseni (`siz`/`sen`/`yok`) Türkçe metinden okunduğu için Türkçe saklanıyor ve
+  hedef dile o dilin kendi ekseniyle çevriliyor — ikinci bir enum türetmek
+  `BrandKit.hash`'i değiştirir ve kataloğun tamamını çöpe atardı. Kaynak dil
+  promptu **byte-identical** kaldı, golden dosyayla çivili: değişseydi
+  `content-v1` yükseltilmek zorunda kalır ve operatörün onayladığı her taslak
+  bulunamaz hâle gelirdi.
+- **Arapça gövde yönüyle birlikte yazılıyor (task-105).** `Render` markanın
+  sözlüğünde olmayan her niteliği düşürüyor ve Türkçe bir mağazanın geçmiş
+  HTML'inde `dir` yok — yani `dir="rtl"` **sessizce** düşer, hiçbir şey hata
+  vermez, dosya dışa aktarılır ve mağazada noktalama yanlış tarafta çıkardı.
+  Yönü artık dil belirliyor: `RenderLang` tek bir `<div dir="rtl" lang="ar">`
+  yazıyor, sözlük genişletilmiyor, ve sarmalayıcı yeniden kaydetmede iç içe
+  geçmiyor (markanın kendi HTML'inde `div` olduğunda her kayıtta bir kat daha
+  derine inerdi).
+- **Deterministik dil kapısı ve anadil gözden geçirmesi (task-107).** Depodaki
+  ilk doğrulayıcı paso, ve neyi koruduğu için burada: Türkçe bir yeniden yazım
+  yanlış giderse ekrana bakan operatör yakalar, Arapça yanlış giderse bir
+  müşteri okuyana kadar kimse yakalamaz. Önce model çağırmayan bir kapı —
+  Türkçe harf sızıntısı, dil dışı harf oranı, çevrilmemiş uzun Latin bölüm,
+  yanlış yazı sistemi ve **kaynakta geçmeyen sayı** reddediliyor; kaşide, bidi
+  denetim karakteri, Arap-Hint rakamı ve Arapça cümledeki ASCII virgül sessizce
+  değil, söylenerek onarılıyor. Sonra ikinci bir model çağrısı: anadili hedef
+  dil olan bir editör, yalnızca metni ve makine kapısının bulgularını görüyor.
+  Çıktı tekrar kapıdan geçiyor. Gözden geçirene erişilemezse temiz metin notla
+  saklanıyor, kapının reddettiği metin saklanmıyor — deterministik kapı taban ve
+  taban esnemiyor.
+- **Katalog artık çok dilli okuyor ve çok dilli yazıyor (task-103).** Gerçek IKAS
+  özel alanlar dışa aktarımının başlığında `Html:Detay`'ın yanında
+  `Html:Detay-AR` duruyor — mağaza Arapça gövdeyi zaten orada tutuyor ve motor
+  onu ne okuyordu ne yazıyordu. `Lang` ayrı bir boyut olarak eklendi: `Field`
+  kapalı kümesi ve tel yazımı değişmedi, `Dialect` ve `File` dil başına sütun
+  haritası kazandı, `Product` dosyanın her dilde zaten söylediğini taşıyor.
+  Dışa aktarım her dili **tek geçişte** yazıyor ve değişiklik testini o dilin
+  kendi eskisine karşı yapıyor — dosya tek dosya, iki ayrı export birbirinin
+  işini geri alırdı. Bir dili onaylamak diğerini yayına göndermiyor. Beş gerçek
+  fixture üzerindeki byte-identity iddiası bozulmadan duruyor.
+- **Bir profile sonradan eklenen sütun, elde olan içe aktarımlara da ulaşıyor
+  (task-103).** `stored.go`'nun kendi yorumu "sonradan eklenen bir profil ondan
+  önce içe aktarılmış dosyalara da uygulanır" diyordu ama koşulu bunu yalnızca
+  *hiçbir profile uymamış* dosyalar için yapıyordu. Zaten uymuş bir içe aktarım
+  bağlandığı sütunları sonsuza kadar koruyordu, dolayısıyla `Html:Detay-AR`
+  kimsenin kataloğuna ulaşmazdı.
+- **Platform preset'i artık seçilebiliyor (task-101).** `Detect` "bu dosyayı
+  hangi platform yazdı" sorusunu cevaplıyor, "bu mağaza hangi platformda"
+  sorusunu değil. Bir sütununu yeniden adlandırmış mağazanın dosyası, operatör
+  onun bir IKAS export'u olduğunu görebilirken tanınmıyor ve tek çıkış yolu
+  profil tablosunda zaten duran bir haritayı elle yeniden yazmak oluyordu.
+  `PUT /catalog/imports/{id}/dialect` algılamayı eziyor, boş anahtar dosyayı
+  algılamaya geri döndürüyor. Profil, `Detect`'in yaptığı gibi **dosyanın kendi
+  başlık yazımına** bağlanıyor: tablodaki yazımı yazmak, dosyada hiç olmayan bir
+  sütun adını dışa aktarmak ve operatörün panelinin dosyayı reddetmesi demekti.
+- **`GET /catalog/profiles` (task-101).** `catalog.Dialects()` task-85'te ihraç
+  edilmiş ve bugüne kadar hiç çağrılmamıştı; masaüstü profil adlarını kendi
+  sabitine kopyalamıştı ve o kopya bayatladı — task-91'de silinen `ikas-en`
+  ekranda kalmıştı. Go'da yaşayan kapalı bir küme artık Go'dan cevaplanıyor.
+
+- **Sağlayıcı kataloğu ve gerçek bir genişleme noktası (task-99).** On üç
+  sağlayıcı tanınıyor: dördü çalışıyor, dokuzu **yakında**. Bir katalog satırı
+  hiçbir şeyi çalıştırmıyor — ürünün ne olacağını söylüyor. `POST
+  /llm/connections` final gövdesiyle var ve hazır olmayanı adıyla reddediyor
+  (501); bir adaptör indiğinde rota, gövde ve ekran değişmeden başarılı olmaya
+  başlıyor. Sınanamayan hiçbir adaptör yazılmadı: belgeden yazılıp hiç
+  çalıştırılmamış bir adaptör ilk gerçek çağrıda düşer ya da — daha kötüsü —
+  yarı çalışıp şema istenen yerde düzyazı döndürür.
+- **Sır kasası (`internal/secrets`).** OS deposu — macOS Keychain, Windows
+  DPAPI, Linux Secret Service — ve o yoksa `0600` bir dosya. Asıl tasarım kararı
+  `Backend()`'in arayüzün parçası olması: **yedeğin kendisi güvenlik zaafı
+  değil, onu gizlemek zaafiyet.** Anahtarı dosyaya düşen operatör bunu eklerken
+  okuyor.
+
+- **Bağlantı yönlendirmenin birimi oldu (task-97, task-100).** Bir sağlayıcının
+  kimliği artık bir CLI ikilisinin adı değil. Ölçüldü: Antigravity'nin kendi
+  aboneliği yok, bir Google AI planına biniyor; ve Gemini CLI'ın kota havuzunu
+  CLI değil **oturum yöntemi** belirliyor (kişisel OAuth → Code Assist, AI Pro
+  ile artan; AI Studio anahtarı → ayrı havuz; Vertex ve Workspace ayrı). Yani
+  aynı Google hesabıyla girilmiş `agy` ile `gemini` **tek cüzdan** harcıyor.
+  Ayarlar ekranı artık bunu satıcıya göre gruplayıp bir cümleyle söylüyor —
+  onları bağımsız çizmek, operatöre tek bütçesi varken iki bütçesi olduğunu
+  söylemekti.
+- **Ayarlar ekranı bölüm rayına ayrıldı**: Bağlantılar · Yönlendirme ·
+  Skill'ler · Kurallar. Ray, kaydedilmemiş değişiklik taşıyan bölümü
+  işaretliyor.
+
+- **Ayarlarda daemon'ın kendi çağrıları için sağlayıcı seçimi (task-98).**
+  Brain'in tarama ve ilişki pasoları, refine ve katalog yeniden yazımı ilk kez
+  sabit bir tiere çakılı değil — bir makine taraması binlerce çağrı, ve bundan
+  önce onları başka yere yöneltmenin tek yolu bir sabiti düzenleyip yeniden
+  derlemekti. Seçici artık bu makineyi biliyor: kurulu olmayan sağlayıcı
+  seçilemiyor, oturumu kapalı olan CLI'ın kendi cümlesiyle işaretleniyor, ve
+  Ollama'nın modelleri sabit bir listeden değil makinenin kendisinden geliyor.
+- **Yerel model çalıştırıcısı bir sağlayıcı (`ollama`).** Ücretsiz, oturumsuz,
+  tamamen yerel — operatörün iki kez düşüneceği iş için doğru cevap. Modelleri
+  `ollama list` ile keşfediliyor ve `ollama show`'un yetenek bloğuna göre
+  süzülüyor: gömme modeli listeden adı öyle göründüğü için değil, öyle olduğunu
+  söylediği için çıkıyor.
+
+- **Menü çubuğu paneli bir sohbet (task-96).** Besteci bir formdu ve sorunu
+  yerleşimi değil sırasıydı: klasör ve model, iş yazılmadan önce sorulan iki
+  soruydu — oysa ikisinin de cevabı çoğu zaman işin kendisinden çıkıyor.
+  Sihirbaz önce işi soruyor, klasörü cümleden okuyor, ve yalnız gerçekten
+  bilemediğini soruyor. Çıkarım deterministik, model çağrısız, ve **her zaman
+  görünür**: hangi klasörü, hangi kelimeden seçtiğini söylüyor. Eşleştirme
+  Türkçeye göre: `İçerik` eşleşiyor, `api'de` eşleşiyor, ama `test` adlı bir
+  proje "testleri düzelt" cümlesine takılmıyor. Başlatmadan önce tek bir cümle
+  ne harcanacağını söylüyor — ajan, klasör, model.
+
+- **Sağlayıcı seçimi brain'e kadar iniyor, ve sağlayıcıların birbirinin yerine
+  geçemediği tipte yazılı (task-93).** `Provider` artık ne yapabildiğini
+  söylüyor: `agy` şema alabiliyor, `gemini` alamıyor (kurulu ikiliden okundu —
+  `--json-schema` diye bir bayrağı yok). Şema taşıyan bir isteği şema veremeyen
+  bir sağlayıcıya yönlendirmek, brain'in bir düğümü başlıklı ama
+  değerlendirmesiz saklamasıyla biterdi — hiçbir hata vermeden. Router artık
+  hiçbir şey harcamadan reddediyor.
+- **`gemini` CLI bir sağlayıcı.** Bayrakları hafızadan değil `--help`'ten,
+  hata zarfı CLI'ın kendisinden gözlemlendi. Bu makinede kurulu ama oturumu
+  kapalı, ve `GET /llm/providers` bunu ayrı ayrı söylüyor: "kurulu mu"
+  bedava bir soru, "oturum açık mı" bir model çağrısı — ikincisi istenince
+  sorulur.
+- **Operatörün sağlayıcı tercihi ayarlara girdi.** Distil ve reason sınıfları
+  için birer varsayılan; brain'in kendi pasoları ilk kez sabit bir tiere
+  çakılı değil. Sınıfın *hangi iş* olduğu kodda kalıyor (SD-1); *bu makinede
+  kim hizmet ediyor* operatörün yazısı.
+
+- **Ürün başına pazar araştırması ve yeniden yazım (task-87).** Araştırma mevcut
+  `search → crawl → refine → merge` hattından geçiyor — bu bir tercih değil,
+  SD-2'nin şartı: kazınmış sayfa metni `internal/refine`'dan geçmeden hiçbir yere
+  düşmüyor. Yeniden yazım `llm.Reason` sınıfı, çünkü marka sesinde metin yazmak
+  ve kaynaklar arası sentez yapmak sıkıştırma değil.
+- **Modele bu yolda da hiç işaretleme gösterilmiyor.** Şema *metin* taşıyan
+  tiplenmiş blokların listesini istiyor; zarfı mağazanın kendi geçmiş HTML'inden
+  `envelopeFor` seçiyor. Modelin isteyebileceği bir etiket reddedilmiyor — onu
+  isteyecek bir yolu hiç olmadı. Modelin uydurduğu bir URL düz metne iniyor.
+- **İki önbellek anahtarı, marka hash'i yalnız birinde.** Taslak anahtarı prompt
+  sabitini, modeli, marka hash'ini ve skill sürümünü taşıyor; araştırma anahtarı
+  prompt sabitini ve modeli. Bir rakip sayfasının kategori hakkında söylediği şey,
+  bu mağaza okuruna "siz" demeye karar verdi diye değişmiyor — marka sesini
+  düzeltmek operatörün yapabileceği en pahalı şey olmamalı.
+- **`internal/catalogjob` — panodaki kart.** `coderunner.Executor`,
+  `Agent() == "catalog"`, `LaneWorker`. `internal/coderunner` altında hiçbir
+  dosyaya dokunulmadı; task-79'un dikişi tuttu. Kart açık bir ürün listesi alıyor,
+  asla bir filtre değil.
+- **`product-content` skill'i.** Markanın kendi sesi ve sözlüğü CSV'den okunuyor;
+  bu dosya **yöntemi** anlatıyor: neyin uydurulmayacağını, somut niteliklerin
+  makinenin çıkarabileceği düz cümlelerle yazılmasını, anahtar kelime listesinin
+  düzyazı olmamasını.
+- **İki MCP aracı: `catalog_products` ve `catalog_product`.** İkisi de okuma.
+  Üçüncüsü — toplu yeniden yazımı kuyruğa alan araç — **bilinçli olarak
+  yazılmadı**: kayıtta bütün etkisi para harcamak olan tek araç olurdu, birinin
+  yazdığı bir cümleden bir katalog dolusu arama ve model çağrısı. Onu kuyruğa
+  alan rota açık bir ürün listesi istiyor ve operatörün o ürünlere az önce baktığı
+  bir ekranda duruyor.
+- **Tanınmayan bir başlık için sütun önerisi ve örnek değerler (task-90/91).**
+  Otuz yedi sütunlu bir dosyada operatörden sekiz açılır listeyi sıfırdan
+  doldurmasını istemek, tanıma hatasının faturasını ona kesmektir. `Suggest`
+  deterministik ve model çağrısız bir tahmin üretiyor (bir sütun iki alana
+  verilmiyor: `Açıklama` gövdeye, `Metadata Açıklama` SEO'ya), form onunla dolu
+  açılıyor, ve her seçimin altında dosyanın kendi ilk satırından bir örnek değer
+  duruyor. Eşleme, dosya tanınmış olsa bile "sütunlar" düğmesinden her zaman
+  açılabiliyor ve kimlik sütunlarını (`Ürün grup ID`, `SKU`, `Kategori`) da
+  sunuyor — bunlar formda olmadığı için tanınmayan bir dosya varyant satırlarını
+  hiç gruplayamıyordu.
+- **Ürün tezgâhı: editör ve önizleme yan yana (task-90).** Bir ürün tam
+  genişlikte açılıyor — solda markanın sözlüğüne kısıtlanmış editör, sağda canlı
+  önizleme, ve önizlemenin üstünde `önce · sonra` anahtarı. "sonra",
+  kaydedilmemiş düzenleme dahil editördeki hâl. Tabloda satır başına "aç", çift
+  tık da açıyor. Yirmi altı remlik panelde editörle önizlemeyi yan yana koymak,
+  kimsenin okuyamayacağı iki sütun demekti; "bu daha mı iyi" sorusu ikisini de
+  aynı anda istiyor.
+
+### Düzeltildi
+
+- **Marka kimliğindeki metin alanlarında boşluk tuşu çalışmıyordu (task-112).**
+  Bir tuş dinleyicisi değil, denetimli bileşenin kendisi: panel *saklanan* sesi
+  (iki `string[]`) tutuyor ve her tuş vuruşunda metin alanından yeniden
+  kuruyordu, yani `"Kesinliği "` → `split` → `trim` → `join` → `"Kesinliği"`.
+  Boşluk, onu yazan tuş vuruşunda siliniyordu; `filter(Boolean)` de aynı şeyi
+  Enter'a yapıyordu, o yüzden yeni satır da açılamıyordu. Operatörün "boşluk
+  tuşu çalışmıyor" raporu olan biteni birebir anlatıyordu. Form artık metin
+  tutuyor (`voiceDraft`) ve bölme yalnızca kaydederken çalışıyor
+  (`voiceFromDraft`). Aynı şekle sahip iki latent risk de kapatıldı: çıplak harf
+  ve boşluk bağlayan Lead-gen panelleri artık `isTypingTarget`'ı soruyor —
+  "bu panelde metin alanı yok" bir kural değil, bağlamanın bugün durduğu yerdi.
+- **Katalog'un "seçilenleri yeniden yaz" düğmesi çalıştı, ama ekran bunu hiç
+  söylemedi (task-112).** Operatör tek ürün seçti, düğmeye bastı, hiçbir şey
+  olmadı sandı. Aslında: `POST /catalog/rewrite` 201 döndü, kart kuyruğa girdi,
+  arama + tarama + rafine **altı dakika** sürdü ve ürün `llm: provider cannot
+  return structured output: ollama` ile başarısız oldu. Ekran bunların hiçbirini
+  çizmiyordu — dönen `run_id` çöpe atılıyordu, `RunsProvider`'a hiç bakılmıyordu
+  ve ürünün `reason` alanı API'de olduğu hâlde hiçbir yerde görünmüyordu. Artık
+  Ürünler tablosunun üstünde koşu satırı var (uygulamanın tek yoklama döngüsünü
+  okuyor, kendi zamanlayıcısını kurmuyor), paso bitince liste kendiliğinden
+  tazeleniyor, başarısız ürünün sebebi hem rozetin üstünde hem detay panelinde
+  yazıyor, ve `panoda aç` karta bağlıyor.
+- **Yapısal çıktı veremeyen bir model altı dakika yaktıktan sonra reddediliyordu
+  (task-112).** `internal/llm`'in yönlendiricisi bu eşleşmeyi zaten reddediyor
+  ve yorumu "before anything is spent" diyor — o paket için doğru, katalog için
+  değil: buradaki her ürün bir arama, bir tarama, bir rafine ve *ondan sonra*
+  şemalı çağrı. Kontrol artık `Studio.Rewrite`'ın mevcut `ErrNothingToWrite`
+  kapısının yanında, ürün döngüsünden önce; `llm.Router.Capabilities` çağrının
+  kendi çözümlemesini kullanıyor ki kontrol ile çağrı ayrışamasın. HTTP tarafı
+  422 dönüyor, içe aktarım görünümü sebebi taşıyor (`rewrite_blocked`) ve düğme
+  **sebebi yanında yazılı** olarak pasif çiziliyor. Ölçüldü: reddedilen bir
+  istekte günlükte tek bir `pipeline.stage` satırı yok.
+- **Daemon `languages[].fields`'i hiç göndermiyordu (task-112).**
+  `catalogLangView`'da böyle bir alan yoktu ve `File.WriteSet` kendi testleri
+  dışında ölü koddu. Eksikliğin belirtisi bir özelliğin yokluğu değil, ekranın
+  gerçeğin tersini söylemesiydi: `writeSummary` her içe aktarım için koşulsuz
+  "hiçbir alan yazılmayacak" yazıyor, "alanlar" paneli her dil için "bu dilde
+  yazılabilecek bir sütun yok" diyor, "kaydet" kalıcı pasif kalıyordu — ve o
+  etiketin altında kuyruğa giren paso beş alanın hepsini yazıyordu. Görünüm
+  artık her dil için `File.Offered` üzerinde dönüp `File.Writes`'ı soruyor, yani
+  yapılandırılmamış bir dosya "hepsi açık" olarak geliyor.
+- **Tanınan bir dosyada sütun formu bomboş açılıyordu (task-112).** IKAS ürün
+  export'u sorunsuz tanınıyor, otuz yedi sütunun dokuzu doğru bağlanıyor, ürünler
+  okunuyordu — ama "sütunlar" formu her açılışta dokuz açılır listeyi de "—"
+  gösteriyordu. Sebep: form yalnızca `mapping` alanını okuyordu, o alan ise
+  *operatörün kendi* haritasını taşır ve bir profil eşleştiğinde boş kalır.
+  `initialMapping` artık dosyanın **gerçekten okunduğu** sütunlardan
+  (`languages[].columns`, yani daemon'ın `File.ColumnsFor`'u) açılıyor; hiçbir şey
+  eşleşmediğinde eskisi gibi `suggested` tahminine düşüyor.
+- **Aynı formdaki düzeltme sessizce yok sayılıyordu (task-112).** Form "bir sütun
+  yanlış eşlendiyse buradan düzeltin" diyordu; kaydedilen harita doğrulanıyor,
+  saklanıyor, dosya yeniden okunuyor — ve sonra her okuma yine profilden
+  geçiyordu, çünkü `ColumnsFor` diyalekti önce sayıyordu. `SetDialect` bunun
+  tersini zaten söylüyordu ("operatörün az önce seçtiği daha yeni cevaptır");
+  artık iki yön de aynı şeyi söylüyor: operatörün haritası profilin üstündedir ve
+  onu **değiştirir**, birleştirmez — formda boşaltılan bir sütun profilden geri
+  gelmez. Geri alma yolu `SetDialect`'in aynı anahtarla çağrılmasıdır.
+- **Yedi gerçek export biçiminin ikisi bayt bayt aynılık testinin dışındaydı
+  (task-112).** `ikas-ceviriler.csv` ve `ikas-fields-variant.csv` fikstürleri her
+  satır sonunda `\r\r\n` taşıyordu — hiçbir dışa aktarıcının üretmediği bir dizi
+  — ve test yalnızca üç fikstür üzerinde koştuğu için bu fark edilmemişti.
+  Fikstürler gerçek dosyaların satır sonlarına çekildi;
+  `TestExport_EveryRealExportShapeComesBackByteForByte` artık yedisinin hepsinde
+  koşuyor. Yanına `TestExport_NeverWritesIdentity` kondu: her yazılabilir alanı
+  değiştiren bir pastan sonra bile `SKU`, `Ürün Grup ID` ve `Slug` sütunları
+  satır satır aynı kalıyor.
+
+- **Toplu yeniden yazımın ürettiği taslakların hiçbiri ekranda görünmüyordu
+  (task-101).** Bir taslak, altında yazıldığı anahtarla saklanıyor ve o anahtar
+  birebir eşleniyor. Kart, kataloğ ajanının beceri sürümünü de içeren anahtarı
+  kuruyordu (`…#product-content:<v>`); HTTP tarafı ise `catalogSkillVersion()`
+  boş döndüğü için o yarısı olmayan anahtara bakıyordu. Sonuç: para harcanmış
+  her taslak, hiçbir okumanın bakmadığı bir yere yazılıyordu — `GET
+  /catalog/products` hepsi için `draft: null` diyor, `Export` hiçbir şey
+  yazmıyordu. Aynı saplama MCP araçlarında da vardı (`llm.Selection{}`, `""`).
+  Kök sebep anahtarın **iki yerde ayrı ayrı kurulmasıydı**, dolayısıyla düzeltme
+  saplamayı doldurmak değil: bileşim `Studio.CurrentDraftVersion`'a taşındı ve
+  üç kapı da (HTTP rotaları, MCP araçları, pano kartı) onu soruyor. Operatörün
+  model seçimi ve beceri sürümü stüdyoya `UseDraftKey` ile enjekte ediliyor —
+  `llm.Router`'ın varsayılanlarını aldığı desenin aynısı. İki tarafı birden
+  kapsayan bir regresyon testi eklendi; tek başına her iki yarı da özellik
+  bozukken geçiyor, ki bu zaten böyle yayına çıkmasının sebebi.
+- **Sınıf varsayılanları hiç kaydedilmiyordu (task-100).** Ayarlar ekranı
+  "kaydedilmemiş" diyor, düğmeyi açıyor, hiçbir şey yazmıyor ve "Kaydedildi"
+  diyordu. Sebep, tek bir sorunun iki yerde cevaplanmasıydı: `anyDirty` testli
+  bir dosyadaydı, sınıf karşılaştırması JSX'te dört satır içi ifadeydi, ve
+  ikisi ayrıştı. Tek testli fonksiyona indirildi.
+- **Sağlayıcı kaydı kendine dair yarım cevap veriyordu (task-97).**
+  `Router.Providers()` yalnız sınıf haritasını ve fallback'i geziyordu, yani
+  `gemini` ve `ollama` kayıtlı, seçilebilir ve **hiç sorulmamış** durumdaydı —
+  ve masaüstü seçicisinin "veri yoksa sorun yok" dalı ikisini de bakmadan
+  onaylıyordu. Kendine dair yarım cevap veren bir kayıt, diğer yarısı için
+  sessizce kefil olur.
+
+- **IKAS export'u tanınmıyordu (task-91).** task-85'in `ikas` profili hafızadan
+  yazılmıştı — `Ürün Adı`, `Stok Kodu`, `Kategori` — ve kimsenin indirmediği bir
+  dosyayı tarif ediyordu. Gerçek başlık 37 sütunlu: `Ürün Grup ID / Varyant ID /
+  İsim / Açıklama / … / SKU / … / Kategoriler / Etiketler / Metadata Başlık /
+  Metadata Açıklama / Slug`. Operatör kendi kataloğunu attı ve ekran
+  "TANINMADI" dedi. Profil gerçek dışa aktarımdan yeniden yazıldı, IKAS'ın
+  **özel alanlar** export'u (`Html:Detay`) ikinci bir lehçe olarak eklendi, ve
+  doğrulanamayan `ikas-en` silindi: hiç eşleşmeyen bir profil, listede duran bir
+  iddiadır. `internal/catalog/AGENTS.md`'ye kural yazıldı — bir lehçe profili
+  yalnız eldeki gerçek bir dışa aktarımdan eklenir.
+- **Eşlemeyi kaydetmek ekranı açmıyordu (task-90).** Elle eşleme yolu vardı,
+  kaydediyordu, ve hiçbir işe yaramıyordu: ekranın kapısı `dialect === ""` diye
+  soruyordu, `SetMapping` ise bir lehçe *uydurmaz* — eşlemeyi kaydeder. Otuz yedi
+  sütunu elle eşleyip kaydete basan operatör formun kendisini geri alıyordu. Kapı
+  artık daemon'ın söylediği `readable`: bir platform uydu **ya da** eşleme yeterli.
+  Ne başlık ne açıklama adlandıran bir eşleme de artık sessizce kabul edilip boş
+  ürünlere dönüşmüyor, bir cümleyle reddediliyor.
+- **Grafiğin üstündeki kaydırma sayfayı da kaydırıyordu (task-92).** Tek el
+  hareketi iki şeyi birden oynatıyordu. React `wheel`'i kök kapsayıcıya pasif
+  bağladığı için JSX işleyicisindeki `preventDefault` yok sayılıyordu; teker
+  artık pasif olmayan native bir dinleyici ve hareketi sahipleniyor. Bedeli
+  yazıldı: sayfa kipinde imleç grafiğin üstündeyken sayfa kaydırılamıyor —
+  haritaların davranışı, ve istenen de buydu.
+- **Düğüm panelindeki metin sarmıyordu.** Modelin yazdığı düzyazı düzenli olarak
+  hiçbir satır sonu kuralının bölemeyeceği bir şey taşıyor: bir oturum URL'i, bir
+  hash, bir import yolu. O en uzun şey panelin, panel de sayfanın genişliğini
+  belirliyor ve yatay kaydırma çubuğu beliriyordu. Panel gövdesi artık
+  `wrap-anywhere`; taşma kırpılarak değil, sarılarak çözüldü.
+- **Sonradan eklenen bir lehçe, ondan önce yüklenmiş dosyalara da uygulanıyor.**
+  Algılama başlığın saf bir fonksiyonu ve profil tablosu kod; "yüklendiğinde
+  eşleşmedi" kalıcı bir gerçek değil. Okumada lehçe yeniden algılanıyor (ama
+  operatörün kendi eşlemesi ezilmiyor — o eşleme bir kez başarısız olduğumuz
+  için var), ve `POST /catalog/imports/{id}/reread` ürünleri o sütunlarla
+  yeniden kuruyor. Ekran, okunabilir ama bütün ürünleri boş olan bir import'ta
+  bunu söylüyor. Yalnız rozeti düzeltmek hiç düzeltmemekten kötü olurdu:
+  "IKAS · 1013 ürün" yazıp boş satır göstermek.
+- **Yeniden yazım varyant satırlarının yalnız birine yazılıyordu.** Shopify
+  `Title` ve `Body (HTML)`'i yalnız ilk satıra yazdığı için "değerin okunduğu
+  satıra yaz" kuralı orada doğruydu; IKAS aynı açıklamayı her varyant satırında
+  tekrar ediyor, ve tek satıra yazmak dosyayı kendisiyle çelişir hâlde bırakıyordu.
+  Alan artık özgün hâlinin dolu olduğu her satıra yazılıyor — Shopify'da bu hâlâ
+  tek satır, davranış birebir aynı.
+
+### Değiştirildi
+
+- **Seçili/seçili değil ayrımı artık bir primitif ve yazılı bir kural
+  (task-112).** `desktop/AGENTS.md` "seçili bir şey bunu birden fazla kez
+  söyler" diyordu ve uygulama bunu tutmuyordu, çünkü koyacak yer yoktu.
+  "Tutuluyor" görünümü tüm uygulamada elle iki yerde yazılmıştı; seçili satır
+  rayı sekiz yerde dört farklı DOM şekliyle — biri de Katalog ürün tablosunda
+  **`border-l-electric`**, yani bu bölümün düzeltildiğini söylediği palet
+  hatasının ta kendisi. `ui/button` `active` + `activeAria` aldı (dolgulu yüzey,
+  tam Mist etiket, altta 2px Lime çubuk; görünüş tek, duyuru iki: bir paneli
+  açan `aria-expanded`, açık kalan ayar `aria-pressed`), `ui/rail` sekiz rayın
+  tamamını topladı, ve `ui/card`'ın hiç kullanılmayan `accent` prop'unun anlattığı
+  şey artık gerçekten bir bileşen. Katalog'un `sütunlar` · `alanlar` ·
+  `marka kimliği` düğmeleri — operatörün işaret ettiği üç düğme — panelleri
+  açıkken tutuluyor görünüyor.
+
+- **Katalog'un düzenleme yüzeyi zengin metin editörü değil, açıklamanın kendi
+  HTML'i (task-112).** TipTap buraya gerçek bir gerekçeyle gelmişti — şema güdümlü
+  bir editör, daemon'ın atacağı bir etiketi üretemeyen tek editör türüdür — ve o
+  gerekçe *işaretler* konusunda haklı, *yapı* konusunda sessizce yanlıştı. Şemada
+  bir sarmalayıcı düğümü yoktu; bu mağazanın `<div class="flex flex-nowrap
+  gap-4"><div class="flex-none w-3/5">` ile başlayan açıklamasını açıp kaydetmek,
+  aynı kelimeleri iki div'i düşürerek geri gönderiyordu. Kimseye bir uyarı
+  gitmiyordu, çünkü editörün içinden bakınca metin yerindeydi; kayıp yalnızca
+  dışa aktarımda görünüyordu. Yerine `HTMLSource`: kaynağı olduğu gibi gösteren
+  ve olduğu gibi kaydeden bir alan. `formatHTML` girintiyi **yalnızca iki etiketin
+  arasına** koyuyor — metnin içine asla, çünkü daemon'ın ayrıştırıcısı bir metin
+  akışındaki satır sonunu `<br>`'ye çeviriyor — ve `flattenHTML` onun test
+  edildiği tersi: gösterilen kaynak, saklanan kaynağın kendisi. Dört bağımlılık
+  (`@tiptap/*`), `editorSchema`, `starterKitOptions` ve `.rte-surface` stil
+  bloğu onunla birlikte gitti.
+
+- **Menü çubuğu artık tek bir panel (task-94).** İki yüzey vardı: altı satırlık
+  bir native `NSMenu` — sistemin grisi, sistemin yüzü, sistemin ayırıcıları,
+  çünkü `NSMenu` başka bir şey çizemez — ve ⌘⇧G'nin **ekranın ortasında** açtığı
+  680×460'lık bir kutu. Ortada beliren bir panel hiçbir şeye ait değildir ve
+  arkasındaki her şeyi bağlamdan çıkarır. Yerine 360 puanlık tek bir panel,
+  ikonun altına tutturulmuş: durum, besteci, koşu, ve dört eylem. Sağ tıkta iki
+  satırlık native cankurtaran kaldı (`Restart daemon`, `Quit Mimir`) — uygulama
+  accessory ve panelin WebView'ı takılırsa o WebView'ın çizdiği bir çıkış
+  ulaşılamaz bir çıkıştır.
+- **Açılış ekranı başarılı el sıkışmada gösterilmiyor.** Daemon loopback'te
+  ~200 ms'de cevap veriyordu ve karşılığında her açılışta bir poster, dört
+  bağımlılık satırı ve basılacak bir "Devam" düğmesi vardı — arkasında hiç karar
+  olmayan bir düğme. Bekleme derecelendi: 600 ms'ye kadar hiçbir şey, sonra tek
+  satır, başarısızlıkta stderr'ıyla dürüst yüzey. Markanın kendi yüzeyi, gerçekten
+  yapacak bir şeyin olmadığı tek duruma taşındı.
+- **Ana ekrandan "Hesap" paneli kalktı.** Aynı panel `Workspace`'te duruyor;
+  Mimir'in tek hesabı var ve hiç değişmeyen bir bilgi en değerli yeri tutuyordu.
+- **Sağlayıcı çalıştırılamıyorsa koşu ilk üründe duruyor.** Ölçüldü: kimliği
+  doğrulanmamış bir `claude` CLI'ıyla kart "tamamlandı" diyor ve üç ürünün üçü de
+  aynı sistemik sebeple `failed` oluyordu — panoda yeşil bir kart, altında
+  dokunulmamış bir katalog. Bir ürünün hatası o ürünün, bir sağlayıcının hatası
+  koşunun: dört yüz ürünlük bir katalogda "CLI oturumu kapalı" bilgisini öğrenmek
+  için dört yüz alt süreç başlatmanın anlamı yok. Hiçbir şey yazamayan bir koşu
+  artık başarısız — SD-6'nın kendi ifadesiyle, "her kaynak başarısız olmadıkça".
+- **Model limiti artık bir duraklama, bir başarısızlık değil (task-89).**
+  `coderunner.Outcome` bir `ParkUntil` alanı ilan ediyordu ama `runExecutor` onu
+  hiç okumuyordu; alanın kendi yorumu bile "park yolu worker lane'den hiç
+  erişilemez" diyordu, ki bir worker işi model bütçesi harcamaya başladığı anda
+  bu doğru olmaktan çıkmıştı. Dikiş artık onu okuyor: satır `queued`'a dönüyor,
+  sebep satırda kalıyor ve pencerenin kendi uyandırması kuyruğu yeniden
+  başlatıyor. Limit tükendiğinde hiçbir alt süreç harcanmıyor — ölçüldü: duraklama
+  yürürlükteyken kart üç yoklama boyunca kuyrukta kaldı ve CLI hiç çağrılmadı.
+- **Worker lane'in limiti `worker-lane` altında tutuluyor.** Hesap lane'i kimlik
+  yuvası başına bir duraklama tutuyor, çünkü tükenen o. Worker lane'deki bir iş
+  öyle bir yuva tutmuyor ama bütçesiz de değil: daemon'ın kendi model kimliğini
+  harcıyor ve süreçte ondan bir tane var — dolayısıyla bütün worker işleri için
+  tek duraklama. Hesap lane'inin davranışı bit bit eskisi.
+- **Panoda park rozeti (task-88).** Park edilmiş bir kart ile daha hiç başlamamış
+  bir kart ikisi de `queued`; ikisini ayırt edemeyen bir operatör gece boyu süren
+  bir duraklamayı takılma sanıyordu. Rozet daemon'ın kendi hold'larından okunuyor,
+  kartın hata metninden değil, ve kartların bindiği aynı poll'a biniyor. İki lane
+  ayrı: bir katalog kartı asla bir kimlik yuvasının limitiyle tutulmuş görünmüyor.
+- **Katalog kartının gövdesi ve sonuca açılan kapı.** Kaç ürün, araştırma açık mı,
+  kaç alan — hepsi kartın kendi `params`'ından, ek istek açmadan. Bitmiş bir
+  kartta "ürünleri gör" Katalog ekranını o import'ta açıyor.
+- **"Seçilenleri yeniden yaz" düğmesi gerçek.** task-86'da rota henüz yokken
+  devre dışıydı; artık seçim açık bir id listesi olarak gidiyor ve iş panoda bir
+  kart oluyor.
+
+### Eklendi
+
+- **Katalog ekranı (task-86).** İçe aktarma, ürün tablosu, eski/yeni önizleme,
+  alan düzenleme ve dışa aktarım. Ekran üç soruyu sırayla cevaplıyor ve düzeni o
+  sıra: dosyamı anladı mı (lehçe, çerçeve, ürün sayısı, kendi HTML'imden okunan
+  sözlük), içinde ne var (tablo), ve bir üründe ne değişecek (önizleme, alanlar,
+  editör).
+- **Marka sözlüğüne kısıtlanmış zengin metin editörü.** Editörün şeması
+  markanın kendi geçmiş HTML'inden kuruluyor: hiç başlık kullanmamış bir mağazaya
+  başlık düğmesi sunulmuyor, `<b>` yazan bir markaya `<strong>` verilmiyor.
+  Sözlükte olmayan her şey gizlenmiyor **kapatılıyor** — yalnızca düğmesi olmayan
+  bir uzantıya klavye kısayolu ve yapıştırma hâlâ ulaşır. Bu, şemaya dayalı bir
+  editör almanın tek gerekçesi: daemon'ın süzeceği bir etiketi üretemeyecek olan
+  tek editör türü odur.
+- **Önizleme `sandbox`'lı bir `srcdoc` iframe.** İki kilit birden: `sandbox=""`
+  hiçbir izin vermiyor (`allow-scripts` yok) ve `srcdoc` bu belgenin CSP'sini
+  devralıyor — `script-src 'self'` bu task'ta değişmedi. Yalıtım kadar kapsama da
+  isteniyordu: `<style>` bloğu taşıyan bir açıklama çevresindeki uygulamayı
+  yeniden düzenleyemiyor.
+- **Katalog tembel yükleniyor, ve bunu yapan tek ekran o.** Editörün ölçülen
+  maliyeti **+130 kB gzip** — paketin yarısından fazlası kadar (227 kB → 357 kB).
+  `React.lazy` arkasında ayrı bir parça olarak duruyor, açılışların çoğu onu hiç
+  yüklemiyor ve başlangıç paketi özellikten önceki hâlinin bir kilobayt içinde.
+
+### Değiştirildi
+
+- **`img-src`'ye `https:` eklendi, başka hiçbir şeye dokunulmadı.** Ürün
+  açıklaması fotoğraflarını mağazanın kendi CDN'inde tutuyor ve bir yeniden
+  yazımı değerlendiren operatörün ürünü görmesi gerekiyor. Bedeli açıkça
+  söyleniyor: bir önizleme açmak o CDN'e istek yapıyor.
+- **İçe aktarma artık modelin arkasında dakikalarca beklemiyor (task-85 kusuru).**
+  Ses distil'i `internal/llm`'in `RefineTimeout`'unu (180 sn) devralıyordu; o
+  bütçe arka planda bir sayfa damıtmak için ölçülmüştü, operatörün dosya bırakıp
+  beklediği bir istek için değil. Gerçek CLI ile ölçüldü: istek 4 dakika açık
+  kaldı. Artık kendi sınırı var (`CatalogVoiceTimeout`, 45 sn) ve süre dolduğunda
+  sözlük ve import ayakta kalıyor, sebep marka panelinde yazıyor, yeniden
+  çıkarmak bir düğme.
+- **Operatörün kendi yazdığı bağlantı artık bir uydurma sayılmıyor (task-85
+  kusuru).** "Kaynakta olmayan URL bir URL değildir" kuralı bir modelin
+  uydurmasını durdurmak için yazılmıştı; elle düzenlemeye de uygulanınca
+  editörün bağlantı düğmesi sessizce hiçbir şey yapmayan bir düğmeye dönüşüyordu
+  — bu paketin önlemek için var olduğunu söylediği hatanın ta kendisi. İki yol
+  artık ayrı: bir insanın kararı kabul ediliyor, bir modelin çıktısı hâlâ
+  kaynağın URL'leriyle sınırlı.
+- **`<script>` ve `<style>` içeriği artık metin sayılmıyor (task-85 kusuru).**
+  Bilinmeyen bir sarmalayıcıyı açıp metnini korumak `<section>` için doğru,
+  `<script>` için yanlıştı: etiket düşüyordu ama gövdesi ürün sayfasına
+  görünür bir cümle olarak yazılıyordu.
+- **Operatör kendi taslağını ikinci kez kaydedebiliyor (task-85 kusuru).**
+  `edited_by_operator` koruması makineyi durdurmalıydı, insanı değil; ikinci
+  kayıt sunucudan açıklanamayan bir 500 alıyordu. Koruma artık gelen yazımın da
+  operatöre ait olup olmadığına bakıyor, ve reddedilen bir yazım sebebiyle
+  birlikte 409 dönüyor.
+
+### Eklendi
+
+- **`internal/catalog` — ürün içeriği stüdyosunun çekirdeği (task-85).** Bir CSV
+  export'unu okur, varyant satırlarını ürünlere toplar, açıklamalardaki RTE
+  HTML'inden markanın sözlüğünü çıkarır ve dosyayı geri yazar. Bu sürümde hiçbir
+  ürün içeriği yeniden yazılmıyor; yeniden yazımın **güvencesi** kuruluyor.
+- **Modele hiç işaretleme gösterilmiyor.** Bir açıklama `Block`'lara ayrılıyor:
+  yeniden yazımın dokunabildiği metin, ve o metnin içinde durduğu opak `Envelope`.
+  Yeniden basım zarfları tekrar oynatıyor. Modele HTML verip HTML istemek bu
+  tasarımın önlemek için var olduğu hata — uydurulan işaretleme, operatörün canlı
+  bir mağazaya yapıştırdığı şey oluyor. Testi bir alt küme iddiası: çıktının etiket
+  kümesi girdinin etiket kümesinden büyük olamaz.
+- **Girdide geçmeyen bir URL bir URL değil.** Yeniden basım kaynak belgenin kendi
+  href/src kümesini izin listesi olarak alıyor; hedefi orada olmayan bir bağlantı
+  düz metne iniyor, kaynağı olmayan bir görsel düşüyor. Bir ürün sayfasındaki
+  uydurulmuş bağlantı, tüccarın müşterisine gönderdiği kırık bir bağlantıdır ve
+  bir yeniden yazımın en olası hatasıdır.
+- **Kayıpsızlık bir sözleşme.** Kimsenin değişiklik onaylamadığı bir hücre yeniden
+  türetilmiyor, kopyalanıyor: BOM, kodlama (UTF-8 / Windows-1254), ayraç (`,` /
+  `;`), satır sonu, kapanış satır sonu ve **her bir hücrenin tırnaklaması**.
+  Bu yüzden CSV okuyucusu ve yazıcısı bu paketin kendisinin: `encoding/csv` hangi
+  hücrelerin tırnaklandığını söyleyemiyor, yazıcısı da bu kararların üçünü kendi
+  sahipleniyor. Shopify HTML sütununu gerekmese de tırnaklıyor ve dosya başına tek
+  bir kural o dosya hakkında hem "minimal" hem "hepsi" derken yanılıyor.
+- **Marka kimliği iki yarım, biri bedava.** Sözlük (etiket, sınıf, stil özelliği
+  frekansları ve yapı sayımları) her açıklamayı okuyor ve **hiç model çağrısı
+  harcamıyor** — testi nil bir `Completer` ile koşuyor, yani kırılmış bir iddia
+  sessizce bir alt süreç başlatmak yerine panikliyor. Ses profili tek bir
+  `llm.Distill` çağrısı ve reddi yalnız sesi kaybettiriyor, import'u değil (SD-6).
+- **`/catalog/*` rotaları.** İçe aktarma, sütun eşleme, marka kiti okuma ve
+  düzenleme, ürün listesi, taslak kaydetme, durum ve dışa aktarım. İçe aktarma bu
+  yüzeydeki gövdesi bir belge olan tek rota ve `bodyLimits` tablosunda kendi satırı
+  var — bir rotanın capini yükseltmek orada verilmiş bir karar olmalı.
+- **Sunucu yetkili taraf, editör bir kolaylık.** `PUT /catalog/products/{id}/draft`
+  istemcinin gönderdiği ne ise aynı sadeleştirme kapısından geçiriyor ve neyin
+  sadeleştirildiğini cevapta söylüyor. Satır elle düzenlenmiş işaretleniyor ve
+  bundan sonra hiçbir toplu geçiş onu ezemiyor — koruma SQL'de
+  (`WHERE edited_by_operator = 0`), `outreach_emails`'in `WHERE status = 'draft'`
+  koruması ile aynı biçimde.
+- **İki ayrı önbellek anahtarı (migration `0025_catalog.sql`).** Marka hash'i
+  taslak anahtarında var, araştırma anahtarında yok. Marka sesini düzeltip yeniden
+  koşan bir operatör her açıklamayı yeniden yazdırıyor ve hiçbir rakip
+  araştırmasını atmıyor. Araştırmayı yazan taraf task-87, tablosu burada kuruldu
+  çünkü migration'lar append-only.
+- **`handle` ve `sku` okunuyor, asla yazılmıyor.** Handle ürünün URL'i; yeniden
+  yazmak ona işaret eden her bağlantıyı ve her sıralamayı 404'e çeviriyor. Bu bir
+  yeniden yazım değil bir taşıma, ve bu paket taşıma yapmıyor.
+
+**Anthropic hesabı artık kalıcı: bir kez bağlanıyorsunuz, uygulamayı kapatmak
+oturumu kapatmıyor.**
+
+### Değiştirildi
+
+- **Uygulamayı kapatmak artık hesabı düşürmüyor.** Kimlik yuvası
+  (`~/Library/Application Support/mimir/claude-session`) ve onun adlandırdığı
+  Keychain girdisi kapanışa dayanıyor, yani her açılışta yeniden
+  `claude auth login` yapmak gerekmiyor. Mimir yine hiçbir kimlik bilgisini
+  okumuyor, taşımıyor ya da saklamıyor — kalıcılık için yazılan tek şey silme
+  işleminin kaldırılması oldu. Yuva hâlâ Mimir'in kendi yuvası, terminaldeki
+  `claude` oturumunuz ayrı bir Keychain girdisi ve ona dokunulmuyor.
+- **Açılışta `Reset` yerine `account.Restore`.** Bir giriş iki açılış arasında
+  düşebilir ya da iptal edilebilir, ve Keychain'in arkasında durmadığı bir kayıt
+  olmayan kapasiteyi ilan eder — o yüzden `claude auth status` karar veriyor:
+  giriş yaşıyorsa kayıt korunuyor (veritabanı kaybolmuşsa yeniden yazılıyor),
+  CLI net olarak "boş" diyorsa tam `Reset`, probe hiç cevap veremediyse
+  (CLI yok, Keychain kilitli, timeout) **yalnızca kayıt** siliniyor — dizini
+  silmek geçerli bir Keychain girdisini kalıcı olarak öksüz bırakırdı.
+- **`POST /accounts/reset` artık yalnızca "çıkış yap" düğmesi.** Bağlantıyı
+  kesen tek yol o, ve ikinci bir Anthropic hesabına geçmenin de yolu bu: çıkış
+  yapın, diğer hesapla bağlanın.
+- **Hesap panelinde "yeniden bağlan".** Kayıt duruyor ama Keychain girdisi
+  ölmüşse ortaya çıkan tek yeni durum bu; bağlan düğmesi kayıt yüzünden gizli
+  kaldığı için tek tıkla çıkış + giriş yapıyor.
+
+### Kaldırıldı
+
+- **`daemon::sign_out`** (`desktop/src-tauri/src/daemon.rs`) ve daemon'un
+  kapanıştaki `accounts.Reset` çağrısı. Kapanmak çıkış yapmak değil.
+
 **Taslak yazmak artık "bulunan herkese" değil, işaretlediklerinize — iki kanala,
 kendi yazdığınız kurallarla. Model seçimi ve kural dosyaları arama çubuğundan
 çıkıp kendi ayar ekranına taşındı.**

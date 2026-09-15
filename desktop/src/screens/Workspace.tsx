@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Radio } from "../components/ui/field";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
 import { api, DaemonError, isTerminalStatus, type Project, type Run } from "../lib/daemon";
 import { emptyRun, openRunStream, reduceRun, type RunView } from "../lib/runStream";
@@ -104,13 +105,19 @@ export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}
   const running = run !== null && !view.finished;
 
   return (
-    <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-y-auto p-6">
-      <Card>
+    <div lang="en" className="mx-auto flex h-full w-full max-w-[1020px] flex-col gap-5 overflow-y-auto px-8 py-6">
+      <Card elevation="raised">
         <CardHeader
           title="Project"
           subtitle="Registered once; every later call carries only its id"
           aside={
-            <Button variant="ghost" onClick={() => void pickFolder()} disabled={busy || running}>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="folder"
+              onClick={() => void pickFolder()}
+              disabled={busy || running}
+            >
               Choose folder…
             </Button>
           }
@@ -124,29 +131,27 @@ export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}
           ) : (
             <div className="space-y-1">
               {projects.map((project) => (
-                <label
+                <Radio
                   key={project.id}
-                  className="flex cursor-pointer items-center gap-3 rounded px-2 py-1.5 hover:bg-edge/40"
-                >
-                  <input
-                    type="radio"
-                    name="project"
-                    className="accent-electric"
-                    checked={selected === project.id}
-                    onChange={() => setSelected(project.id)}
-                  />
-                  <span className="text-sm">{project.display_name}</span>
-                  <span className="truncate text-xs text-muted" title={project.path}>
-                    {project.path}
-                  </span>
-                </label>
+                  name="project"
+                  checked={selected === project.id}
+                  onChange={() => setSelected(project.id)}
+                  label={
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span>{project.display_name}</span>
+                      <span className="truncate text-xs text-muted" title={project.path}>
+                        {project.path}
+                      </span>
+                    </span>
+                  }
+                />
               ))}
             </div>
           )}
         </CardBody>
       </Card>
 
-      <Card>
+      <Card elevation="raised">
         <CardHeader
           title="Account"
           subtitle="One Claude identity, signed out when Mimir closes"
@@ -156,9 +161,9 @@ export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}
         </CardBody>
       </Card>
 
-      <Card>
+      <Card elevation="raised">
         <CardHeader title="Task" subtitle="Runs in the selected folder, with file tools" />
-        <CardBody className="space-y-3">
+        <CardBody className="flex flex-col gap-4">
           <TaskComposer
             prompt={prompt}
             onPromptChange={setPrompt}
@@ -169,28 +174,42 @@ export function Workspace({ onGoTerminals }: { onGoTerminals?: () => void } = {}
             onSubmit={() => void start()}
             placeholder="What should Claude do in this folder? Paste or drop an image to attach it."
           />
-          <div className="flex flex-wrap items-center gap-3">
-            <ModelSelect
-              models={models}
-              value={modelID}
-              onChange={setModelID}
-              disabled={busy || running}
-            />
-            <Button onClick={() => void start()} disabled={busy || running || !selected || !prompt.trim()}>
-              {running ? "Running…" : "Start run"}
-            </Button>
+          <div className="flex items-center gap-3">
+            <div className="w-52">
+              <ModelSelect
+                models={models}
+                value={modelID}
+                onChange={setModelID}
+                disabled={busy || running}
+              />
+            </div>
+            <div className="flex-1" />
             {run && onGoTerminals && (
-              <Button variant="ghost" onClick={onGoTerminals}>
+              <Button variant="quiet" iconAfter="arrowRight" onClick={onGoTerminals}>
                 Watch in Terminals
               </Button>
             )}
             {running && (
-              <Button variant="ghost" onClick={() => void api.stopCodingTask(run.id).catch((err: unknown) => setError(describe(err)))}>
+              <Button
+                variant="danger"
+                icon="stop"
+                onClick={() =>
+                  void api.stopCodingTask(run.id).catch((err: unknown) => setError(describe(err)))
+                }
+              >
                 Stop
               </Button>
             )}
-            {error && <span className="text-sm text-bad">{error}</span>}
+            <Button
+              icon="play"
+              loading={running}
+              onClick={() => void start()}
+              disabled={busy || running || !selected || !prompt.trim()}
+            >
+              {running ? "Running…" : "Start run"}
+            </Button>
           </div>
+          {error && <p className="font-mono text-xs text-bad">{error}</p>}
         </CardBody>
       </Card>
 
@@ -274,15 +293,15 @@ function RunPanel({
       />
       <CardBody className="min-h-0 flex-1 overflow-auto">
         {view.reasoning && (
-          <details className="mb-3 rounded border border-edge bg-ground/60 p-3">
+          <details className="mb-3 rounded-md bg-sunken p-3.5">
             <summary className="cursor-pointer text-xs text-muted">Reasoning</summary>
             <pre className="mt-2 whitespace-pre-wrap text-xs text-muted">{view.reasoning}</pre>
           </details>
         )}
 
         {view.tools.map((tool) => (
-          <details key={tool.callID} className="mb-2 rounded border border-edge bg-ground/60">
-            <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs">
+          <details key={tool.callID} className="mb-2 rounded-md bg-sunken">
+            <summary className="flex cursor-pointer items-center gap-2 px-3.5 py-2.5 text-xs">
               <span className="font-medium">{tool.name}</span>
               {/* Risk comes from the daemon, which classifies an unknown tool
                   as the most dangerous class rather than the least. */}
@@ -295,7 +314,7 @@ function RunPanel({
                 <Badge tone={tool.ok ? "ok" : "bad"}>{tool.ok ? "ok" : "error"}</Badge>
               )}
             </summary>
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap border-t border-edge p-3 text-xs text-muted">
+            <pre className="max-h-64 overflow-auto border-t border-edge p-3.5 font-mono text-xs whitespace-pre-wrap text-muted">
               {tool.output ?? JSON.stringify(tool.args, null, 2) ?? ""}
             </pre>
           </details>
@@ -306,7 +325,7 @@ function RunPanel({
         {/* The CLI's stderr, which is where "run `claude login`" is written and
             where a run that could never work says so. */}
         {view.stderr && (
-          <details className="mt-3 rounded border border-edge bg-ground/60 p-3" open={!view.text}>
+          <details className="mt-3 rounded-md bg-sunken p-3.5" open={!view.text}>
             <summary className="cursor-pointer text-xs text-warn">stderr</summary>
             <pre className="mt-2 whitespace-pre-wrap text-xs text-warn">{view.stderr}</pre>
           </details>

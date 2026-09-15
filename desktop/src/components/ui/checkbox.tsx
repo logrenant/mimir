@@ -6,7 +6,7 @@ import { cn } from "../../lib/cn";
  *
  * `accent-color` on a native box gets the hue right and nothing else: the
  * corner radius, the border weight and the unchecked state are the browser's,
- * and next to Aldrich caps and hairline edges that reads as a control from a
+ * and next to this type and these corners that reads as a control from a
  * different application. So the real input stays — it is what keyboard users
  * and screen readers actually operate — and is covered by a span we draw.
  *
@@ -68,15 +68,18 @@ export function Checkbox({
       <span
         aria-hidden
         className={cn(
-          "pointer-events-none flex size-4 items-center justify-center rounded-[3px] border transition-colors",
+          "pointer-events-none flex size-4 items-center justify-center rounded-sm border",
+          "transition-colors duration-[var(--dur-fast)] ease-decisive",
           // The focus ring is on the drawn box, driven by the real input's
           // focus — losing the outline is the usual cost of hiding a native
-          // control, and it is the thing keyboard users navigate by.
-          "peer-focus-visible:ring-2 peer-focus-visible:ring-electric/70 peer-focus-visible:ring-offset-1 peer-focus-visible:ring-offset-ground",
+          // control, and it is the thing keyboard users navigate by. An
+          // outline rather than a ring, to match `.focus-ring`: every other
+          // raised surface here spends its box-shadow on elevation.
+          "peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-electric",
           "peer-disabled:opacity-35",
           checked || indeterminate
-            ? "border-electric bg-electric text-mist"
-            : "border-edge bg-ground peer-hover:border-muted/70",
+            ? "border-lime bg-lime text-lime-ink"
+            : "border-edge-strong bg-sunken peer-hover:border-muted",
         )}
       >
         {checked ? (
@@ -86,7 +89,7 @@ export function Checkbox({
             <path d="M2.5 6.2 4.8 8.5 9.5 3.8" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         ) : indeterminate ? (
-          <span className="h-0.5 w-2 rounded-full bg-mist" />
+          <span className="h-0.5 w-2 rounded-full bg-lime-ink" />
         ) : null}
       </span>
     </span>

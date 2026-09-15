@@ -8,17 +8,26 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, DaemonError, type Run } from "../lib/daemon";
+import {
+  api,
+  DaemonError,
+  type LimitReport,
+  type Run,
+} from "../lib/daemon";
 import { pollInterval, isSetTime } from "../lib/board";
 import { useTerminals } from "./TerminalsProvider";
 
 /**
  * One poll loop for every screen that shows runs.
  *
- * The daemon has no cross-project run route — `internal/store` only indexes by
- * project — so a board is one `GET /coding-tasks` per registered project. That
- * fan-out is affordable once and wasteful twice, and the dashboard and the
- * board want exactly the same array. So it lives here, above both.
+ * One request. This used to fan out over the project registry and merge the
+ * answers, because the daemon indexed runs only by project and had no
+ * cross-project route. It has one now, and needs one: a card on the worker
+ * lane belongs to no project at all, so no amount of per-project querying
+ * would ever have found it.
+ *
+ * The project list is still read, for one reason: to put a name on the card.
+ * A card with no project shows its sub-agent in that slot instead.
  *
  * Mounted inside `TerminalsProvider` on purpose: every refresh is also what
  * tells the terminals which sessions are still alive, and which running jobs
@@ -29,6 +38,16 @@ export type BoardRun = Run & { projectName: string };
 
 type RunsAPI = {
   runs: BoardRun[] | null;
+  /**
+   * What the queue is currently waiting on, and until when.
+   *
+   * Read here rather than by the board because it belongs to the same poll: a
+   * parked card and a card that has simply not started yet are both `queued`,
+   * and the only thing that separates them is this. A second loop for it would
+   * be a second answer that can disagree with the first about the moment a
+   * pause lifted.
+   */
+  limits: LimitReport | null;
   error: string | null;
   loading: boolean;
   refresh: () => void;
@@ -52,6 +71,7 @@ export function runTime(run: Run): string {
 
 export function RunsProvider({ children }: { children: ReactNode }) {
   const [runs, setRuns] = useState<BoardRun[] | null>(null);
+  const [limits, setLimits] = useState<LimitReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const terminals = useTerminals();
@@ -66,14 +86,27 @@ export function RunsProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const { projects } = await api.listProjects();
-      const perProject = await Promise.all(
-        projects.map(async (project) => {
-          const { runs: projectRuns } = await api.listCodingTasks(project.id);
-          return projectRuns.map((run) => ({ ...run, projectName: project.display_name }));
-        }),
-      );
-      const merged = perProject.flat().sort((a, b) => runTime(b).localeCompare(runTime(a)));
+      // Both at once: the cards are the answer and the projects are only a
+      // lookup table for the label, so neither has to wait for the other.
+      // Three at once, and the third is allowed to fail on its own. A daemon
+      // that cannot answer "why is nothing running" can still draw the board,
+      // and losing the badge is a smaller loss than losing the cards.
+      const [{ runs: all }, { projects }, held] = await Promise.all([
+        api.listCodingTasks(),
+        api.listProjects(),
+        api.queueLimits(20).catch(() => null),
+      ]);
+      setLimits(held);
+      const nameOf = new Map(projects.map((p) => [p.id, p.display_name]));
+      // Already ordered by the daemon; sorted again because the two clients
+      // must not disagree about what "most recent" means for a backlog card
+      // that has only ever had a created_at.
+      const merged: BoardRun[] = all
+        .map((run) => ({
+          ...run,
+          projectName: nameOf.get(run.project_id) ?? "",
+        }))
+        .sort((a, b) => runTime(b).localeCompare(runTime(a)));
       setRuns(merged);
       setError(null);
       // Order matters: correct the badges of sessions that already exist
@@ -98,8 +131,8 @@ export function RunsProvider({ children }: { children: ReactNode }) {
   }, [refresh, interval]);
 
   const value = useMemo<RunsAPI>(
-    () => ({ runs, error, loading, refresh: () => void refresh() }),
-    [runs, error, loading, refresh],
+    () => ({ runs, limits, error, loading, refresh: () => void refresh() }),
+    [runs, limits, error, loading, refresh],
   );
 
   return <RunsContext.Provider value={value}>{children}</RunsContext.Provider>;

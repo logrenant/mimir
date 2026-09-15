@@ -288,9 +288,15 @@ func (s *Store) BrainNodesByIDs(ctx context.Context, ids []string) ([]BrainNodeR
 
 // SearchBrainNodes runs a full-text search, best match first.
 //
-// Scope is "this project plus everything global": a node about a public
-// repository is not about any one checkout, and hiding it from every project
-// would be the same as not storing it.
+// Scope is "this project plus everything global", and an empty path means the
+// whole store rather than the global rows alone. That second half was missing
+// and it made the graph console useless in its opening state: the screen's
+// project filter starts on "Tüm makine" and sends "", every question was run
+// against the nodes with no project — of which this store has none — and every
+// answer came back "the graph has no vocabulary for that". BrainGraphIDs has
+// always read "" as "everywhere", which is why the picture drew fine while the
+// question about it could not be answered. Same word, same meaning, now in
+// both places.
 //
 // An unparseable query is a miss, never an error — the consumer asked a
 // question, and "nothing matched" is a truthful answer where an error would
@@ -299,7 +305,7 @@ func (s *Store) SearchBrainNodes(ctx context.Context, projectPath, query string,
 	if s == nil || s.db == nil || limit <= 0 {
 		return nil, nil
 	}
-	match := ftsQuery(query)
+	match := ftsPrefixQuery(query)
 	if match == "" {
 		return nil, nil
 	}
@@ -311,13 +317,125 @@ func (s *Store) SearchBrainNodes(ctx context.Context, projectPath, query string,
 		SELECT `+prefixed(brainNodeColumns, "n")+`
 		FROM brain_fts
 		JOIN brain_nodes n ON n.rowid = brain_fts.rowid
-		WHERE brain_fts MATCH ? AND (n.project_path = ? OR n.project_path = '')
+		WHERE brain_fts MATCH ? AND `+brainScopeClause+`
 		ORDER BY bm25(brain_fts)
-		LIMIT ?`, match, projectPath, limit)
+		LIMIT ?`, match, projectPath, projectPath, limit)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	found, err := scanBrainNodes(rows)
+	if err != nil || len(found) > 0 {
+		return found, err
+	}
+	return s.searchBrainNames(ctx, projectPath, query, limit)
+}
+
+// searchBrainNames is the scan the index cannot do, and it runs only when the
+// index came back empty.
+//
+// FTS5 splits on non-alphanumerics and nothing else, so every compound name in
+// a code graph is one token: `handleListCodingTasks`, `OrganizationJsonLd`,
+// `brain_scan_now`. A prefix term reaches the front of one of those and nothing
+// else, so "coding" and "jsonld" — words plainly written in the graph — are
+// unreachable through the index no matter how the query is phrased. That is the
+// whole of the reported bug: a search box that cannot find words that are
+// visibly on screen.
+//
+// Splitting the names into an indexed column would be the faster answer and it
+// needs every node re-distilled to be true of the rows already stored. This
+// reads the names as they are. It is a scan, and at the size of this table —
+// ten thousand short strings — it costs a few milliseconds, which is the right
+// trade for a question that otherwise has no answer at all.
+func (s *Store) searchBrainNames(ctx context.Context, projectPath, query string, limit int) ([]BrainNodeRow, error) {
+	words := ftsWords(query)
+	if len(words) == 0 {
+		return nil, nil
+	}
+
+	// Longest first: in "list coding tasks" the specific word is the one worth
+	// ranking by, and a row matching more of them ranks above one matching one.
+	var clauses []string
+	args := []any{projectPath, projectPath}
+	var score []string
+	for _, w := range words {
+		clauses = append(clauses, "instr(lower(n.title || ' ' || n.aliases_text || ' ' || n.tags_text), ?) > 0")
+		args = append(args, w)
+	}
+	for range words {
+		score = append(score, "(instr(lower(n.title || ' ' || n.aliases_text || ' ' || n.tags_text), ?) > 0)")
+	}
+	for _, w := range words {
+		args = append(args, w)
+	}
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+prefixed(brainNodeColumns, "n")+`
+		FROM brain_nodes n
+		WHERE `+brainScopeClause+` AND (`+strings.Join(clauses, " OR ")+`)
+		ORDER BY (`+strings.Join(score, " + ")+`) DESC, length(n.title), n.updated_at DESC
+		LIMIT ?`, args...)
 	if err != nil {
 		return nil, unavailable(err)
 	}
 	return scanBrainNodes(rows)
+}
+
+// brainScopeClause is "this project, plus everything global, or everything at
+// all when no project was named". It takes the path twice.
+const brainScopeClause = `(? = '' OR n.project_path = ? OR n.project_path = '')`
+
+// BrainVocabulary reports which of these words the index actually holds.
+//
+// It is the honest half of asking the graph a question. The index matches
+// literally, so a question phrased in words the graph does not use returns
+// noise, and the caller drops those words rather than approximating them. What
+// it must not do is drop a word the graph *does* have — which is what happened
+// while the check was made by re-reading the titles of the best matches: the
+// index covers title, assessment, tags, aliases and body, so "popover", a word
+// written in eight assessments, was declared absent because it had not reached
+// a title. Asking the index is the same test the search itself will apply.
+//
+// One statement per word because FTS5 reports that a row matched, never which
+// term matched it. Words are few and each read stops at the first row.
+func (s *Store) BrainVocabulary(ctx context.Context, projectPath string, words []string) ([]string, error) {
+	if s == nil || s.db == nil || len(words) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(words))
+	for _, word := range words {
+		match := ftsPrefixQuery(word)
+		if match == "" {
+			continue
+		}
+		var one int
+		err := s.db.QueryRowContext(ctx, `
+			SELECT 1
+			FROM brain_fts
+			JOIN brain_nodes n ON n.rowid = brain_fts.rowid
+			WHERE brain_fts MATCH ? AND `+brainScopeClause+`
+			LIMIT 1`, match, projectPath, projectPath).Scan(&one)
+		if err == nil {
+			out = append(out, word)
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, unavailable(err)
+		}
+
+		// The same second look the search itself takes, for the same reason:
+		// a word inside a compound name is in this graph, and a check that
+		// only the index can pass would drop it before the search that can
+		// find it ever runs.
+		inside, err := s.searchBrainNames(ctx, projectPath, word, 1)
+		if err != nil {
+			return nil, err
+		}
+		if len(inside) > 0 {
+			out = append(out, word)
+		}
+	}
+	return out, nil
 }
 
 // UpsertBrainEdges writes links, replacing the weight of any that already
@@ -340,8 +458,14 @@ func (s *Store) UpsertBrainEdges(ctx context.Context, edges []BrainEdgeRow) erro
 		}
 		// One direction only, chosen deterministically, so the same pair
 		// discovered from either end is one row rather than two.
+		//
+		// Except where the direction *is* the fact. A calls edge runs caller
+		// to callee and does not mean the same thing backwards; sorting its
+		// endpoints made "who calls this" unanswerable while leaving an edge
+		// that looked correct. The symmetric kinds — semantic, tag — keep the
+		// old treatment, because for them the pair really is the whole claim.
 		src, dst := e.Src, e.Dst
-		if src > dst {
+		if !DirectedEdgeKind(e.Kind) && src > dst {
 			src, dst = dst, src
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -356,6 +480,22 @@ func (s *Store) UpsertBrainEdges(ctx context.Context, edges []BrainEdgeRow) erro
 		return unavailable(err)
 	}
 	return nil
+}
+
+// directedEdgeKinds are the parser's, where the arrow carries meaning. The set
+// mirrors internal/brain/structural.go's relationKind; it lives here because
+// the write is where the direction is kept or lost, and a list in the caller
+// would be a rule the store does not enforce.
+var directedEdgeKinds = map[string]struct{}{
+	"calls": {}, "imports": {}, "defines": {}, "inherits": {},
+	"implements": {}, "references": {}, "uses": {}, "structural": {},
+}
+
+// DirectedEdgeKind reports whether an edge of this kind means something
+// different read backwards.
+func DirectedEdgeKind(kind string) bool {
+	_, ok := directedEdgeKinds[kind]
+	return ok
 }
 
 // BrainNeighbors returns the links touching id, strongest first, with Src
@@ -383,6 +523,67 @@ func (s *Store) BrainNeighbors(ctx context.Context, id string, limit int) ([]Bra
 		}
 		if e.Dst == id {
 			e.Src, e.Dst = e.Dst, e.Src
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, unavailable(err)
+	}
+	return out, nil
+}
+
+// BrainInboundEdges is every link pointing *at* id, direction preserved.
+//
+// BrainNeighbors deliberately throws the direction away — it normalises Src to
+// the node asked about, so a caller can read Dst as "the other end" without
+// caring — and that is right for a picture of the graph, where an edge is a
+// line. It is wrong for a question. The parser writes calls edges directed,
+// caller to callee (internal/brain/structural.go), so "who calls this" is a
+// fact already in the table that the normalising read cannot express.
+//
+// kinds filters to particular edge kinds; empty means all of them.
+func (s *Store) BrainInboundEdges(ctx context.Context, dst string, kinds []string, limit int) ([]BrainEdgeRow, error) {
+	return s.directedEdges(ctx, "dst", dst, kinds, limit)
+}
+
+// BrainOutboundEdges is every link leaving id — "what does this reach", the
+// other half of the pair.
+func (s *Store) BrainOutboundEdges(ctx context.Context, src string, kinds []string, limit int) ([]BrainEdgeRow, error) {
+	return s.directedEdges(ctx, "src", src, kinds, limit)
+}
+
+// directedEdges is the shared body. column is "src" or "dst" — a constant from
+// the two callers above and never anything a client sent, which is why it can
+// be concatenated into the statement while every value stays a parameter.
+func (s *Store) directedEdges(ctx context.Context, column, id string, kinds []string, limit int) ([]BrainEdgeRow, error) {
+	if s == nil || s.db == nil || id == "" || limit <= 0 {
+		return nil, nil
+	}
+
+	query := `SELECT src, dst, kind, weight FROM brain_edges WHERE ` + column + ` = ?`
+	args := []any{id}
+	if len(kinds) > 0 {
+		placeholders := make([]string, 0, len(kinds))
+		for _, k := range kinds {
+			placeholders = append(placeholders, "?")
+			args = append(args, k)
+		}
+		query += ` AND kind IN (` + strings.Join(placeholders, ", ") + `)`
+	}
+	query += ` ORDER BY weight DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []BrainEdgeRow
+	for rows.Next() {
+		var e BrainEdgeRow
+		if err := rows.Scan(&e.Src, &e.Dst, &e.Kind, &e.Weight); err != nil {
+			return nil, unavailable(err)
 		}
 		out = append(out, e)
 	}
@@ -563,10 +764,26 @@ type BrainProjectCount struct {
 // The scope is this project plus the global nodes, the same rule
 // SearchBrainNodes uses: a node about a public repository is not about any one
 // checkout, and hiding it is the same as not having stored it.
-func (s *Store) BrainGraphIDs(ctx context.Context, projectPath string, limit int) ([]BrainNodeDegree, error) {
+func (s *Store) BrainGraphIDs(ctx context.Context, projectPath string, limit int, kinds []string) ([]BrainNodeDegree, error) {
 	if s == nil || s.db == nil || limit <= 0 {
 		return nil, nil
 	}
+
+	// The kind filter is why this takes a list at all. The structural layer
+	// puts thousands of symbols in the graph — this repository alone produces
+	// 3668 — and they are the most connected things in it, so a picture ranked
+	// by degree becomes nothing but symbols the moment the parser runs. An
+	// empty list means every kind, which is what every caller asked for before
+	// there were symbols.
+	where := brainScopeClause
+	args := []any{projectPath, projectPath}
+	if len(kinds) > 0 {
+		where += ` AND n.kind IN (` + strings.TrimSuffix(strings.Repeat("?,", len(kinds)), ",") + `)`
+		for _, k := range kinds {
+			args = append(args, k)
+		}
+	}
+	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT n.id, COALESCE(d.degree, 0) AS degree
@@ -579,9 +796,9 @@ func (s *Store) BrainGraphIDs(ctx context.Context, projectPath string, limit int
 			)
 			GROUP BY node
 		) d ON d.node = n.id
-		WHERE (? = '' OR n.project_path = ? OR n.project_path = '')
+		WHERE `+where+`
 		ORDER BY degree DESC, n.updated_at DESC, n.id
-		LIMIT ?`, projectPath, projectPath, limit)
+		LIMIT ?`, args...)
 	if err != nil {
 		return nil, unavailable(err)
 	}

@@ -231,3 +231,49 @@ func TestClient_Markdown_ContextCancellation(t *testing.T) {
 		t.Fatalf("expected context canceled error, got: %v", err)
 	}
 }
+
+// The script a caller sends is how the catalog's site scan reads a storefront's
+// *computed* styles: the browser resolves the cascade, which parsing the
+// stylesheets by hand cannot do. Verified against the pinned image — the probe
+// runs and its result comes back on the document element.
+func TestClient_MarkdownWithOptions_SendsJSCode(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(realShapeBody))
+	}))
+	defer srv.Close()
+
+	client := crawl.New(config.Config{Crawl4AIBaseURL: srv.URL, CrawlTimeout: time.Second})
+	_, err := client.MarkdownWithOptions(context.Background(), "https://example.com",
+		crawl.FetchOptions{JSCode: "document.title='x';"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !jsonContains(gotBody, `"js_code":"document.title='x';"`) {
+		t.Errorf("request body missing js_code: %s", gotBody)
+	}
+}
+
+// The zero value still sends no crawler_config at all, so every existing call
+// keeps the request shape it was verified against.
+func TestClient_MarkdownWithOptions_NoJSCodeMeansNoCrawlerConfig(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf, _ := io.ReadAll(r.Body)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(realShapeBody))
+	}))
+	defer srv.Close()
+
+	client := crawl.New(config.Config{Crawl4AIBaseURL: srv.URL, CrawlTimeout: time.Second})
+	if _, err := client.Markdown(context.Background(), "https://example.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if jsonContains(gotBody, `"crawler_config"`) {
+		t.Errorf("plain call sent a crawler_config: %s", gotBody)
+	}
+}

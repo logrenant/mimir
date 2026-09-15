@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	initLimits   sync.Once
-	crawlSem     *semaphore.Weighted
-	refineSem    *semaphore.Weighted
+	initLimits sync.Once
+	crawlSem   *semaphore.Weighted
+	refineSem  *semaphore.Weighted
 )
 
 // InitLimits initializes the global semaphores used to bound concurrency
@@ -27,7 +27,7 @@ func InitLimits(cfg config.Config) {
 		if refineSlots <= 0 {
 			refineSlots = 3
 		}
-		
+
 		crawlSem = semaphore.NewWeighted(int64(crawlSlots))
 		refineSem = semaphore.NewWeighted(int64(refineSlots))
 	})

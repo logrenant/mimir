@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Terminal, StatusDot } from "../components/Terminal";
 import { BrainConsole, statusOf } from "../components/BrainConsole";
 import { ShellTerminal } from "../components/ShellTerminal";
+import { cn } from "../lib/cn";
+import { Empty } from "../components/ui/empty";
+import { Icon } from "../components/ui/icon";
+import { RailItem } from "../components/ui/rail";
+import { SidebarLabel as SectionLabel } from "./Dashboard";
 import { useTerminals } from "../components/TerminalsProvider";
 import { api, DaemonError, type BrainScanStatus, type Run, type TerminalProfile } from "../lib/daemon";
 import { isBusy, recentRuns } from "../lib/terminals";
@@ -128,18 +133,9 @@ export function Terminals() {
   );
 
   return (
-    <div style={{ height: "100%", display: "grid", gridTemplateColumns: "232px 1fr", minHeight: 0 }}>
-      <div
-        style={{
-          borderRight: "1px solid #24272d",
-          overflowY: "auto",
-          padding: "10px 8px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 3,
-        }}
-      >
-        <SectionLabel>BRAIN</SectionLabel>
+    <div className="grid h-full min-h-0 grid-cols-[252px_1fr]">
+      <div className="flex flex-col gap-1 overflow-y-auto border-r border-edge px-2.5 py-3">
+        <SectionLabel>Brain</SectionLabel>
         <SidebarRow
           on={brainOpen}
           status={statusOf(scan)}
@@ -153,8 +149,8 @@ export function Terminals() {
 
         {profiles.length > 0 && (
           <>
-            <div style={{ height: 12 }} />
-            <SectionLabel>KABUK</SectionLabel>
+            <div className="h-4" />
+            <SectionLabel>Kabuk</SectionLabel>
             {profiles.map((p) => (
               <SidebarRow
                 key={p.name}
@@ -176,11 +172,11 @@ export function Terminals() {
           </>
         )}
 
-        <div style={{ height: 12 }} />
-        <SectionLabel>OTURUMLAR</SectionLabel>
+        <div className="h-4" />
+        <SectionLabel>Oturumlar</SectionLabel>
 
         {sessions.length === 0 && (
-          <p style={{ margin: "0 9px 6px", font: "400 11px/1.6 ui-sans-serif,system-ui", color: "#4f545e" }}>
+          <p className="mx-3 mb-1.5 text-sm leading-[1.6] text-muted/60">
             Açık terminal yok. Board'dan bir kartı çalıştırın, ya da aşağıdan geçmiş bir oturumu açın.
           </p>
         )}
@@ -202,51 +198,31 @@ export function Terminals() {
         <button
           type="button"
           onClick={() => setRecentsOpen((v) => !v)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            marginTop: 12,
-            background: "none",
-            border: "none",
-            padding: "2px 9px 6px",
-            cursor: "pointer",
-            font: "500 9.5px/1 ui-monospace,Menlo,monospace",
-            letterSpacing: ".12em",
-            color: "#4f545e",
-            textAlign: "left",
-          }}
+          aria-expanded={recentsOpen}
+          className="focus-ring label mt-4 flex items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-muted/60 transition-colors hover:text-muted"
         >
-          <span
-            style={{
-              display: "inline-block",
-              width: 8,
-              transform: recentsOpen ? "rotate(90deg)" : "none",
-              transition: "transform .12s",
-            }}
-          >
-            ›
-          </span>
-          RECENTS
-          {history && <span style={{ letterSpacing: 0 }}>{recents.length}</span>}
+          <Icon
+            name="chevronRight"
+            size={12}
+            className={cn(
+              "transition-transform duration-[var(--dur-fast)] ease-decisive",
+              recentsOpen && "rotate-90",
+            )}
+          />
+          Recents
+          {history && <span className="font-mono tracking-normal">{recents.length}</span>}
         </button>
 
         {recentsOpen && (
           <>
             {historyError && (
-              <p style={{ margin: "0 9px", font: "400 11px/1.5 ui-monospace,Menlo,monospace", color: "#e5484d" }}>
-                {historyError}
-              </p>
+              <p className="mx-3 font-mono text-xs leading-[1.5] text-bad">{historyError}</p>
             )}
             {history === null && !historyError && (
-              <p style={{ margin: "0 9px", font: "400 11px/1.5 ui-sans-serif,system-ui", color: "#4f545e" }}>
-                yükleniyor…
-              </p>
+              <p className="mx-3 text-sm leading-[1.5] text-muted/60">yükleniyor…</p>
             )}
             {history !== null && recents.length === 0 && (
-              <p style={{ margin: "0 9px", font: "400 11px/1.5 ui-sans-serif,system-ui", color: "#4f545e" }}>
-                geçmiş oturum yok
-              </p>
+              <p className="mx-3 text-sm leading-[1.5] text-muted/60">geçmiş oturum yok</p>
             )}
             {recents.map((run) => (
               <SidebarRow
@@ -270,7 +246,7 @@ export function Terminals() {
         )}
       </div>
 
-      <div style={{ minWidth: 0, minHeight: 0 }}>
+      <div className="min-h-0 min-w-0">
         {/*
          * Every shell opened this session stays mounted, hidden rather than
          * removed. Unmounting is what broke it before: the cleanup closed the
@@ -286,10 +262,7 @@ export function Terminals() {
           const p = profiles.find((x) => x.name === name);
           if (!p) return null;
           return (
-            <div
-              key={name}
-              style={{ height: "100%", minHeight: 0, display: shell?.name === name ? "block" : "none" }}
-            >
+            <div key={name} hidden={shell?.name !== name} className="h-full min-h-0">
               <ShellTerminal profile={p} />
             </div>
           );
@@ -306,41 +279,29 @@ export function Terminals() {
             onRetry={(id, fresh) => void retry(id, fresh)}
           />
         ) : (
-          <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 30 }}>
-            <div style={{ maxWidth: 380, textAlign: "center", display: "flex", flexDirection: "column", gap: 8 }}>
-              <h2
-                className="display"
-                style={{ margin: 0, font: "400 16px/1.3 Aldrich,ui-sans-serif,system-ui", color: "#eef0f2" }}
-              >
-                Açık terminal yok
-              </h2>
-              <p style={{ margin: 0, font: "400 12px/1.7 ui-sans-serif,system-ui", color: "#6b7079" }}>
-                Çalışan her job burada kendi sekmesini alır. Bitmiş bir oturumu Recents'ten açarsanız
-                transcript baştan oynatılır.
-              </p>
-            </div>
-          </div>
+          <Empty
+            className="h-full"
+            title={<span className="display text-xl text-text">Açık terminal yok</span>}
+            hint="Çalışan her job burada kendi sekmesini alır. Bitmiş bir oturumu Recents'ten açarsanız transcript baştan oynatılır."
+          />
         )}
       </div>
     </div>
   );
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
-  return (
-    <span
-      style={{
-        font: "500 9.5px/1 ui-monospace,Menlo,monospace",
-        letterSpacing: ".12em",
-        color: "#4f545e",
-        padding: "2px 9px 8px",
-      }}
-    >
-      {children}
-    </span>
-  );
-}
 
+/**
+ * One openable thing in the rail: a scan, a shell, a run, a past run.
+ *
+ * The hover was a `useState` boolean, so moving the pointer down this list
+ * re-rendered every row it crossed. CSS knows how to do this.
+ *
+ * The active row carries the same three marks the application's nav does — a
+ * filled surface, a Lime rail and the label going to full Mist — because "this
+ * is the one you are looking at" should be said the same way everywhere it is
+ * said, and because said once it was not loud enough to be said at all.
+ */
 function SidebarRow({
   on,
   status,
@@ -354,46 +315,23 @@ function SidebarRow({
   detail?: string;
   onClick: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        width: "100%",
-        textAlign: "left",
-        background: on ? "#1c1f24" : hovered ? "#16181c" : "transparent",
-        border: "none",
-        borderRadius: 6,
-        padding: "7px 9px",
-        cursor: "pointer",
-        color: on ? "#eef0f2" : "#8a9099",
-        minWidth: 0,
-      }}
-    >
-      <StatusDot status={status} />
-      <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-        <span
-          style={{
-            font: `${on ? "500" : "450"} 11.5px/1.35 ui-sans-serif,system-ui`,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {label}
-        </span>
-        {detail && (
-          <span style={{ font: "400 9.5px/1 ui-monospace,Menlo,monospace", color: "#4f545e" }}>
-            {detail}
+    <RailItem
+      on={on}
+      onSelect={onClick}
+      lead={<StatusDot status={status} />}
+      label={
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className={cn("truncate text-base leading-tight", on && "font-medium")}>
+            {label}
           </span>
-        )}
-      </span>
-    </button>
+          {detail && (
+            <span className="truncate font-mono text-xs leading-none text-muted/60">
+              {detail}
+            </span>
+          )}
+        </span>
+      }
+    />
   );
 }

@@ -62,6 +62,13 @@ type Store interface {
 // model reads, and this is a record no model ever reads.
 type ChatArchive interface {
 	PutChatTurn(ctx context.Context, t store.ChatTurnRow) error
+
+	// And the two reads that let the archive catch up on what it missed. The
+	// archive arrived after the ingest did, so every episode recorded before
+	// it has no verbatim text and never will unless its transcript is read
+	// again — see backfill.go.
+	SourcesMissingArchive(ctx context.Context, limit int) ([]string, error)
+	RewindIngest(ctx context.Context, sourcePath string) error
 }
 
 // Refiner is the one model call this package makes.
@@ -92,11 +99,19 @@ type Memory struct {
 	refiner Refiner
 	runs    RunSource
 	archive ChatArchive
+
+	// rewound is which transcripts this run has already sent the reader back
+	// through, so the archive catch-up cannot loop on a file that has nothing
+	// to archive. In process rather than stored: re-reading a transcript costs
+	// no model call, so paying it once more after a restart is cheaper than a
+	// schema for it. Only the ingest loop touches this, and only from its own
+	// goroutine.
+	rewound map[string]struct{}
 }
 
 // New builds a Memory. runs may be nil.
 func New(cfg config.Config, s Store, r Refiner, runs RunSource) *Memory {
-	return &Memory{cfg: cfg, store: s, refiner: r, runs: runs}
+	return &Memory{cfg: cfg, store: s, refiner: r, runs: runs, rewound: map[string]struct{}{}}
 }
 
 // UseArchive installs the verbatim chat archive.

@@ -1,12 +1,23 @@
+import { motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Textarea } from "../components/ui/field";
+import { Icon } from "../components/ui/icon";
+import { Kbd } from "../components/ui/kbd";
+import { Masthead } from "../components/ui/masthead";
+import { Rail, RailItem } from "../components/ui/rail";
+import { Tabs } from "../components/ui/tabs";
+import { dock } from "../lib/motion";
 import { Card, CardBody, CardHeader } from "../components/ui/card";
+import { ConnectionsCard } from "../components/ConnectionsCard";
 import { ProviderModelPicker } from "../components/ModelPicker";
+import { SkillsCard } from "../components/SkillsCard";
 import {
   api,
   CHANNELS,
   DaemonError,
+  type LLMChoice,
   type LLMProviderList,
   type OutreachChannel,
   type OutreachRule,
@@ -14,6 +25,13 @@ import {
 } from "../lib/daemon";
 import {
   anyDirty,
+  classDraftFrom,
+  classesDirty,
+  dirtySections,
+  sectionLabel,
+  SETTINGS_SECTIONS,
+  type ClassDraft,
+  type SettingsSection,
   describeRule,
   describeSelection,
   draftsFrom,
@@ -45,6 +63,16 @@ import {
 export function Settings() {
   const [view, setView] = useState<SettingsView | null>(null);
   const [providers, setProviders] = useState<LLMProviderList | null>(null);
+  // The two class defaults, and whether a login probe is in flight. Kept apart
+  // from modelDraft because they answer a different question: that one is what
+  // a lead-gen run spends, these are what the daemon spends on its own.
+  const [classDraft, setClassDraft] = useState<ClassDraft>({
+    distill: {},
+    reason: {},
+    saved: { distill: {}, reason: {} },
+  });
+  const [probing, setProbing] = useState(false);
+  const [section, setSection] = useState<SettingsSection>("connections");
   const [rules, setRules] = useState<RuleDraft[]>([]);
   const [modelDraft, setModelDraft] = useState<ModelDraft>({
     provider: "",
@@ -62,6 +90,7 @@ export function Settings() {
     setView(next);
     setRules(draftsFrom(next.rules));
     setModelDraft(modelDraftFrom(next));
+    setClassDraft(classDraftFrom(next));
   };
 
   useEffect(() => {
@@ -84,26 +113,33 @@ export function Settings() {
     };
   }, []);
 
-  const dirty = anyDirty(rules, modelDraft);
-  const ruleOf = (ch: OutreachChannel) => view?.rules.find((r) => r.channel === ch);
+  const ruleOf = (ch: OutreachChannel) =>
+    view?.rules.find((r) => r.channel === ch);
   const draftOf = (ch: OutreachChannel) => rules.find((r) => r.channel === ch);
   const current = draftOf(channel);
 
   const modelDirty =
-    modelDraft.provider !== modelDraft.saved.provider || modelDraft.model !== modelDraft.saved.model;
+    modelDraft.provider !== modelDraft.saved.provider ||
+    modelDraft.model !== modelDraft.saved.model;
   const sendable = isSavableSelection(modelDraft.provider, modelDraft.model);
+
+  const classDirty = classesDirty(classDraft);
+  const dirtyList = dirtySections(rules, modelDraft, classDraft);
+  const dirty = anyDirty(rules, modelDraft, classDraft);
 
   // What the bar is about to write, named rather than counted: "3 değişiklik"
   // tells the operator nothing they can check.
   const pending = useMemo(() => {
     const parts: string[] = [];
     if (modelDirty) parts.push("model seçimi");
+    if (classDirty) parts.push("daemon'ın kendi çağrıları");
     for (const ch of CHANNELS) {
-      if (isDirty(draftOf(ch))) parts.push(`${ruleOf(ch)?.label ?? ch} kuralları`);
+      if (isDirty(draftOf(ch)))
+        parts.push(`${ruleOf(ch)?.label ?? ch} kuralları`);
     }
     return parts;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rules, modelDirty, view]);
+  }, [rules, modelDirty, classDirty, view]);
 
   const editRule = (ch: OutreachChannel, body: string) => {
     setSaved(false);
@@ -123,6 +159,7 @@ export function Settings() {
       if (modelDirty) {
         next = await api.saveSettings(modelDraft.provider, modelDraft.model);
         setModelDraft(modelDraftFrom(next));
+    setClassDraft(classDraftFrom(next));
       }
 
       const written: OutreachRule[] = [];
@@ -134,13 +171,17 @@ export function Settings() {
       if (next) {
         const merged: SettingsView = {
           ...next,
-          rules: next.rules.map((r) => written.find((w) => w.channel === r.channel) ?? r),
+          rules: next.rules.map(
+            (r) => written.find((w) => w.channel === r.channel) ?? r,
+          ),
         };
         setView(merged);
         setRules((cur) =>
           cur.map((r) => {
             const hit = written.find((w) => w.channel === r.channel);
-            return hit ? { channel: r.channel, body: hit.body, saved: hit.body } : r;
+            return hit
+              ? { channel: r.channel, body: hit.body, saved: hit.body }
+              : r;
           }),
         );
       }
@@ -165,10 +206,19 @@ export function Settings() {
     try {
       const rule = await api.resetRule(ch);
       setRules((cur) =>
-        cur.map((r) => (r.channel === ch ? { channel: ch, body: rule.body, saved: rule.body } : r)),
+        cur.map((r) =>
+          r.channel === ch
+            ? { channel: ch, body: rule.body, saved: rule.body }
+            : r,
+        ),
       );
       setView((cur) =>
-        cur ? { ...cur, rules: cur.rules.map((r) => (r.channel === ch ? rule : r)) } : cur,
+        cur
+          ? {
+              ...cur,
+              rules: cur.rules.map((r) => (r.channel === ch ? rule : r)),
+            }
+          : cur,
       );
       setSaved(true);
     } catch (err) {
@@ -180,7 +230,7 @@ export function Settings() {
 
   return (
     <div
-      className="mx-auto grid h-full w-full max-w-[980px] grid-rows-[1fr_auto] gap-0 overflow-hidden p-5"
+      className="grid h-full w-full grid-rows-[auto_1fr_auto] overflow-hidden px-8 pt-6 pb-5"
       onKeyDown={(e) => {
         // ⌘S is what anybody editing a text file presses. Without it the only
         // way to save is to scroll to the bar, which is the wrong shape for a
@@ -191,7 +241,47 @@ export function Settings() {
         }
       }}
     >
-      <div className="min-h-0 space-y-3 overflow-auto pb-3">
+      {/* Every other screen names itself and this one did not, which is how a
+          settings page ends up reading as a dialog somebody forgot to close. */}
+      <Masthead title="Ayarlar" className="mb-6" />
+
+      {/* A rail, not a longer column and not a top tab strip. The connections
+          list is a list, and a column that already held three cards and a 380px
+          textarea cannot also hold "everything you have and whether it works".
+          A horizontal strip would collide with the segmented tabs RulesCard
+          already draws for its two channels; a rail is a different axis. */}
+      <div className="mx-auto grid min-h-0 w-full max-w-[1020px] grid-cols-[11rem_minmax(0,1fr)] gap-6 overflow-hidden">
+        <SectionRail active={section} dirty={dirtyList} onSelect={setSection} />
+
+        <div className="flex min-h-0 flex-col gap-5 overflow-auto pb-4">
+        {section === "connections" && <ConnectionsCard />}
+
+        {section === "routing" && (
+        <>
+        <ClassDefaultsCard
+          providers={providers}
+          distill={classDraft.distill}
+          reason={classDraft.reason}
+          probing={probing}
+          onDistill={(c) => {
+            setSaved(false);
+            setClassDraft((d) => ({ ...d, distill: c }));
+          }}
+          onReason={(c) => {
+            setSaved(false);
+            setClassDraft((d) => ({ ...d, reason: c }));
+          }}
+          onProbe={() => {
+            setProbing(true);
+            // The expensive question, asked only when somebody asks it: one
+            // completion per provider, to find out whether the logins work.
+            void api
+              .llmProviders(true)
+              .then(setProviders)
+              .catch(() => {})
+              .finally(() => setProbing(false));
+          }}
+        />
         <ModelCard
           view={view}
           providers={providers}
@@ -199,7 +289,11 @@ export function Settings() {
           sendable={sendable}
           onProvider={(id) => {
             setSaved(false);
-            setModelDraft((d) => ({ ...d, provider: id, model: modelForProvider(providers, id) }));
+            setModelDraft((d) => ({
+              ...d,
+              provider: id,
+              model: modelForProvider(providers, id),
+            }));
           }}
           onModel={(id) => {
             setSaved(false);
@@ -207,6 +301,15 @@ export function Settings() {
           }}
         />
 
+        </>
+        )}
+
+        {/* Above the outreach rules because it governs more: every sub-agent
+            is held to a skill, while the rule files shape one channel of one
+            of them. */}
+        {section === "skills" && <SkillsCard />}
+
+        {section === "rules" && (
         <RulesCard
           loading={loading}
           channel={channel}
@@ -219,6 +322,8 @@ export function Settings() {
           onEdit={(body) => editRule(channel, body)}
           onReset={() => void resetRule(channel)}
         />
+        )}
+        </div>
       </div>
 
       <SaveBar
@@ -248,7 +353,7 @@ function ModelCard(props: {
   onModel: (v: string) => void;
 }) {
   return (
-    <Card>
+    <Card elevation="raised">
       <CardHeader
         title="Model"
         subtitle="Lead-gen'in model harcayan aşamaları — sınıflandırma, boşluk analizi, mesaj taslakları — bu seçimi kullanır."
@@ -258,7 +363,7 @@ function ModelCard(props: {
           </Badge>
         }
       />
-      <CardBody className="space-y-2.5">
+      <CardBody className="flex flex-col gap-3.5">
         {props.providers ? (
           <ProviderModelPicker
             providers={props.providers}
@@ -271,23 +376,148 @@ function ModelCard(props: {
           // The picker is a view of `GET /llm/providers`, never a second copy:
           // with no answer there is nothing honest to offer, and runs still
           // work — they route by class, exactly as before this screen existed.
-          <p className="text-xs text-muted">
-            Model listesi alınamadı. Çalıştırmalar sınıfa göre yönlendirilmeye devam eder.
+          <p className="text-sm text-muted">
+            Model listesi alınamadı. Çalıştırmalar sınıfa göre yönlendirilmeye
+            devam eder.
           </p>
         )}
 
-        <p className="max-w-[76ch] text-xs leading-relaxed text-muted">
-          Boş bırakmak bir eksiklik değil: daemon'un kendi sınıf yönlendirmesi devreye girer, ki
-          bu seçim ekranı yokken her çalıştırmanın yaptığı şeydi. Bir seçim yaptığınızda önbellek
-          de o modele göre ayrılır — aynı şirket için başka bir modelle yazılmış taslak yeniden
-          kullanılmaz.
+        <p className="max-w-[76ch] text-sm leading-relaxed text-muted">
+          Boş bırakmak bir eksiklik değil: daemon'un kendi sınıf yönlendirmesi
+          devreye girer, ki bu seçim ekranı yokken her çalıştırmanın yaptığı
+          şeydi. Bir seçim yaptığınızda önbellek de o modele göre ayrılır — aynı
+          şirket için başka bir modelle yazılmış taslak yeniden kullanılmaz.
         </p>
 
         {!props.sendable && (
-          <p className="text-xs text-bad">
+          <p className="text-sm text-bad">
             Sağlayıcı seçtiyseniz model de seçmelisiniz — ikisi birlikte gider.
           </p>
         )}
+      </CardBody>
+    </Card>
+  );
+}
+
+/**
+ * The screen's sections.
+ *
+ * It marks the ones holding something unsaved, which is the failure a rail
+ * introduces if nobody guards it: an edit in a section that has been navigated
+ * away from is otherwise invisible until it is lost. Connections never carry a
+ * mark — that card writes immediately, so it has nothing to be unsaved.
+ */
+function SectionRail({
+  active,
+  dirty,
+  onSelect,
+}: {
+  active: SettingsSection;
+  dirty: SettingsSection[];
+  onSelect: (s: SettingsSection) => void;
+}) {
+  return (
+    <Rail label="Ayarlar bölümleri" className="pt-1">
+      {SETTINGS_SECTIONS.map((key) => (
+        <RailItem
+          key={key}
+          label={sectionLabel(key)}
+          on={key === active}
+          onSelect={() => onSelect(key)}
+          layoutId="settings-rail"
+          mark={
+            dirty.includes(key) ? (
+              <span
+                aria-label="kaydedilmemiş"
+                className="size-1.5 shrink-0 rounded-full bg-lime"
+              />
+            ) : undefined
+          }
+        />
+      ))}
+    </Rail>
+  );
+}
+
+/**
+ * What the daemon spends on its *own* work.
+ *
+ * This is the answer to "the model should be selectable in every task, Brain
+ * included": Brain's distil and relation passes, refine's five profiles and the
+ * catalog rewrite never carried a selection, because they are not runs somebody
+ * started — they are the daemon working on its own. Which *class* a piece of
+ * work belongs to stays in the daemon's code, because that is a property of the
+ * work. Which provider serves a class on this machine is not, and this is where
+ * the operator says so.
+ *
+ * A machine-wide Brain scan is thousands of calls. Before this the only way to
+ * point them somewhere else was to edit a constant and rebuild.
+ */
+function ClassDefaultsCard(props: {
+  providers: LLMProviderList | null;
+  distill: LLMChoice;
+  reason: LLMChoice;
+  onDistill: (c: LLMChoice) => void;
+  onReason: (c: LLMChoice) => void;
+  onProbe: () => void;
+  probing: boolean;
+}) {
+  if (!props.providers) return null;
+
+  return (
+    <Card elevation="raised">
+      <CardHeader
+        title="Daemon'ın kendi çağrıları"
+        subtitle="Brain'in tarama ve ilişki pasoları, refine, katalog yeniden yazımı. Boş bırakıldığında sınıf yönlendirmesi karar verir."
+        aside={
+          <Button
+            size="sm"
+            variant="quiet"
+            icon="pulse"
+            disabled={props.probing}
+            onClick={props.onProbe}
+          >
+            {props.probing ? "sınanıyor…" : "oturumları sına"}
+          </Button>
+        }
+      />
+      <CardBody className="flex flex-col gap-5">
+        <div className="flex flex-col gap-2">
+          <p className="label text-muted">sıkıştırma · distil</p>
+          <ProviderModelPicker
+            providers={props.providers}
+            provider={props.distill.provider ?? ""}
+            model={props.distill.model ?? ""}
+            routedLabel="Sınıf yönlendirmesi"
+            onProvider={(provider) =>
+              props.onDistill({ provider, model: modelForProvider(props.providers, provider) })
+            }
+            onModel={(model) => props.onDistill({ ...props.distill, model })}
+          />
+          {/* The one pairing that fails silently, said before it can be
+              chosen: Brain sends a schema and parses what comes back, and a
+              provider that cannot serve one answers in prose. The daemon
+              refuses it — but a picker that offers it is a picker that wastes
+              the operator's afternoon. */}
+          <p className="text-sm leading-relaxed text-muted">
+            Bu sınıf şema ile çağırıyor. Yapısal çıktı veremeyen bir sağlayıcı
+            (gemini, ollama) burada daemon tarafından reddedilir.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <p className="label text-muted">sentez · reason</p>
+          <ProviderModelPicker
+            providers={props.providers}
+            provider={props.reason.provider ?? ""}
+            model={props.reason.model ?? ""}
+            routedLabel="Sınıf yönlendirmesi"
+            onProvider={(provider) =>
+              props.onReason({ provider, model: modelForProvider(props.providers, provider) })
+            }
+            onModel={(model) => props.onReason({ ...props.reason, model })}
+          />
+        </div>
       </CardBody>
     </Card>
   );
@@ -312,43 +542,37 @@ function RulesCard(props: {
   const dirtyHere = isDirty(props.current);
 
   return (
-    <Card className="flex flex-col">
+    <Card elevation="raised" className="flex flex-col">
       <CardHeader
         title="Mesaj kuralları"
         subtitle="Her kanalın kendi kural dosyası var; taslak istemine olduğu gibi eklenir."
         aside={
-          <div className="flex items-center gap-1 rounded-sm border border-edge p-0.5">
-            {props.rules.map((rule) => {
-              const on = rule.channel === props.channel;
-              const unsaved = isDirty(props.drafts.find((d) => d.channel === rule.channel));
-              return (
-                <button
-                  key={rule.channel}
-                  type="button"
-                  onClick={() => props.onChannel(rule.channel)}
-                  className={`label flex items-center gap-1.5 rounded-sm px-2.5 py-1.5 leading-none transition-colors ${
-                    on ? "bg-raised text-mist" : "text-muted hover:text-mist"
-                  }`}
-                >
-                  {rule.label}
-                  {/* An unsaved tab has to say so from the other tab, or the
-                      operator saves one file and loses the edit on the other. */}
-                  {unsaved && <span className="size-1.5 rounded-full bg-electric" />}
-                </button>
-              );
-            })}
-          </div>
+          <Tabs
+            id="settings-rules"
+            variant="segmented"
+            active={props.channel}
+            onSelect={props.onChannel}
+            tabs={props.rules.map((rule) => ({
+              key: rule.channel,
+              label: rule.label,
+              // An unsaved tab has to say so from the other tab, or the
+              // operator saves one file and loses the edit on the other.
+              dirty: isDirty(
+                props.drafts.find((d) => d.channel === rule.channel),
+              ),
+            }))}
+          />
         }
       />
 
-      <CardBody className="space-y-2.5">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <CardBody className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <Badge tone={props.rule?.is_default ? "muted" : "accent"}>
             {describeRule(props.rule)}
           </Badge>
           {props.rule?.path && (
             <code
-              className="truncate text-[11px] text-muted"
+              className="truncate text-xs text-muted"
               title="Kural dosyası diskte burada duruyor; kendi düzenleyicinizde de açabilirsiniz."
             >
               {props.rule.path}
@@ -356,6 +580,8 @@ function RulesCard(props: {
           )}
           <Button
             variant="ghost"
+            size="sm"
+            icon="refresh"
             className="ml-auto"
             disabled={props.busy || (props.rule?.is_default && !dirtyHere)}
             onClick={props.onReset}
@@ -364,19 +590,20 @@ function RulesCard(props: {
           </Button>
         </div>
 
-        <textarea
+        {/* Monospace and a fixed height: this is a file, it has headings and
+            list markers, and reflowing it in a proportional face would hide
+            the structure the operator is editing. `ui/field` is already
+            monospaced for exactly this reason. */}
+        <Textarea
           value={props.current?.body ?? ""}
           onChange={(e) => props.onEdit(e.target.value)}
           disabled={props.loading}
           spellCheck={false}
-          // Monospace and a fixed height: this is a file, it has headings and
-          // list markers, and reflowing it in a proportional face would hide
-          // the structure the operator is editing.
-          className="h-[380px] w-full resize-y rounded-sm border border-edge bg-ground px-3 py-2.5 font-mono text-[12px] leading-[1.65] text-text outline-none focus:border-electric"
+          className="h-[380px]"
           placeholder={props.loading ? "yükleniyor…" : ""}
         />
 
-        <p className="max-w-[76ch] border-l-2 border-warn/50 pl-2.5 text-[11px] leading-relaxed text-muted">
+        <p className="max-w-[76ch] border-l-2 border-warn/60 pl-3 text-sm leading-relaxed text-muted">
           {RULE_CACHE_WARNING}
         </p>
       </CardBody>
@@ -403,32 +630,57 @@ function SaveBar(props: {
     // or the confirmation that it worked, both belong here.
     if (!props.error && !props.saved) return <div />;
     return (
-      <div className="flex items-center gap-3 border-t border-edge pt-3">
+      <div className="mx-auto flex w-full max-w-[1020px] items-center gap-2 border-t border-edge pt-4">
         {props.error ? (
-          <span className="text-xs text-bad">{props.error}</span>
+          <span className="flex items-center gap-1.5 text-sm text-bad">
+            <Icon name="alert" size={14} />
+            {props.error}
+          </span>
         ) : (
-          <span className="text-xs text-ok">Kaydedildi.</span>
+          <span className="flex items-center gap-1.5 text-sm text-ok">
+            <Icon name="check" size={14} />
+            Kaydedildi.
+          </span>
         )}
       </div>
     );
   }
 
+  // It rises from the edge it is docked to. The bar appears only when there is
+  // something unsaved, so its arrival is the notification — and something that
+  // simply blinks into existence under the page reads as a rendering artefact
+  // rather than as a thing that just became true.
   return (
-    <div className="flex flex-wrap items-center gap-3 border-t border-edge pt-3">
-      <span className="text-xs text-muted">
+    <motion.div
+      variants={dock}
+      initial="hidden"
+      animate="shown"
+      className="mx-auto flex w-full max-w-[1020px] flex-wrap items-center gap-3 border-t border-edge pt-4"
+    >
+      <span className="text-sm text-muted">
         Kaydedilmemiş: <span className="text-mist">{props.pending.join(" · ")}</span>
       </span>
-      {props.error && <span className="text-xs text-bad">{props.error}</span>}
-      <div className="ml-auto flex items-center gap-2">
-        <span className="label text-muted">⌘S</span>
-        <Button variant="ghost" onClick={props.onRevert} disabled={props.saving}>
+      {props.error && (
+        <span className="flex items-center gap-1.5 text-sm text-bad">
+          <Icon name="alert" size={14} />
+          {props.error}
+        </span>
+      )}
+      <div className="ml-auto flex items-center gap-2.5">
+        {/* The shortcut, drawn. It was a `.label` span reading "⌘S", which at
+            caps tracking is a word rather than a key. */}
+        <span className="flex items-center gap-1">
+          <Kbd>⌘</Kbd>
+          <Kbd>S</Kbd>
+        </span>
+        <Button variant="secondary" onClick={props.onRevert} disabled={props.saving}>
           Geri al
         </Button>
-        <Button onClick={props.onSave} disabled={props.saving || props.blocked}>
-          {props.saving ? "Kaydediliyor…" : "Kaydet"}
+        <Button icon="check" loading={props.saving} onClick={props.onSave} disabled={props.blocked}>
+          Kaydet
         </Button>
       </div>
-    </div>
+    </motion.div>
   );
 }
 

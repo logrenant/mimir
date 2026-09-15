@@ -348,6 +348,56 @@ func TestSupervisor_StatusIsSafeUnderConcurrentReads(t *testing.T) {
 	wg.Wait()
 }
 
+// A scan with no folders is a setting, not a fault — and the status has to say
+// so in a shape the desktop can read. `roots` carries no omitempty, so a nil
+// slice reaches the screen as JSON `null`, `status.roots.join(...)` throws, and
+// the whole window goes blank with no message.
+func TestSupervisor_StatusRootsAreNeverNil(t *testing.T) {
+	s, _, _ := supervisorFixture(t, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+	s.deps.Policy = func() ScanPolicy { return ScanPolicy{} }
+
+	// Not from the fixture's own seeding: the interesting moment is after the
+	// operator has removed the last folder, which the supervisor records on its
+	// next look at the policy.
+	s.withStatus(func(st *ScanStatus) {
+		st.Roots = nil
+		st.Excludes = nil
+	})
+
+	status := s.Status()
+	if status.Roots == nil {
+		t.Fatal("Roots is nil; it must be an empty list so the status marshals as []")
+	}
+	if len(status.Roots) != 0 {
+		t.Fatalf("Roots = %v, want empty", status.Roots)
+	}
+	if status.Excludes == nil {
+		t.Fatal("Excludes is nil; it must be an empty list")
+	}
+
+	raw, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"roots":[]`) {
+		t.Fatalf("marshalled status does not carry an empty roots list: %s", raw)
+	}
+}
+
+// The copy is the other half of the same method: a caller must not be handed a
+// slice the sweep still writes into.
+func TestSupervisor_StatusRootsAreACopy(t *testing.T) {
+	s, _, _ := supervisorFixture(t, &fakeLLM{distil: goodDistil, relate: `{"related":[]}`})
+	s.withStatus(func(st *ScanStatus) { st.Roots = []string{"/one", "/two"} })
+
+	status := s.Status()
+	status.Roots[0] = "/scribbled"
+
+	if again := s.Status(); again.Roots[0] != "/one" {
+		t.Fatalf("Roots[0] = %q; the caller wrote through into the supervisor", again.Roots[0])
+	}
+}
+
 // flakyLLM fails every distil until it is brought up, which is what a signed-out
 // agy looks like from here.
 type flakyLLM struct {

@@ -44,10 +44,13 @@ func (s *Server) scanPolicyView() scanPolicyResponse {
 	_, configured, err := s.deps.Settings.ScanPolicy()
 	effective := s.deps.Settings.EffectiveScanPolicy(s.cfg.BrainScanRoots)
 	return scanPolicyResponse{
-		Roots:        effective.Roots,
-		Excludes:     effective.Excludes,
+		// Never nil, for the reason brain.list gives: neither field carries
+		// omitempty, so a nil slice reaches the screen as `null` rather than
+		// as the empty list it means.
+		Roots:        append(make([]string, 0, len(effective.Roots)), effective.Roots...),
+		Excludes:     append(make([]string, 0, len(effective.Excludes)), effective.Excludes...),
 		Configured:   configured && err == nil,
-		DefaultRoots: append([]string(nil), s.cfg.BrainScanRoots...),
+		DefaultRoots: append(make([]string, 0, len(s.cfg.BrainScanRoots)), s.cfg.BrainScanRoots...),
 	}
 }
 

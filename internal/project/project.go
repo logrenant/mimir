@@ -51,6 +51,8 @@ type Store interface {
 	InsertProject(ctx context.Context, p store.ProjectRow) error
 	GetProject(ctx context.Context, id string) (store.ProjectRow, bool, error)
 	GetProjectByPath(ctx context.Context, path string) (store.ProjectRow, bool, error)
+	DeleteProject(ctx context.Context, id string) error
+	SetProjectPath(ctx context.Context, id, path string) error
 	ListProjects(ctx context.Context) ([]store.ProjectRow, error)
 	TouchProject(ctx context.Context, id string, at time.Time) error
 }
@@ -176,6 +178,36 @@ func (r *Registry) Resolve(ctx context.Context, id string) (Project, error) {
 	}
 	p.LastUsedAt = now
 	return p, nil
+}
+
+// Forget removes a registration.
+//
+// Deliberately not "delete the folder" and not "delete what was learned about
+// it": this unregisters, and nothing else. A registry row is the operator
+// saying "I code here", and withdrawing that is a smaller decision than
+// throwing away the knowledge base's memory of the place (brain.ForgetProject).
+//
+// A missing id is not an error. The caller's intent — "this should not be
+// registered" — is satisfied either way, and reporting a failure would make an
+// idempotent operation look broken on the second call.
+func (r *Registry) Forget(ctx context.Context, id string) error {
+	return r.store.DeleteProject(ctx, id)
+}
+
+// Repoint moves a registration to a new path.
+//
+// The new path goes through the same guard Register uses, because re-pointing
+// is registering: a row that could be aimed anywhere would be a way around
+// every check Register makes.
+func (r *Registry) Repoint(ctx context.Context, id, path string) (Project, error) {
+	resolved, err := Canonicalize(path)
+	if err != nil {
+		return Project{}, err
+	}
+	if err := r.store.SetProjectPath(ctx, id, resolved); err != nil {
+		return Project{}, err
+	}
+	return r.Get(ctx, id)
 }
 
 // Find returns the registration for a path if one already exists.

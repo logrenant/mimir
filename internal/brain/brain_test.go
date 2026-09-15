@@ -76,6 +76,75 @@ func (f *fakeStore) SearchBrainNodes(_ context.Context, _, _ string, _ int) ([]s
 	return f.results, nil
 }
 
+// BrainVocabulary answers the way the index does: a word is present if some
+// node in the store has it, as a whole token or as the opening of one, in any
+// of the fields the index covers. Reading the rows rather than a canned list
+// keeps the expansion tests honest — a test that says "the graph has no word
+// for kuantum" has to be true of the rows it wrote.
+func (f *fakeStore) BrainVocabulary(_ context.Context, _ string, words []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var haystack []string
+	for _, n := range f.nodes {
+		parts := append([]string{n.Title, n.Assessment, n.Body}, n.Tags...)
+		haystack = append(haystack, strings.ToLower(strings.Join(append(parts, n.Aliases...), " ")))
+	}
+
+	var out []string
+	for _, word := range words {
+		for _, text := range haystack {
+			// Substring and not whole-token, because the real store falls back
+			// to exactly that: a word inside a compound name is in the graph.
+			if strings.Contains(text, word) {
+				out = append(out, word)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// The fake keeps the move and forget honest at the level it can: rows in, rows
+// gone. The identity arithmetic and the edge re-pointing are the real store's,
+// and are tested against it in internal/store.
+func (f *fakeStore) MoveBrainProject(_ context.Context, from, to string, identity store.NodeIdentity) (store.MoveResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var out store.MoveResult
+	for id, n := range f.nodes {
+		if n.ProjectPath != from {
+			continue
+		}
+		next := identity(to, n.Kind, n.SourceKey)
+		delete(f.nodes, id)
+		if _, clash := f.nodes[next]; clash {
+			out.Merged++
+			continue
+		}
+		n.ID = next
+		n.ProjectPath = to
+		f.nodes[next] = n
+		out.Nodes++
+	}
+	return out, nil
+}
+
+func (f *fakeStore) ForgetBrainProject(_ context.Context, path string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	removed := 0
+	for id, n := range f.nodes {
+		if n.ProjectPath == path {
+			delete(f.nodes, id)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
 func (f *fakeStore) UpsertBrainEdges(_ context.Context, e []store.BrainEdgeRow) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -391,7 +460,7 @@ func TestSemanticEdges_IgnoresInventedIDsAndOutOfRangeWeights(t *testing.T) {
 	c := testCore(t, st, model)
 
 	got, err := c.semanticEdges(context.Background(),
-		store.BrainNodeRow{ID: "self", Title: "Self", Tags: []string{"x"}}, candidates)
+		store.BrainNodeRow{ID: "self", Title: "Self", Tags: []string{"x"}}, candidates, nil)
 	if err != nil {
 		t.Fatalf("semanticEdges: %v", err)
 	}

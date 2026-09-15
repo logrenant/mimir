@@ -71,9 +71,15 @@ type ProxyResponse = { status: number; body: string };
 // one — the scan policy, the settings values, a rule file. The distinction is
 // the daemon's: PATCH takes the fields that changed, PUT takes the list as it
 // should now be.
-type RequestOptions = { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown };
+type RequestOptions = {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  body?: unknown;
+};
 
-export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+export async function request<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
   const method = options.method ?? "GET";
 
   let response: ProxyResponse;
@@ -117,7 +123,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
  * the subprotocol list and echoes it back (internal/api/middleware.go). It is
  * deliberately not a query parameter.
  */
-export function wsURL(runID: string, ep: DaemonEndpoint): { url: string; protocol: string } {
+export function wsURL(
+  runID: string,
+  ep: DaemonEndpoint,
+): { url: string; protocol: string } {
   return {
     url: `${ep.base_url.replace(/^http/, "ws")}/ws/runs/${encodeURIComponent(runID)}`,
     protocol: `mimir.bearer.${ep.token}`,
@@ -205,12 +214,7 @@ export type Project = {
  * card released. Everything after that belongs to the runner.
  */
 export type RunStatus =
-  | "backlog"
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "stopped";
+  "backlog" | "queued" | "running" | "completed" | "failed" | "stopped";
 
 /**
  * The one Claude account Mimir is connected as.
@@ -254,8 +258,77 @@ export type LoginState = {
   email?: string;
 };
 
+/**
+ * One sub-agent, as `GET /agents` publishes it.
+ *
+ * The catalogue is a constant the daemon ships, not a setting, so it is read
+ * once and trusted: a picker built from a hard-coded copy here is exactly the
+ * drift the route exists to prevent.
+ */
+export type AgentDef = {
+  key: string;
+  name: string;
+  desc: string;
+  executor: string;
+  required_skills: string[];
+  needs_project: boolean;
+};
+
+export type AgentCatalogue = {
+  agents: AgentDef[];
+  /** What a card lands on when nothing else decides. */
+  default: string;
+};
+
+/**
+ * One node an answer passed through.
+ *
+ * `why` is the edge it was reached by and `hops` how far out it was found —
+ * together they are what makes an answer checkable rather than believable.
+ * `file` and `location` are where the thing actually is.
+ */
+export type GraphHit = {
+  node_id: string;
+  title: string;
+  kind: string;
+  file?: string;
+  location?: string;
+  why?: string;
+  hops: number;
+};
+
+export type GraphAnswer = {
+  /**
+   * The vocabulary the question was actually run as.
+   *
+   * Part of the answer, not debug output: the index matches literally, so a
+   * reader who cannot see which words were searched cannot tell a miss from an
+   * absence.
+   */
+  expanded: string[];
+  hits: GraphHit[];
+  /** The honest empty answer, when the graph has no vocabulary for the question. */
+  note?: string;
+};
+
+/** One skill file, as the settings screen edits it. */
+export type Skill = {
+  id: string;
+  title: string;
+  path: string;
+  body: string;
+  is_default: boolean;
+  /**
+   * The handle on "these instructions changed". A run records the version it
+   * ran under, so an operator matching the two needs to see both.
+   */
+  version: string;
+  updated_at?: number;
+};
+
 export type Run = {
   id: string;
+  /** Empty for a sub-agent that works in no folder. */
   project_id: string;
   title?: string;
   prompt: string;
@@ -267,6 +340,12 @@ export type Run = {
   /** The slot it actually ran on, filled in when the dispatcher claimed it. */
   account_id?: string;
   attachments?: string[];
+  /** Which sub-agent runs this card, and the skills it is held to. */
+  agent?: string;
+  /** Comma-separated skill ids — the agent's contract, not a free choice. */
+  skills?: string;
+  /** The executor's own input, an opaque JSON string. */
+  params?: string;
   cost_usd?: number;
   num_turns?: number;
   error?: string;
@@ -346,6 +425,14 @@ export type CreateTaskRequest = {
   account_id?: string;
   /** One of GET /coding-models' ids. Omit for the daemon's default. */
   model?: string;
+  /**
+   * One of GET /agents' keys. Omit to let the daemon choose — it spends one
+   * cheap classification call at create time and writes the answer on the
+   * card, where the operator can change it.
+   */
+  agent?: string;
+  /** The sub-agent executor's own input. Opaque to this app. */
+  params?: Record<string, unknown>;
   start?: boolean;
 };
 
@@ -507,7 +594,15 @@ export type LLMProvider = {
   id: string;
   label: string;
   default_model: string;
-  models: LLMModel[];
+  /**
+   * Absent for a provider whose models are discovered rather than pinned:
+   * ollama's are files on this machine, so the shipped table lists none.
+   *
+   * Optional in the type on purpose. It was `LLMModel[]`, which let
+   * `provider.models.find(...)` compile and then crash the settings screen the
+   * first time a class default named ollama.
+   */
+  models?: LLMModel[];
 };
 
 /**
@@ -520,10 +615,100 @@ export type LLMProvider = {
 export type LLMModel = { id: string; label: string };
 
 /** GET /llm/providers — the picker's whole vocabulary. */
+/**
+ * What a provider looks like on *this* machine.
+ *
+ * The provider table is a constant the binary always publishes; whether each
+ * entry's CLI is installed here, and whether its login works, is the machine's
+ * answer. A picker that offers a provider that is not there offers a failure.
+ *
+ * `signed_in` only means something when `probed` is true: establishing it costs
+ * a model call, so a screen opening asks the free question and an operator
+ * pressing "test" asks the expensive one.
+ */
+export type LLMAvailability = {
+  provider: string;
+  model: string;
+  installed: boolean;
+  signed_in: boolean;
+  probed: boolean;
+  detail?: string;
+  structured_output: boolean;
+  agentic: boolean;
+  /** What this machine holds, for providers whose models are files rather than
+   *  a vendor catalogue (ollama). Empty for everyone else. */
+  models?: string[];
+};
+
+/**
+ * One configured way to reach models.
+ *
+ * The unit the daemon routes on. It is a connection rather than a binary
+ * because two ways to one vendor are two budgets — "Claude Code CLI" spends a
+ * subscription, "Anthropic API" spends a key — and because the quota belongs to
+ * the account and the auth method rather than to the CLI: Antigravity has no
+ * subscription of its own and rides a Google AI plan, so `agy` and an OAuth
+ * `gemini` on the same Google account spend one wallet.
+ *
+ * There is no field here that could carry a secret or name an executable, and
+ * that is by design rather than by omission.
+ */
+export type Connection = {
+  id: string;
+  label: string;
+  vendor: string;
+  adapter: string;
+  transport: "cli" | "api";
+  default_model: string;
+  models?: LLMModel[];
+  discovered?: boolean;
+  enabled: boolean;
+  builtin: boolean;
+  /**
+   * What an operator does to sign this in.
+   *
+   * `daemon` means Mimir can run the flow itself — only Claude Code today.
+   * `manual` means it cannot, and the honest answer is the exact command:
+   * `agy` and `gemini` sign in through flows a headless daemon cannot drive,
+   * and a button that pretended to would hang on a prompt nobody can answer or
+   * claim a success it never verified.
+   */
+  connect: { kind: "daemon" | "manual"; command?: string; hint: string };
+  /** What this machine says about it. Absent when no router is wired. */
+  availability?: LLMAvailability;
+};
+
+/**
+ * One way to reach models that this product knows about — whether or not this
+ * build can run it yet.
+ *
+ * The catalogue is published so the picker is the *final* picker: an operator
+ * sees what is here and what is coming, and shipping an adapter later changes a
+ * status rather than a screen.
+ *
+ * A `coming-soon` entry deliberately carries no base URL and no docs URL. Those
+ * are facts about somebody else's service, and an unverified fact in a table is
+ * exactly what this approach exists to avoid.
+ */
+export type CatalogueEntry = {
+  id: string;
+  label: string;
+  vendor: string;
+  adapter: string;
+  transport: "cli" | "api";
+  auth: "cli-login" | "api-key";
+  status: "available" | "coming-soon";
+  /** Why it is not connectable yet, in the operator's terms. */
+  note?: string;
+};
+
 export type LLMProviderList = {
   providers: LLMProvider[];
   /** What a run gets when it sends no selection: the class routing's answer. */
   routed: { provider: string; model: string };
+  /** Absent when the daemon has no router wired — which is not the same as
+   *  "nothing is installed", so the field is optional rather than empty. */
+  available?: LLMAvailability[];
 };
 
 /**
@@ -572,11 +757,24 @@ export type OutreachRule = {
  * routes to draw it would show the model picker before the rule files and look
  * broken for the difference.
  */
+/** One provider/model pair, as the settings surface stores it. */
+export type LLMChoice = { provider?: string; model?: string };
+
 export type SettingsView = {
   provider: string;
   model: string;
   /** What a run gets when no model is saved: the class routing's own answer. */
   routed: { provider: string; model: string };
+  /**
+   * The operator's standing preference for the two classes the daemon routes on
+   * its own — Brain's distil and relation passes, refine, the catalog rewrite.
+   *
+   * Which class a piece of work belongs to stays in the daemon's code: that is
+   * a property of the work. Which provider serves a class *on this machine*
+   * depends on what is installed here, and that is the operator's to say.
+   */
+  distill: LLMChoice;
+  reason: LLMChoice;
   rules: OutreachRule[];
 };
 
@@ -659,12 +857,16 @@ export type LeadgenExportResult = {
 // The resident scan and the graph it builds. One definition per Go struct, tags
 // included: brain.ScanStatus, api.graphNode, api.graphEdge, api.brainProject.
 
-export type ScanPhase = "idle" | "discovering" | "scanning" | "backoff" | "paused";
+export type ScanPhase =
+  "idle" | "discovering" | "scanning" | "backoff" | "paused";
 
 export type BrainScanStatus = {
   phase: ScanPhase;
   paused: boolean;
-  roots: string[];
+  /** Nullable on purpose. The daemon now sends `[]` for "no folders", but a
+   * desktop build can outlive the daemon it is talking to, and an older one
+   * sends `null` — which is how `roots.join(...)` came to empty the window. */
+  roots: string[] | null;
   provider: string;
   model: string;
   project?: string;
@@ -682,6 +884,12 @@ export type BrainScanStatus = {
   scanned_total: number;
   sweeps: number;
   nodes_total: number;
+  /** Symbols the structural pass wrote this sweep — see BrainStructural. */
+  symbols_session?: number;
+  /** How many the per-project ceiling turned away. A setting, not a fact. */
+  symbols_dropped?: number;
+  /** The Graphify version behind them; absent when the pass did not run. */
+  structural?: string;
 
   sweep_started?: string;
   last_pass_at?: string;
@@ -703,10 +911,32 @@ export type BrainScanStatus = {
  * one of the two invites a look.
  */
 export type BrainScanPolicy = {
-  roots: string[];
-  excludes: string[];
+  roots: string[] | null;
+  excludes: string[] | null;
   configured: boolean;
-  default_roots: string[];
+  default_roots: string[] | null;
+};
+
+/**
+ * The structural layer — GET/PUT /brain/structural.
+ *
+ * Two separate answers on purpose. `enabled` is the operator's, stored;
+ * `installed` is the machine's, probed. Both false means two different
+ * sentences on the screen — one offers a switch, the other offers `install` —
+ * and one boolean would make the screen guess which.
+ */
+export type BrainStructural = {
+  enabled: boolean;
+  python?: string;
+  installed: boolean;
+  version?: string;
+  interpreter?: string;
+  /** The command that would change the answer, named by the daemon so the
+   * screen does not hold a second copy of the package name. */
+  install: string;
+  /** Where the daemon looked, sent only when it found nothing — the answer to
+   * "but I installed it". */
+  looked?: string[];
 };
 
 export type BrainScanEvent = {
@@ -754,6 +984,10 @@ export type BrainGraph = {
 };
 
 export type BrainProject = {
+  /** Whether the folder is still there. False is a project left behind by a
+   * rename or a move — nothing can be scanned from it, and it is the one the
+   * configuration tab offers to move or forget. */
+  on_disk?: boolean;
   id: string;
   label: string;
   path: string;
@@ -839,12 +1073,382 @@ export type TerminalProfile = {
   running?: boolean;
 };
 
+
+// --- katalog · ürün içeriği stüdyosu (task-85) -------------------------------
+
+/**
+ * The framing the daemon read out of the uploaded file.
+ *
+ * It is shown rather than kept internal because an operator who exported
+ * semicolon-delimited Windows-1254 needs to see those two words back before
+ * they trust anything else on the screen: everything downstream — the product
+ * count, the brand kit, the export — is wrong in the same way if this is.
+ */
+export type CatalogFraming = {
+  delimiter: string;
+  encoding: string;
+  has_bom: boolean;
+  crlf: boolean;
+};
+
+/**
+ * The markup this store's own descriptions actually use, counted.
+ *
+ * The editor is built from it: a tag absent here is a tag the editor does not
+ * offer, because it is a tag the daemon would strip on the way back in.
+ */
+export type CatalogVocabulary = {
+  tags: Record<string, number>;
+  attrs: Record<string, number>;
+  classes: Record<string, number>;
+  styles: Record<string, number>;
+};
+
+export type CatalogStructure = {
+  descriptions: number;
+  median_blocks: number;
+  median_chars: number;
+  heading_levels: number[];
+  list_share: number;
+  avg_headings: number;
+  longest_chars: number;
+  with_headings: number;
+  without_markup: number;
+  seo_title_median: number;
+  seo_desc_median: number;
+};
+
+/** The half the operator owns: their own writing about their own brand. */
+export type CatalogVoice = {
+  address: string;
+  tone: string;
+  patterns: string[];
+  banned: string[];
+  lexicon: string[];
+};
+
+/**
+ * The operator's storefront, as the browser computed it.
+ *
+ * Resolved values only — colour, font stack, size, measure. The shop's own CSS
+ * is not here and cannot be: the preview frame loads no external stylesheet,
+ * and a theme's rules are written for a page the preview is not. What makes a
+ * preview look like the shop is its type and its palette, and those travel.
+ */
+export type CatalogSiteTheme = {
+  background?: string;
+  text?: string;
+  link?: string;
+  accent?: string;
+  border?: string;
+  font_family?: string;
+  font_size?: string;
+  line_height?: string;
+  heading_family?: string;
+  heading_weight?: string;
+  heading_color?: string;
+};
+
+/** The element the description actually renders in on a product page. */
+export type CatalogSiteContent = {
+  found: boolean;
+  font_family?: string;
+  font_size?: string;
+  line_height?: string;
+  color?: string;
+  max_width?: string;
+  text_align?: string;
+};
+
+export type CatalogSiteScan = {
+  url: string;
+  scanned_at?: string;
+  theme?: CatalogSiteTheme;
+  content?: CatalogSiteContent;
+  /** Which pages were read, so an operator can see the scan landed on a
+   *  product page rather than on a cookie wall. */
+  pages?: string[];
+  note?: string;
+};
+
+export type CatalogBrandKit = {
+  vocabulary: CatalogVocabulary;
+  structure: CatalogStructure;
+  voice: CatalogVoice;
+  voice_note?: string;
+  version: string;
+};
+
+export type CatalogImport = {
+  id: string;
+  filename: string;
+  brand: CatalogBrandKit;
+  /** What the operator's shop looks like, once they have pointed at it.
+   *  Beside `brand` rather than inside it: the brand kit's version is a draft
+   *  cache key, and a colour must not discard a catalogue of approved copy. */
+  site?: CatalogSiteScan;
+  product_count: number;
+  created_at: string;
+  note?: string;
+  /** The profile that matched. Survives a listing even though the file body
+   *  deliberately does not — a list that carried every file's rows would cost
+   *  as much to open as every import at once. */
+  dialect?: string;
+  /**
+   * Products by status, from `GET /catalog/imports`.
+   *
+   * It is what makes the catalogs screen answer "which file do I open": a
+   * filename does not, and what state a file is in used to be reachable only
+   * by opening it. Absent means the daemon could not read the summary — which
+   * is not the same as a file with no products, so the screen says nothing
+   * rather than "0".
+   */
+  counts?: Record<string, number>;
+  /**
+   * The same counts per language, "" for the file's own.
+   *
+   * A language appears only once something has been decided in it: this listing
+   * does not read file bodies, so the daemon cannot know which languages a file
+   * carries, and drawing an "Arapça · 40 bekliyor" chip over a Shopify export
+   * with no Arabic column would say the opposite of the truth.
+   */
+  counts_by_lang?: Record<string, Record<string, number>>;
+};
+
+export type CatalogImportView = {
+  import: CatalogImport;
+  dialect: string;
+  header: string[];
+  // Whether the file can be turned into products at all: a platform matched,
+  // or the operator's own mapping names enough. This is the screen's gate —
+  // `dialect` is not, because a mapped file has no dialect and is readable.
+  readable: boolean;
+  // The saved column map, and — only when no platform matched — the daemon's
+  // deterministic guess at one.
+  mapping?: Record<string, string>;
+  suggested?: Record<string, string>;
+  // One trimmed value per column from the first data row, so a dropdown of
+  // thirty-seven Turkish header names can be told apart.
+  sample?: Record<string, string>;
+  framing: CatalogFraming;
+  fields: string[];
+  statuses: string[];
+  // Which languages THIS file can carry, source language first. Drawn from the
+  // import rather than from a constant here: the answer depends on the
+  // operator's own export, and a store whose file has no Arabic column must not
+  // be offered an Arabic pass — there would be nowhere to write the answer.
+  languages: CatalogLanguage[];
+  /**
+   * Why a rewrite cannot start right now, in the operator's own language, or
+   * absent when it can. Today it is the saved model being unable to return
+   * structured output — which the pass needs for every one of its calls, and
+   * which used to be discovered six minutes in, on the board, after a search
+   * and a crawl had already run.
+   */
+  rewrite_blocked?: string;
+  /**
+   * A translations export whose target columns are present and whose language
+   * nobody has named yet. IKAS's Çeviriler export does not record which
+   * language "Çevrilecek …" holds — the operator chose it in the admin panel
+   * and the file came back without the answer.
+   */
+  pending_target?: boolean;
+  /** That answer, once given. */
+  target_lang?: string;
+  /**
+   * Every language this daemon can write, whether or not the file resolves a
+   * column for it.
+   *
+   * A different question from `languages`, with a different reader: the mapping
+   * form, which exists precisely so an operator can point at a column no
+   * profile names — the `Html:Detay-EN` their own store created. Offering only
+   * the languages that already resolve made that column unreachable.
+   */
+  writable_languages?: CatalogLanguage[];
+};
+
+/**
+ * One language an import can carry, and everything a field panel needs to draw
+ * itself for that language.
+ */
+export type CatalogLanguage = {
+  /** "" is the file's own language. */
+  lang: string;
+  label: string;
+  dir: "ltr" | "rtl";
+  columns: Record<string, string>;
+  /**
+   * The fields this file can actually rewrite in this language. Derived by the
+   * daemon from the file, never from a constant: a product export does not have
+   * a fixed field set, and a switch for a field with no column is a switch that
+   * does nothing.
+   */
+  fields: CatalogWriteField[];
+};
+
+/** One togglable field in one language. */
+export type CatalogWriteField = {
+  /** The wire spelling — "title", "description_html@ar". */
+  key: string;
+  field: string;
+  lang: string;
+  /** Where this field lives in this file, shown beside the switch. */
+  column: string;
+  /** Whether a rewrite may change it as things stand. */
+  write: boolean;
+};
+
+/**
+ * One platform profile this daemon ships.
+ *
+ * Fetched rather than hardcoded. This screen used to keep its own copy of the
+ * profile table and it went stale: it still offered a profile the daemon had
+ * deleted, and it would have missed every profile added since.
+ */
+export type CatalogProfile = {
+  key: string;
+  name: string;
+  group_by: string;
+  columns: Record<string, string>;
+};
+
+export type CatalogStatus =
+  | "pending"
+  | "researched"
+  | "drafted"
+  | "approved"
+  | "rejected"
+  | "failed";
+
+export type CatalogContent = {
+  title: string;
+  description_html: string;
+  seo_title: string;
+  seo_description: string;
+  tags: string;
+};
+
+export type CatalogDraft = {
+  product_id: string;
+  version: string;
+  content: CatalogContent;
+  fields?: string[];
+  notes?: string[];
+  provider?: string;
+  model?: string;
+  created_at: string;
+  edited_by_operator: boolean;
+};
+
+export type CatalogProduct = {
+  id: string;
+  import_id: string;
+  key: string;
+  handle: string;
+  sku: string;
+  category: string;
+  rows: number[];
+  original: CatalogContent;
+  /** What the file already said in each target language, keyed by language. */
+  translations?: Record<string, CatalogContent>;
+  /**
+   * Which language `status` is about. Absent means the file's own — the shape
+   * every response had before decisions were per language.
+   */
+  lang?: string;
+  status: CatalogStatus;
+  /**
+   * Every language's decision about this product, keyed by language, "" for the
+   * file's own.
+   *
+   * The table draws one status column per language, so it needs all of them at
+   * once; asking per language was what made the language a mode, and a mode is
+   * what made switching it look like it did nothing. A language with no entry
+   * has had no decision made in it, which is what pending means — absence is
+   * the answer, not a missing one.
+   */
+  statuses?: Record<string, CatalogStatus>;
+  reason?: string;
+  /**
+   * The file's own language's decision, carried beside a target language's so a
+   * row can show that approving the Arabic did not move the Turkish. Absent on
+   * a source-language read, where it would only repeat `status`.
+   */
+  source_status?: CatalogStatus;
+  updated_at?: string;
+  draft?: CatalogDraft;
+  vocabulary?: CatalogVocabulary;
+};
+
+/**
+ * One generated draft as the cross-catalog outputs listing sees it.
+ *
+ * `changed` is computed by the daemon, not here. Diffing on this side would
+ * mean every row carrying the product's original description HTML so there was
+ * something to diff against — and the comparison is language-aware in a way a
+ * client gets backwards: an Arabic draft equal to the Turkish cell is a change,
+ * because the cell it will be written into is the Arabic one.
+ */
+export type CatalogOutput = {
+  import_id: string;
+  filename: string;
+  dialect: string;
+  product_id: string;
+  /** The title in this output's own language, so an Arabic row reads Arabic. */
+  title: string;
+  handle: string;
+  lang: string;
+  status: CatalogStatus;
+  /** What the pass was asked to write. */
+  fields?: string[];
+  /** What actually differs from the cell this draft would be written into. */
+  changed?: string[];
+  provider?: string;
+  model?: string;
+  edited_by_operator: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CatalogOutputPage = {
+  outputs: CatalogOutput[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type CatalogExportResult = {
+  path: string;
+  products: number;
+  changed: number;
+  bytes: number;
+};
+
+/**
+ * The writable fields, as wire strings. `handle` and `sku` are deliberately
+ * absent: a handle is the product's URL, and rewriting it turns every link that
+ * pointed at the old one into a 404.
+ */
+export const CATALOG_FIELDS = [
+  "title",
+  "description_html",
+  "seo_title",
+  "seo_description",
+  "tags",
+] as const;
+
+export type CatalogField = (typeof CATALOG_FIELDS)[number];
+
+
 export const api = {
   health: () => request<Health>("/healthz"),
-  terminalProfiles: () => request<{ profiles: TerminalProfile[] }>("/terminals/profiles"),
+  terminalProfiles: () =>
+    request<{ profiles: TerminalProfile[] }>("/terminals/profiles"),
   // The only thing that ends a shell now that closing a viewer does not.
   killTerminal: (profile: string) =>
-    request<void>(`/terminals/${encodeURIComponent(profile)}`, { method: "DELETE" }),
+    request<void>(`/terminals/${encodeURIComponent(profile)}`, {
+      method: "DELETE",
+    }),
   diagnostics: () => request<Diagnostics>("/diagnostics"),
   listProjects: () => request<{ projects: Project[] }>("/projects"),
   listAccounts: () => request<{ accounts: Account[] }>("/accounts"),
@@ -853,7 +1457,8 @@ export const api = {
   // against its own credential slot and opens the authorization page in a
   // private browser window. This returns once that window is open, not once
   // the login is finished, so the caller follows loginState from there.
-  startAccountLogin: () => request<LoginState>("/accounts/login", { method: "POST" }),
+  startAccountLogin: () =>
+    request<LoginState>("/accounts/login", { method: "POST" }),
   loginState: () => request<LoginState>("/accounts/login"),
   // Only for the flow the CLI falls back to when it could not open a browser
   // itself. A single-use authorization code, typed into the waiting process.
@@ -866,7 +1471,11 @@ export const api = {
     request<AccountStatus>(`/accounts/${encodeURIComponent(id)}/status`),
   registerProject: (path: string) =>
     request<Project>("/projects", { method: "POST", body: { path } }),
-  startCodingTask: (projectID: string, prompt: string, extra?: Partial<CreateTaskRequest>) =>
+  startCodingTask: (
+    projectID: string,
+    prompt: string,
+    extra?: Partial<CreateTaskRequest>,
+  ) =>
     request<Run>("/coding-tasks", {
       method: "POST",
       body: { project_id: projectID, prompt, ...extra },
@@ -876,9 +1485,13 @@ export const api = {
   createCodingTask: (body: CreateTaskRequest) =>
     request<Run>("/coding-tasks", { method: "POST", body }),
   enqueueCodingTask: (runID: string) =>
-    request<Run>(`/coding-tasks/${encodeURIComponent(runID)}/enqueue`, { method: "POST" }),
+    request<Run>(`/coding-tasks/${encodeURIComponent(runID)}/enqueue`, {
+      method: "POST",
+    }),
   stopCodingTask: (runID: string) =>
-    request<Run>(`/coding-tasks/${encodeURIComponent(runID)}/stop`, { method: "POST" }),
+    request<Run>(`/coding-tasks/${encodeURIComponent(runID)}/stop`, {
+      method: "POST",
+    }),
   // Puts a failed or stopped card back in the queue. `fresh` is the whole of
   // the difference the two buttons make: false resumes the CLI session the
   // first attempt left behind — the run carries on — and true drops it, so the
@@ -899,7 +1512,17 @@ export const api = {
   // finished — what a run was asked is the record of what was spent.
   editCodingTask: (
     runID: string,
-    patch: { title?: string; prompt?: string; model?: string; attachment_ids?: string[] },
+    patch: {
+      title?: string;
+      prompt?: string;
+      model?: string;
+      attachment_ids?: string[];
+      /** The card's own body, as one opaque document — a catalog card's
+       *  products, language and model. An object, because the route decodes it
+       *  as JSON while a run carries it back out as text. Sent whole: a partial
+       *  one would drop the ids the card exists to name. */
+      params?: object;
+    },
   ) =>
     request<Run>(`/coding-tasks/${encodeURIComponent(runID)}`, {
       method: "PATCH",
@@ -912,7 +1535,8 @@ export const api = {
   // was connected keeps waiting after the login that could start it. This is
   // the way out, and it answers 409 with the reason when there is still
   // nothing to start with.
-  kickQueue: () => request<void>("/coding-tasks/queue/kick", { method: "POST" }),
+  kickQueue: () =>
+    request<void>("/coding-tasks/queue/kick", { method: "POST" }),
   // Why the queue is not moving, and when it will be.
   //
   // A spent token budget is the one interruption nobody can act on: the daemon
@@ -925,7 +1549,9 @@ export const api = {
       `/coding-tasks/queue/limits${limit ? `?limit=${limit}` : ""}`,
     ),
   deleteCodingTask: (runID: string) =>
-    request<void>(`/coding-tasks/${encodeURIComponent(runID)}`, { method: "DELETE" }),
+    request<void>(`/coding-tasks/${encodeURIComponent(runID)}`, {
+      method: "DELETE",
+    }),
   uploadAttachment: (filename: string, dataBase64: string) =>
     request<Attachment>("/coding-tasks/attachments", {
       method: "POST",
@@ -935,22 +1561,63 @@ export const api = {
     request<Attachment>(`/coding-tasks/attachments/${encodeURIComponent(id)}`),
   getCodingTask: (runID: string) =>
     request<Run>(`/coding-tasks/${encodeURIComponent(runID)}`),
-  // The board's data source: one project's runs, most recent first. There is
-  // no cross-project route (internal/store only indexes by project), so a
-  // multi-project board calls this once per registered project.
-  listCodingTasks: (projectID: string) =>
-    request<{ runs: Run[] }>(`/coding-tasks?project_id=${encodeURIComponent(projectID)}`),
+  /**
+   * The board's data source.
+   *
+   * With no project it is every card the daemon holds, in one request. That
+   * route did not exist while runs were only indexed by project, and this app
+   * fanned out over the registry and merged the answers; it is required now,
+   * because a card on the worker lane belongs to no project and no
+   * per-project query could ever have returned it.
+   */
+  listCodingTasks: (projectID?: string) =>
+    request<{ runs: Run[] }>(
+      projectID
+        ? `/coding-tasks?project_id=${encodeURIComponent(projectID)}`
+        : "/coding-tasks",
+    ),
   // The model picker's vocabulary, published by the daemon rather than
   // mirrored here: a second copy would drift the first time a generation
   // ships, and the daemon would reject a pair this app had just offered.
-  llmProviders: () => request<LLMProviderList>("/llm/providers"),
+  // `probe` asks whether the logins work rather than only whether the binaries
+  // are there. It costs one completion per provider, so it is what a "test"
+  // button sends and never what a screen opening sends.
+  // The connection-shaped view. `probe` carries the same price as on
+  // /llm/providers: one completion per connection, so it is what a "test"
+  // button sends and never what a screen opening sends.
+  connections: (probe = false) =>
+    request<{ connections: Connection[]; catalogue?: CatalogueEntry[] }>(
+      `/llm/connections${probe ? "?probe=1" : ""}`,
+    ),
+  // One row's login, because that is the question the screen asks. Probing
+  // everything at once was measured at four minutes — long enough that the
+  // operator concludes the button is broken — and it is also the wrong shape:
+  // each probe spends a model call.
+  probeConnection: (id: string) =>
+    request<LLMAvailability>(
+      `/llm/connections/${encodeURIComponent(id)}/probe`,
+      { method: "POST" },
+    ),
+  // The extension point. It refuses every provider today — no API adapter is
+  // written yet — and it is the final shape, so the screen that calls it does
+  // not change when one lands.
+  addConnection: (provider: string, label: string) =>
+    request<Connection>("/llm/connections", {
+      method: "POST",
+      body: { provider, label },
+    }),
+  llmProviders: (probe = false) =>
+    request<LLMProviderList>(`/llm/providers${probe ? "?probe=1" : ""}`),
   runLeadgen: (body: LeadgenRequest) =>
     request<LeadgenReport>("/maps/leadgen", { method: "POST", body }),
   // Runs the same search — the region cache means it does not re-search — and
   // writes the workbook. Enrichment is one page fetch per company, so it is
   // the caller's decision, not a default.
   exportLeadgen: (body: LeadgenExportRequest) =>
-    request<LeadgenExportResult>("/maps/leadgen/export", { method: "POST", body }),
+    request<LeadgenExportResult>("/maps/leadgen/export", {
+      method: "POST",
+      body,
+    }),
   // The ledger: three reads that cost nothing. Separate routes from the run
   // above because they are not a search — they are what earlier searches found,
   // and they answer on a daemon with no region source at all.
@@ -961,7 +1628,9 @@ export const api = {
   // The rail is counted by the daemon: it spans the whole ledger, not the page
   // the table happens to be showing.
   leadCategories: (q?: LeadsQuery) =>
-    request<{ categories: LeadCategoryCount[] }>("/maps/leads/categories" + leadsQuery(q)),
+    request<{ categories: LeadCategoryCount[] }>(
+      "/maps/leads/categories" + leadsQuery(q),
+    ),
   leadRuns: () => request<{ runs: LeadRun[] }>("/maps/leads/runs"),
   // Regions, not runs, are what the picker offers: one row per place.
   leadRegions: () => request<{ regions: LeadRegion[] }>("/maps/leads/regions"),
@@ -973,7 +1642,11 @@ export const api = {
   // 204, no body — the caller updates its own row optimistically. The channel
   // travels with the place id because a company has one draft per channel and
   // "sent" is a decision about one of them, not about the company.
-  setOutreachStatus: (placeID: string, channel: OutreachChannel, status: OutreachStatus) =>
+  setOutreachStatus: (
+    placeID: string,
+    channel: OutreachChannel,
+    status: OutreachStatus,
+  ) =>
     request<void>("/maps/outreach/status", {
       method: "POST",
       body: { place_id: placeID, channel, status },
@@ -986,23 +1659,87 @@ export const api = {
   settings: () => request<SettingsView>("/settings"),
   // PUT, not PATCH: the pair is one decision. Both empty means "route by
   // class", which is what every run did before this screen existed.
-  saveSettings: (provider: string, model: string) =>
-    request<SettingsView>("/settings", { method: "PUT", body: { provider, model } }),
+  // A whole-document PUT, not a patch: an omitted class default is cleared,
+  // which is the same gesture as clearing the search bar's own choice.
+  saveSettings: (
+    provider: string,
+    model: string,
+    classes?: { distill?: LLMChoice; reason?: LLMChoice },
+  ) =>
+    request<SettingsView>("/settings", {
+      method: "PUT",
+      body: { provider, model, ...classes },
+    }),
   // An empty body is a reset on the daemon's side, not an empty prompt: "I
   // cleared the box" means start over far more often than it means "write with
   // no rules at all".
+  /**
+   * The sub-agent catalogue. Registered unconditionally on the daemon, like
+   * `GET /coding-models`, so this answers even when nothing else is wired.
+   */
+  agents: () => request<AgentCatalogue>("/agents"),
+
+  // The skills. Same shape as the outreach rules and for the same reason: the
+  // wiring that makes a skill mandatory is the machine's, the words inside it
+  // are the operator's.
+  skills: () => request<{ skills: Skill[] }>("/skills"),
+  saveSkill: (id: string, body: string) =>
+    request<Skill>(`/skills/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: { body },
+    }),
+  resetSkill: (id: string) =>
+    request<Skill>(`/skills/${encodeURIComponent(id)}/reset`, {
+      method: "POST",
+    }),
+
   saveRule: (channel: OutreachChannel, body: string) =>
-    request<OutreachRule>("/settings/rules", { method: "PUT", body: { channel, body } }),
+    request<OutreachRule>("/settings/rules", {
+      method: "PUT",
+      body: { channel, body },
+    }),
   // A route rather than "send the shipped default back": a client that held a
   // copy of the default is exactly the drift `GET /coding-models` avoids.
   resetRule: (channel: OutreachChannel) =>
-    request<OutreachRule>("/settings/rules/reset", { method: "POST", body: { channel } }),
+    request<OutreachRule>("/settings/rules/reset", {
+      method: "POST",
+      body: { channel },
+    }),
+
+  /**
+   * Asking the graph a question, as opposed to drawing it.
+   *
+   * No model call on the daemon's side: these walk the parser's own edges, so
+   * they are as cheap as a database read and can be asked freely.
+   */
+  brainQuery: (question: string, projectPath?: string, budget?: number) =>
+    request<GraphAnswer>("/brain/query", {
+      method: "POST",
+      body: { question, project_path: projectPath ?? "", budget: budget ?? 0 },
+    }),
+  /** Who depends on this — the question the normalising neighbour read cannot answer. */
+  brainAffected: (nodeID: string, depth?: number) =>
+    request<{ hits: GraphHit[] }>("/brain/affected", {
+      method: "POST",
+      body: { node_id: nodeID, depth: depth ?? 0 },
+    }),
+  brainHubs: (projectPath?: string, top?: number) =>
+    request<{ hits: GraphHit[] }>(
+      `/brain/hubs?${new URLSearchParams({
+        ...(projectPath ? { project_path: projectPath } : {}),
+        ...(top ? { top: String(top) } : {}),
+      })}`,
+    ),
 
   // The Brain tab. The three controls take no body: there is nothing to
   // configure about a scan, and the daemon's handlers do not decode one.
   brainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan"),
-  pauseBrainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan/pause", { method: "POST" }),
-  resumeBrainScan: () => request<{ scan: BrainScanStatus }>("/brain/scan/resume", { method: "POST" }),
+  pauseBrainScan: () =>
+    request<{ scan: BrainScanStatus }>("/brain/scan/pause", { method: "POST" }),
+  resumeBrainScan: () =>
+    request<{ scan: BrainScanStatus }>("/brain/scan/resume", {
+      method: "POST",
+    }),
   /**
    * POST /brain/scan/now — wake the resident loop for one sweep.
    *
@@ -1030,17 +1767,47 @@ export const api = {
    */
   brainScanPolicy: () => request<BrainScanPolicy>("/brain/scan/policy"),
   saveBrainScanPolicy: (policy: { roots: string[]; excludes: string[] }) =>
-    request<BrainScanPolicy>("/brain/scan/policy", { method: "PUT", body: policy }),
+    request<BrainScanPolicy>("/brain/scan/policy", {
+      method: "PUT",
+      body: policy,
+    }),
   resetBrainScanPolicy: () =>
     request<BrainScanPolicy>("/brain/scan/policy/reset", { method: "POST" }),
   brainProjects: () => request<{ projects: BrainProject[] }>("/brain/projects"),
+  brainStructural: () => request<BrainStructural>("/brain/structural"),
+  // The two writes that remove. Both take the opaque project id the list
+  // returned; a path is never sent as an id.
+  moveBrainProject: (id: string, to: string) =>
+    request<{
+      from: string;
+      to: string;
+      id: string;
+      result: { nodes: number; merged: number; edges: number; rows: number };
+    }>(`/brain/projects/${encodeURIComponent(id)}/move`, {
+      method: "POST",
+      body: { to },
+    }),
+  forgetBrainProject: (id: string) =>
+    request<{ path: string; nodes_removed: number }>(
+      `/brain/projects/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  saveBrainStructural: (next: { enabled: boolean; python?: string }) =>
+    request<BrainStructural>("/brain/structural", {
+      method: "PUT",
+      body: next,
+    }),
   // `project` is the opaque id from /brain/projects, never a path: the daemon
   // accepts a filesystem path at exactly two routes and this is not one of
   // them (internal/api/AGENTS.md).
-  brainGraph: (opts?: { project?: string; limit?: number }) => {
+  brainGraph: (opts?: { project?: string; limit?: number; kinds?: string }) => {
     const q = new URLSearchParams();
     if (opts?.project) q.set("project", opts.project);
     if (opts?.limit) q.set("limit", String(opts.limit));
+    // Omitted means the semantic kinds — what a model produced. `all` adds the
+    // structural layer, which is far more numerous and far more connected, so
+    // a picture ranked by degree becomes nothing but symbols once it is on.
+    if (opts?.kinds) q.set("kinds", opts.kinds);
     const query = q.toString();
     return request<BrainGraph>("/brain/graph" + (query ? "?" + query : ""));
   },
@@ -1054,6 +1821,199 @@ export const api = {
   brainNodeVersions: (id: string) =>
     request<{ versions: BrainNodeVersion[] }>(
       `/brain/nodes/${encodeURIComponent(id)}/versions`,
+    ),
+
+  // --- katalog ---------------------------------------------------------------
+  //
+  // The upload is base64 in a JSON body rather than multipart, because REST here
+  // goes through a Rust proxy that forwards a string body. It earns something
+  // beyond consistency: the bytes reach the daemon undisturbed, so its encoding
+  // sniff sees what the exporter actually wrote rather than whatever the WebView
+  // decided the text was.
+  catalogImport: (filename: string, dataBase64: string) =>
+    request<CatalogImportView>("/catalog/imports", {
+      method: "POST",
+      body: { filename, data_base64: dataBase64 },
+    }),
+  catalogImports: () =>
+    request<{ imports: CatalogImport[] }>("/catalog/imports"),
+  // The profile table, from the daemon that owns it.
+  catalogProfiles: () =>
+    request<{ profiles: CatalogProfile[] }>("/catalog/profiles"),
+  // The operator overriding detection. An empty key is meaningful: it returns
+  // the file to detection, which is how a wrong pick is undone without
+  // re-uploading a thousand products.
+  setCatalogDialect: (id: string, key: string) =>
+    request<CatalogImportView>(
+      `/catalog/imports/${encodeURIComponent(id)}/dialect`,
+      { method: "PUT", body: { key } },
+    ),
+  // The whole set every time, never a delta. The fields a file offers can
+  // change under a delta — a re-export with one column gone — and a delta
+  // applied to a different set is a rewrite writing somewhere nobody meant.
+  saveCatalogFields: (id: string, fields: string[]) =>
+    request<CatalogImportView>(
+      `/catalog/imports/${encodeURIComponent(id)}/fields`,
+      { method: "PUT", body: { fields } },
+    ),
+  // The one thing a translations export cannot say about itself.
+  setCatalogTargetLang: (id: string, lang: string) =>
+    request<CatalogImportView>(
+      `/catalog/imports/${encodeURIComponent(id)}/target-lang`,
+      { method: "PUT", body: { lang } },
+    ),
+  catalogImportView: (id: string) =>
+    request<CatalogImportView>(`/catalog/imports/${encodeURIComponent(id)}`),
+  deleteCatalogImport: (id: string) =>
+    request<void>(`/catalog/imports/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  // Rebuilds an import's products under the profile table as it stands now.
+  // Explicit rather than automatic on read: re-reading a thousand rows is not
+  // something a screen should do because it was opened.
+  rereadCatalogImport: (id: string) =>
+    request<CatalogImportView>(
+      `/catalog/imports/${encodeURIComponent(id)}/reread`,
+      { method: "POST" },
+    ),
+  saveCatalogMapping: (id: string, mapping: Record<string, string>) =>
+    request<CatalogImportView>(
+      `/catalog/imports/${encodeURIComponent(id)}/mapping`,
+      { method: "PUT", body: { mapping } },
+    ),
+  // The voice is the operator's writing and the vocabulary is not theirs to
+  // widen, so only the voice is ever sent: the daemon ignores anything else
+  // that arrives here, and sending it anyway would suggest otherwise.
+  saveCatalogBrand: (id: string, voice: CatalogVoice) =>
+    request<{ brand: CatalogBrandKit }>(
+      `/catalog/imports/${encodeURIComponent(id)}/brand`,
+      { method: "PUT", body: { voice } },
+    ),
+  scanCatalogSite: (id: string, url: string) =>
+    request<{ site: CatalogSiteScan }>(
+      `/catalog/imports/${encodeURIComponent(id)}/site/scan`,
+      { method: "POST", body: { url } },
+    ),
+  rescanCatalogBrand: (id: string) =>
+    request<{ brand: CatalogBrandKit }>(
+      `/catalog/imports/${encodeURIComponent(id)}/brand/rescan`,
+      { method: "POST" },
+    ),
+  // The filter parameters exist and the daemon honours them, but the Katalog
+  // screen loads an import unfiltered and narrows in memory (`filterProducts`).
+  // An import is one bounded file, and the rail has to count the catalog rather
+  // than count the filter already applied to it — ask for the approved products
+  // and every other row of the rail reads zero. The unbounded lead ledger is
+  // the case that genuinely needs the daemon to filter (task-64).
+  catalogProducts: (opts: {
+    importID: string;
+    status?: string;
+    category?: string;
+    limit?: number;
+    offset?: number;
+    lang?: string;
+  }) => {
+    const q = new URLSearchParams({ import_id: opts.importID });
+    if (opts.status) q.set("status", opts.status);
+    if (opts.category) q.set("category", opts.category);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.offset) q.set("offset", String(opts.offset));
+    // Absent means the file's own language, which is what every request made
+    // before languages existed asked for.
+    if (opts.lang) q.set("lang", opts.lang);
+    return request<{ products: CatalogProduct[]; version: string }>(
+      "/catalog/products?" + q.toString(),
+    );
+  },
+  catalogProduct: (id: string, lang = "") => {
+    const q = lang ? "?lang=" + encodeURIComponent(lang) : "";
+    return request<{ product: CatalogProduct; version: string }>(
+      `/catalog/products/${encodeURIComponent(id)}${q}`,
+    );
+  },
+  // No version is sent. It is a cache key, the daemon owns it, and a client
+  // that could name one could serve itself copy written under a brand voice
+  // that no longer exists — the same rule the outreach screen follows.
+  saveCatalogDraft: (
+    id: string,
+    content: CatalogContent,
+    fields: CatalogField[],
+    lang = "",
+  ) => {
+    const q = lang ? "?lang=" + encodeURIComponent(lang) : "";
+    return request<{ draft: CatalogDraft; version: string }>(
+      `/catalog/products/${encodeURIComponent(id)}/draft${q}`,
+      { method: "PUT", body: { content, fields } },
+    );
+  },
+  // A decision is per language, because an export is: approving the Turkish
+  // copy must not ship an Arabic one nobody read, and approving the Arabic must
+  // not re-open the Turkish.
+  setCatalogStatus: (id: string, status: CatalogStatus, reason = "", lang = "") => {
+    const q = lang ? "?lang=" + encodeURIComponent(lang) : "";
+    return request<{ status: string }>(
+      `/catalog/products/${encodeURIComponent(id)}/status${q}`,
+      { method: "POST", body: { status, reason } },
+    );
+  },
+  // An explicit list of ids, which is what the route requires and the reason it
+  // does: a filter would let one short string spend a catalog's worth of
+  // searches, crawls and model calls. The work becomes a board card — a pass
+  // over two hundred products answers "tell me when it is done".
+  // One card is one language. It is the unit an operator watches, parks and
+  // resumes, and folding two languages into one makes "40/200 written"
+  // ambiguous and doubles what a rate-limit park loses.
+  // The model is part of the card, not of the moment it was queued. A pass
+  // that read the settings file at every call could be moved mid-pass by a
+  // settings change, and the model an operator picked for one catalogue would
+  // not survive the card being re-run next week. Empty still means "whatever
+  // the daemon's own choice is when it runs".
+  rewriteCatalog: (
+    importID: string,
+    productIDs: string[],
+    fields?: CatalogField[],
+    lang = "",
+    selection?: { provider: string; model: string },
+  ) =>
+    request<{ run_id: string; products: number }>("/catalog/rewrite", {
+      method: "POST",
+      body: {
+        import_id: importID,
+        product_ids: productIDs,
+        fields,
+        lang,
+        provider: selection?.provider || "",
+        model: selection?.model || "",
+      },
+    }),
+  // Every generated draft, across every import. It is a different question
+  // from `catalogProducts`, which is always about one file — and it is the only
+  // place filtering by platform profile means anything.
+  //
+  // `lang` absent asks for every language here and for the file's own language
+  // everywhere else. That asymmetry is the daemon's and it is deliberate: "" is
+  // the source language and a real answer, so there is no value left over to
+  // spell "unset" with.
+  catalogOutputs: (filter: {
+    lang?: string;
+    dialect?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const q = new URLSearchParams();
+    if (filter.lang !== undefined) q.set("lang", filter.lang);
+    if (filter.dialect) q.set("dialect", filter.dialect);
+    if (filter.status) q.set("status", filter.status);
+    if (filter.limit) q.set("limit", String(filter.limit));
+    if (filter.offset) q.set("offset", String(filter.offset));
+    const suffix = q.toString() ? `?${q}` : "";
+    return request<CatalogOutputPage>(`/catalog/outputs${suffix}`);
+  },
+  exportCatalog: (id: string) =>
+    request<CatalogExportResult>(
+      `/catalog/imports/${encodeURIComponent(id)}/export`,
+      { method: "POST" },
     ),
 };
 

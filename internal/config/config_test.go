@@ -306,3 +306,46 @@ func TestLLMProviders_DefaultsAreOfferable(t *testing.T) {
 		}
 	}
 }
+
+// A discovered provider's models are files on the machine, so there is no list
+// to validate against and the check is on the shape of the name instead.
+func TestHasLLMModel_DiscoveredProviderTakesAnyWellFormedTag(t *testing.T) {
+	c := config.Load()
+
+	for _, model := range []string{"qwen3:8b", "gpt-oss:20b", "nomic-embed-text:latest"} {
+		if !c.HasLLMModel("ollama", model) {
+			t.Errorf("gerçek bir ollama etiketi reddedildi: %q", model)
+		}
+	}
+	// Empty is "that provider's default", which is valid everywhere.
+	if !c.HasLLMModel("ollama", "") {
+		t.Error("boş model reddedildi")
+	}
+
+	// The shape check is what stands in for the list. Nothing that could be
+	// read as a flag, and nothing carrying a separator a name would not have.
+	for _, bad := range []string{
+		"--version",
+		"-m",
+		"qwen3 8b",
+		"qwen3;rm -rf /",
+		"qwen3\n8b",
+		"$(whoami)",
+	} {
+		if c.HasLLMModel("ollama", bad) {
+			t.Errorf("kabul edilmemesi gereken model kabul edildi: %q", bad)
+		}
+	}
+}
+
+// The exemption is narrow: a listed provider still has to name a model that is
+// actually in its list.
+func TestHasLLMModel_ListedProviderIsUnchanged(t *testing.T) {
+	c := config.Load()
+	if c.HasLLMModel("claude", "qwen3:8b") {
+		t.Error("listeli sağlayıcı listede olmayan bir modeli kabul etti")
+	}
+	if !c.HasLLMModel("claude", "claude-sonnet-5") {
+		t.Error("listeli sağlayıcı kendi modelini reddetti")
+	}
+}

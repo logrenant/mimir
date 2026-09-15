@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, DaemonError, type Diagnostics } from "../lib/daemon";
+import { api, DaemonError, type Diagnostics, type DiagnosticsDependency } from "../lib/daemon";
 import { dependencyRows, hasBlockingFault } from "../lib/dashboard";
+import { Pulse } from "./ui/pulse";
 
 /**
  * What the daemon says about the things it depends on.
@@ -40,6 +41,51 @@ export function useDiagnostics(auto = false) {
   return { diagnostics, error, refresh };
 }
 
+/**
+ * One dependency, said the same way everywhere.
+ *
+ * The `/diagnostics` payload was being drawn in three places — this strip, the
+ * overlay in `Dashboard`, and the gate in `Connection` — in two different
+ * styling systems and, worse, with two different vocabularies: this one said
+ * `ok / opsiyonel / hata` while the other two said `ok / optional, down /
+ * down`. The same daemon, the same field, two answers.
+ *
+ * One row, one vocabulary. The daemon's own `detail` is still printed verbatim
+ * underneath a fault, because it is already written for a human and already
+ * names the command that fixes it.
+ */
+export function DependencyRow({
+  name,
+  dep,
+}: {
+  name: string;
+  dep: Pick<DiagnosticsDependency, "ok" | "optional" | "detail">;
+}) {
+  const tone = dep.ok ? "ok" : dep.optional ? "muted" : "bad";
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <Pulse tone={tone} />
+        <span className="text-base text-text">{name}</span>
+        <div className="flex-1" />
+        <span className="font-mono text-xs text-muted/70">
+          {dep.ok ? "ok" : dep.optional ? "opsiyonel" : "hata"}
+        </span>
+      </div>
+      {!dep.ok && dep.detail && (
+        <p
+          className={
+            "mb-0.5 ml-4 font-mono text-xs leading-[1.55] break-words " +
+            (dep.optional ? "text-muted/70" : "text-bad/70")
+          }
+        >
+          {dep.detail}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function HealthStrip({
   diagnostics,
   error,
@@ -51,58 +97,29 @@ export function HealthStrip({
   const faulty = hasBlockingFault(rows);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-      {error && (
-        <p style={{ margin: 0, font: "400 11px/1.5 ui-monospace,Menlo,monospace", color: "#e5484d" }}>
-          {error}
-        </p>
-      )}
+    <div className="flex flex-col gap-2.5">
+      {error && <p className="font-mono text-xs leading-[1.5] text-bad">{error}</p>}
       {rows.length === 0 && !error && (
-        <p style={{ margin: 0, font: "400 11px/1.5 ui-sans-serif,system-ui", color: "#4f545e" }}>
-          sorgulanıyor…
-        </p>
+        <p className="text-xs leading-[1.5] text-muted/60">sorgulanıyor…</p>
       )}
       {rows.map((row) => (
-        <div key={row.name} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-            <span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                flexShrink: 0,
-                background: row.ok ? "#c6f04a" : row.optional ? "#8a9099" : "#e5484d",
-              }}
-            />
-            <span style={{ font: "450 11.5px/1 ui-sans-serif,system-ui", color: "#eef0f2" }}>
-              {row.name}
-            </span>
-            <div style={{ flex: 1 }} />
-            <span style={{ font: "400 10px/1 ui-monospace,Menlo,monospace", color: "#6b7079" }}>
-              {row.ok ? "ok" : row.optional ? "opsiyonel" : "hata"}
-            </span>
-          </div>
-          {/* The daemon's own message, verbatim: it is already written for a
-              human and already names the fix. */}
-          {!row.ok && row.detail && (
-            <p
-              style={{
-                margin: "0 0 2px 13px",
-                font: "400 10.5px/1.55 ui-monospace,Menlo,monospace",
-                color: row.optional ? "#6b7079" : "#e5a23d",
-                wordBreak: "break-word",
-              }}
-            >
-              {row.detail}
-            </p>
-          )}
-        </div>
+        <DependencyRow key={row.name} name={row.name} dep={row} />
       ))}
       {faulty && (
-        <p style={{ margin: "2px 0 0", font: "400 10.5px/1.5 ui-sans-serif,system-ui", color: "#6b7079" }}>
+        <p className="mt-0.5 text-xs leading-[1.5] text-muted/70">
           Komutu bu deponun kökünde çalıştırın; daemon'u yeniden başlatmak gerekmez.
         </p>
       )}
     </div>
+  );
+}
+
+/** The daemon's version line, shown under a dependency list. */
+export function DaemonFootnote({ diagnostics }: { diagnostics: Diagnostics }) {
+  return (
+    <p className="font-mono text-xs leading-[1.5] text-muted/60">
+      store {diagnostics.daemon.store} · {diagnostics.daemon.projects} proje · v
+      {diagnostics.daemon.version}
+    </p>
   );
 }

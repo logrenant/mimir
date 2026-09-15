@@ -19,6 +19,10 @@ type Registry struct {
 	mu     sync.RWMutex
 	tools  map[string]Tool
 	server *mcp.Server
+	// skills is nil until SetSkills is called. Nil is not "skills are off":
+	// a tool that declares one still fails closed, because a wiring bug must
+	// not read as a process where the mandate happens not to apply.
+	skills *skillGate
 }
 
 // newRegistry creates a new Registry.
@@ -27,6 +31,22 @@ func newRegistry(server *mcp.Server) *Registry {
 		tools:  make(map[string]Tool),
 		server: server,
 	}
+}
+
+// SetSkills gives the registry the source its skilled tools need. Called once
+// at wiring time, before any tool is registered.
+func (r *Registry) SetSkills(src SkillSource) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.skills = newSkillGate(src)
+}
+
+// skillGateRef reads the gate under the lock, so a registry configured on one
+// goroutine and dispatched on another is not a race.
+func (r *Registry) skillGateRef() *skillGate {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.skills
 }
 
 // Names returns the registered tool names, sorted.
@@ -107,7 +127,7 @@ func (r *Registry) Register(t Tool) error {
 			return errorResult(toolErr), nil
 		}
 
-		resText, err := invokeHandle(ctx, t, argsBytes)
+		resText, err := invokeHandle(ctx, t, argsBytes, r.skillGateRef())
 		if err != nil {
 			toolErr = err
 			return errorResult(err), nil
@@ -125,7 +145,7 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
-func invokeHandle(ctx context.Context, t Tool, args []byte) (res string, err error) {
+func invokeHandle(ctx context.Context, t Tool, args []byte, gate *skillGate) (res string, err error) {
 	logger := LoggerFrom(ctx)
 	defer func() {
 		if r := recover(); r != nil {
@@ -139,7 +159,7 @@ func invokeHandle(ctx context.Context, t Tool, args []byte) (res string, err err
 		return "", err
 	}
 
-	finalV, err := finalizeResponse(t, v)
+	finalV, err := finalizeWithSkills(t, v, gate)
 	if err != nil {
 		return "", err
 	}

@@ -64,8 +64,29 @@ type Store interface {
 	BrainNode(ctx context.Context, id string) (store.BrainNodeRow, bool, error)
 	BrainNodesByIDs(ctx context.Context, ids []string) ([]store.BrainNodeRow, error)
 	SearchBrainNodes(ctx context.Context, projectPath, query string, limit int) ([]store.BrainNodeRow, error)
+
+	// BrainVocabulary is the honesty check behind Query's expansion: which of
+	// these words does the index actually hold. It is on this interface rather
+	// than derived from SearchBrainNodes because FTS5 says that a row matched
+	// and never which word matched it — the caller cannot work it out from the
+	// rows, and the version that tried was wrong. See traverse.go#expand.
+	BrainVocabulary(ctx context.Context, projectPath string, words []string) ([]string, error)
 	UpsertBrainEdges(ctx context.Context, edges []store.BrainEdgeRow) error
 	BrainNeighbors(ctx context.Context, id string, limit int) ([]store.BrainEdgeRow, error)
+
+	// The direction-preserving reads. BrainNeighbors normalises an edge so the
+	// node asked about is always Src, which is right for drawing the graph and
+	// wrong for asking it a question: "who calls this" needs the direction the
+	// parser wrote down. See traverse.go.
+	BrainInboundEdges(ctx context.Context, dst string, kinds []string, limit int) ([]store.BrainEdgeRow, error)
+	BrainGraphIDs(ctx context.Context, projectPath string, limit int, kinds []string) ([]store.BrainNodeDegree, error)
+
+	// The two writes that remove rather than add — see move.go. They are on
+	// this interface rather than behind a type assertion because a store that
+	// cannot forget a project is a store this package cannot be honest about:
+	// the screen would offer a button that silently did nothing.
+	MoveBrainProject(ctx context.Context, from, to string, identity store.NodeIdentity) (store.MoveResult, error)
+	ForgetBrainProject(ctx context.Context, path string) (int, error)
 }
 
 // Completer is the model call this package makes. Satisfied by *llm.Router.
@@ -116,11 +137,29 @@ const (
 	KindFile     = "file"
 	KindCommit   = "commit"
 	KindDecision = "decision"
+	// KindSymbol is the one kind no model produces — see structural.go.
+	KindSymbol = "symbol"
 )
+
+// SemanticKinds is every kind a model produced — which is every kind except
+// the structural one. It is what a picture of the knowledge base means when
+// nobody has asked for anything more specific: symbols outnumber and out-connect
+// everything else, so including them by default would replace the graph rather
+// than add to it.
+func SemanticKinds() []string {
+	return []string{KindNote, KindResearch, KindSession, KindRepo, KindFile, KindCommit, KindDecision}
+}
+
+// IsKind reports whether this is a kind the system produces. The set is closed
+// so a typo in a query string cannot ask for a category nothing will ever hold.
+func IsKind(kind string) bool {
+	_, ok := validKinds[kind]
+	return ok
+}
 
 var validKinds = map[string]struct{}{
 	KindNote: {}, KindResearch: {}, KindSession: {}, KindRepo: {},
-	KindFile: {}, KindCommit: {}, KindDecision: {},
+	KindFile: {}, KindCommit: {}, KindDecision: {}, KindSymbol: {},
 }
 
 // NodeView is what leaves this package. It is not store.BrainNodeRow: the body

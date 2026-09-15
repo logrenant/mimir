@@ -1,0 +1,5 @@
+Handle,Title,Body (HTML),Vendor,Type,Tags,Published,Option1 Name,Option1 Value,Variant SKU,Variant Price,SEO Title,SEO Description
+pamuklu-tisort,Pamuklu Tişört,"<p>Yumuşak <strong>%100 pamuk</strong> tişört.</p><ul><li>Makinede yıkanabilir</li><li>Ütü gerektirmez</li></ul>",Marka,Tişört,"yaz,pamuk",TRUE,Beden,S,TS-S,299.90,Pamuklu Tişört | Marka,"Yumuşak, nefes alan pamuklu tişört."
+pamuklu-tisort,,,,,,,Beden,M,TS-M,299.90,,
+pamuklu-tisort,,,,,,,Beden,L,TS-L,299.90,,
+deri-canta,Deri Çanta,"<p>El yapımı <em>hakiki deri</em> çanta.</p>",Marka,Çanta,deri,TRUE,Renk,Siyah,CN-S,1299.00,Deri Çanta | Marka,El yapımı hakiki deri çanta.

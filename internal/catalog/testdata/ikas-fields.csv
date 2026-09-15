@@ -1,0 +1,3 @@
+﻿"Ürün Grup ID","İsim","Resim:Ana Resim","Html:Detay","Html:Detay-AR","Ürün:Kombin Ürünler","Html:P","Html:R","Doğru-Yanlış:Varyantı Listeden Seç"
+"g-krem","Nemlendirici Krem","https://cdn.example/krem.jpg","<h3>Özellikler</h3><p>Kuru ciltler için yoğun nemlendirici.</p>","<h3>المواصفات</h3><p>مرطب مكثف للبشرة الجافة.</p>","","","","false"
+"g-sampuan","Onarıcı Şampuan","https://cdn.example/sampuan.jpg","<h3>Özellikler</h3><p>Yıpranmış saçlar için.</p>","","","","","false"

@@ -17,15 +17,15 @@ const leadColumns = `place_id, name, address, latitude, longitude, rating,
 // has no TTL and is never deleted by a reader: it is a record of what was
 // found, not a saving on what it cost to find.
 type LeadRow struct {
-	PlaceID        string
-	Name           string
-	Address        string
-	Latitude       float64
-	Longitude      float64
-	Rating         float64
-	ReviewCount    int
-	Website        string
-	Phone          string
+	PlaceID     string
+	Name        string
+	Address     string
+	Latitude    float64
+	Longitude   float64
+	Rating      float64
+	ReviewCount int
+	Website     string
+	Phone       string
 	// Email is the address stage 1b found on the company's own site — where an
 	// email draft is actually sent. Empty is the normal state.
 	Email          string

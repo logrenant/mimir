@@ -15,14 +15,7 @@ import type { Run, RunEvent, RunStatus } from "./daemon";
  */
 
 export type LineKind =
-  | "meta"
-  | "text"
-  | "reasoning"
-  | "tool"
-  | "result"
-  | "stderr"
-  | "ok"
-  | "bad";
+  "meta" | "text" | "reasoning" | "tool" | "result" | "stderr" | "ok" | "bad";
 
 export type TerminalLine = {
   seq: number;
@@ -80,7 +73,15 @@ function describeArgs(args: unknown): string {
   const record = args as Record<string, unknown>;
   // The one field that says what a call is actually doing, in the order a
   // reader would look for it.
-  for (const key of ["command", "file_path", "path", "pattern", "query", "url", "description"]) {
+  for (const key of [
+    "command",
+    "file_path",
+    "path",
+    "pattern",
+    "query",
+    "url",
+    "description",
+  ]) {
     const value = record[key];
     if (typeof value === "string" && value.trim()) return truncate(value);
   }
@@ -94,6 +95,30 @@ function describeArgs(args: unknown): string {
  * the previous line of the same kind rather than starting a new one — see
  * appendEvent.
  */
+/**
+ * What a stage is called on screen.
+ *
+ * A sub-agent that is not a `claude` session emits its pipeline stages through
+ * the same tool.call / tool.result pair — a lead-gen card has a terminal, it
+ * just shows stages instead of tool calls. The names it sends are the ones the
+ * Go code uses, and `region_search` is not what an operator calls it.
+ *
+ * Anything unlisted passes through unchanged: this is a translation table for
+ * the handful of stages we ship, not a gate on what may appear.
+ */
+const STAGE_LABELS: Record<string, string> = {
+  region_search: "Bölge araması",
+  categorize: "Kategorize",
+  contacts: "İletişim",
+  gap_analysis: "Gap analizi",
+  outreach: "Taslaklar",
+};
+
+export function stageLabel(name?: string): string {
+  if (!name) return "tool";
+  return STAGE_LABELS[name] ?? name;
+}
+
 export function formatEventLine(event: RunEvent): TerminalLine | null {
   switch (event.kind) {
     case "run.started":
@@ -109,17 +134,18 @@ export function formatEventLine(event: RunEvent): TerminalLine | null {
     case "tool.call": {
       const detail = describeArgs(event.args);
       const risk = event.risk ? ` [${event.risk}]` : "";
+      const name = stageLabel(event.tool_name);
       return {
         seq: event.seq,
         kind: "tool",
-        text: `● ${event.tool_name ?? "tool"}${risk}${detail ? ` ${detail}` : ""}`,
+        text: `● ${name}${risk}${detail ? ` ${detail}` : ""}`,
       };
     }
     case "tool.result":
       return {
         seq: event.seq,
         kind: "result",
-        text: `${event.ok === false ? "✗" : "→"} ${event.tool_name ?? "tool"} ${truncate(event.output ?? "", 200)}`,
+        text: `${event.ok === false ? "✗" : "→"} ${stageLabel(event.tool_name)} ${truncate(event.output ?? "", 200)}`,
       };
     case "stderr":
       return { seq: event.seq, kind: "stderr", text: `! ${event.text ?? ""}` };
@@ -138,7 +164,11 @@ export function formatEventLine(event: RunEvent): TerminalLine | null {
     case "run.stopped":
       return { seq: event.seq, kind: "bad", text: "✗ stopped by the operator" };
     case "run.failed":
-      return { seq: event.seq, kind: "bad", text: `✗ failed · ${event.error ?? "no reason given"}` };
+      return {
+        seq: event.seq,
+        kind: "bad",
+        text: `✗ failed · ${event.error ?? "no reason given"}`,
+      };
     default:
       return null;
   }
@@ -190,7 +220,10 @@ export function appendEvent(session: Session, event: RunEvent): Session {
 
   if (isDelta && last && last.kind === line.kind) {
     // A delta is the new suffix of the same message, not a new line.
-    lines = [...lines.slice(0, -1), { ...last, seq: line.seq, text: last.text + line.text }];
+    lines = [
+      ...lines.slice(0, -1),
+      { ...last, seq: line.seq, text: last.text + line.text },
+    ];
   } else {
     lines = [...lines, line];
   }
@@ -246,7 +279,11 @@ export function openSession(sessions: SessionMap, run: Run): SessionMap {
     const open = sessions[run.id];
     return {
       ...sessions,
-      [run.id]: { ...open, status: run.status, sessionID: run.session_id || open.sessionID },
+      [run.id]: {
+        ...open,
+        status: run.status,
+        sessionID: run.session_id || open.sessionID,
+      },
     };
   }
   return { ...sessions, [run.id]: newSession(run) };
@@ -260,7 +297,8 @@ export function closeSession(sessions: SessionMap, runID: string): SessionMap {
 
 /** Newest first, so the tab bar puts what just started nearest to hand. */
 export function orderedSessions(sessions: SessionMap): Session[] {
-  const live = (s: Session) => (s.status === "running" || s.status === "queued" ? 0 : 1);
+  const live = (s: Session) =>
+    s.status === "running" || s.status === "queued" ? 0 : 1;
   return Object.values(sessions).sort((a, b) => live(a) - live(b));
 }
 
@@ -294,9 +332,14 @@ export function recentRuns(runs: Run[], open: SessionMap, limit = 40): Run[] {
  * poll would make the close button do nothing, which is worse than missing a
  * terminal.
  */
-export function runsToAdopt(runs: Run[], open: SessionMap, dismissed: Set<string>): Run[] {
+export function runsToAdopt(
+  runs: Run[],
+  open: SessionMap,
+  dismissed: Set<string>,
+): Run[] {
   return runs.filter(
-    (run) => run.status === "running" && !open[run.id] && !dismissed.has(run.id),
+    (run) =>
+      run.status === "running" && !open[run.id] && !dismissed.has(run.id),
   );
 }
 
@@ -308,12 +351,16 @@ export function runsToAdopt(runs: Run[], open: SessionMap, dismissed: Set<string
  */
 export function staleDismissals(runs: Run[], dismissed: Set<string>): string[] {
   const live = new Set(
-    runs.filter((r) => r.status === "running" || r.status === "queued").map((r) => r.id),
+    runs
+      .filter((r) => r.status === "running" || r.status === "queued")
+      .map((r) => r.id),
   );
   return [...dismissed].filter((id) => !live.has(id));
 }
 
 /** The last n lines, for a panel too small to show a scrollback. */
 export function tailLines(session: Session, n: number): TerminalLine[] {
-  return n >= session.lines.length ? session.lines : session.lines.slice(session.lines.length - n);
+  return n >= session.lines.length
+    ? session.lines
+    : session.lines.slice(session.lines.length - n);
 }

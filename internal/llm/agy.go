@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,6 +57,14 @@ func NewAgy(cfg config.Config) *Agy {
 
 func (a *Agy) Name() string  { return "agy" }
 func (a *Agy) Model() string { return a.model }
+
+// Capabilities: `agy` takes `--json-schema` and returns `structured_output`,
+// which is why it carries the distil tier. It is not agentic here — this
+// package runs it `--sandbox`, in an empty scratch dir, with `MIMIR_NESTED=1`,
+// precisely so it has no tool surface.
+func (a *Agy) Capabilities() Capabilities {
+	return Capabilities{StructuredOutput: true, Agentic: false}
+}
 
 // WithModel returns the same provider bound to a different model.
 //
@@ -157,45 +164,27 @@ func (a *Agy) Complete(ctx context.Context, r Request) (Response, error) {
 		content = r.System + "\n\n---\n\n" + r.User
 	}
 
-	var stdout, stderr bytes.Buffer
-	var lastErr error
-
-	for attempt := 1; attempt <= 2; attempt++ {
-		stdout.Reset()
-		stderr.Reset()
-
-		// The subprocess gets a little longer than its own --print-timeout so
-		// that a timeout surfaces as agy's own message rather than a killed
-		// process with an empty stderr.
-		runCtx, cancel := context.WithTimeout(ctx, a.timeout+15*time.Second)
-		cmd := exec.CommandContext(runCtx, a.cliPath, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "MIMIR_NESTED=1")
-		cmd.Stdin = strings.NewReader(content)
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		lastErr = cmd.Run()
-		cancel()
-
-		if lastErr == nil {
-			break
-		}
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return Response{}, ctx.Err()
-		}
-		if attempt < 2 {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
+	// The subprocess gets a little longer than its own --print-timeout so that
+	// a timeout surfaces as agy's own message rather than a killed process with
+	// an empty stderr.
+	stdout, stderr, lastErr := runCLI(ctx, cliRun{
+		path:    a.cliPath,
+		args:    args,
+		env:     append(os.Environ(), "MIMIR_NESTED=1"),
+		dir:     dir,
+		stdin:   content,
+		timeout: a.timeout + 15*time.Second,
+	})
+	if errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+		return Response{}, lastErr
 	}
 
 	if lastErr != nil {
-		return Response{}, a.unavailable(fmt.Errorf("%w: %s", lastErr, strings.TrimSpace(stderr.String())))
+		return Response{}, a.unavailable(fmt.Errorf("%w: %s", lastErr, strings.TrimSpace(string(stderr))))
 	}
 
 	var raw agyResult
-	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(stdout, &raw); err != nil {
 		return Response{}, fmt.Errorf("failed to parse agy CLI JSON output: %w", err)
 	}
 	if !strings.EqualFold(raw.Status, "SUCCESS") {

@@ -42,6 +42,20 @@ order to act.
   value `create` stamps on a request that named none, and the offer list is
   checked there so an unknown model is a 400 rather than a run that dies three
   seconds in.
+- **The offer list is the *claude* lane's, not every lane's** (`resolveModel`).
+  `cfg.CodingModels` is about `claude --model`, and a worker-lane card never
+  runs that binary — it spends the daemon's own provider/model through
+  `internal/llm`. Holding such a card to that list forced `claude-sonnet-5`
+  into the column, so every screen reported a model the card would not spend
+  and the board's model control edited a field nothing read. The column is left
+  as the route wrote it, empty meaning "whatever the daemon routes to when it
+  starts", and the pair is validated where the provider it belongs to is known
+  — the route that writes the card's params, and the executor's own `Prepare`.
+- **An executor may name the model the run announces** (`ModelNamer`). Optional,
+  because for a claude session the row's column *is* the answer. A worker-lane
+  card's is not: it is the card's own pair or the operator's saved one, resolved
+  when the pass starts, and `run.started` used to name the coding model instead
+  — the terminal said `claude-sonnet-5` for a pass spending `qwen3:8b`.
 - **The parser is pure.** `parseLine` does no I/O so the whole translation is
   testable without spending a token. Keep it that way: if you need the clock or
   the filesystem in there, pass the value in instead.
@@ -68,6 +82,22 @@ order to act.
   (`ratelimit.go`). Failing it instead would put a card on the board that no
   retry can fix and no operator can act on — and would throw away the session
   that makes the resumed attempt a continuation.
+- **A pause is keyed by what actually ran out, and there are two of those
+  (task-89).** The account lane holds one pause per credential slot, because
+  that is what two runs sharing a login share. A worker-lane job holds no slot —
+  but it is not free of a budget: it spends the daemon's own model identity
+  through `internal/llm`, and there is one of those for the whole process. So
+  there is one pause for every worker job, under `WorkerSlot`. `slotFor` derives
+  the key from the row, which is what keeps the account lane's behaviour
+  bit-for-bit what it was.
+- **`Outcome.ParkUntil` is read, and only an executor may set it.** The seam
+  declared the field for a release before anything honoured it, and an executor
+  that filled it in was silently failed instead — the comment on the field even
+  said the park path could not be reached from the worker lane, which stopped
+  being true the moment a worker job started spending a model budget. A pause is
+  now a pause on both lanes. `runExecutor` refuses a `ParkUntil` already in the
+  past: arming a wake-up for a moment that has gone would hand the operator a
+  card promising to resume at a time that has passed.
 - **The pause ends by itself, on one armed wake-up.** `time.AfterFunc` per
   held slot, calling the same `pump` every other release calls. Not a poll and
   not a loop: the reset time is a fact the CLI reported, so waiting for it is

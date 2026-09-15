@@ -1,40 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { canStart, defaultProject, finishedNotification, isDismissKey, isSubmitKey } from "./quickTask";
+import { finishedNotification, isDismissKey, isSubmitKey } from "./quickTask";
 import { emptyRun, reduceRun } from "./runStream";
-import type { Project } from "./daemon";
 import type { RunEvent } from "./daemon";
-
-function project(id: string): Project {
-  return {
-    id,
-    path: `/tmp/${id}`,
-    display_name: id,
-    created_at: "2026-09-01T00:00:00Z",
-    last_used_at: "2026-09-01T00:00:00Z",
-  };
-}
-
-describe("defaultProject", () => {
-  test("keeps a hand-picked project that still exists", () => {
-    expect(defaultProject([project("a"), project("b")], "b", true)).toBe("b");
-  });
-
-  // The daemon orders by last_used_at, so the head is the folder the operator
-  // was last working in. A window that lives for the app's whole lifetime must
-  // follow that, or it goes on offering a folder from days ago.
-  test("otherwise follows the most recently used project", () => {
-    expect(defaultProject([project("a"), project("b")], null)).toBe("a");
-    expect(defaultProject([project("a"), project("b")], "b")).toBe("a");
-  });
-
-  test("drops even a hand-picked selection the daemon no longer knows about", () => {
-    expect(defaultProject([project("a")], "deleted", true)).toBe("a");
-  });
-
-  test("is null when nothing is registered — a run cannot be scoped", () => {
-    expect(defaultProject([], "a", true)).toBeNull();
-  });
-});
 
 describe("keys", () => {
   test("Enter sends, Shift+Enter does not", () => {
@@ -46,15 +13,6 @@ describe("keys", () => {
   test("Esc dismisses", () => {
     expect(isDismissKey("Escape")).toBe(true);
     expect(isDismissKey("Enter")).toBe(false);
-  });
-});
-
-describe("canStart", () => {
-  test("needs a project, a prompt, and no run already in flight", () => {
-    expect(canStart("a", "do the thing", false)).toBe(true);
-    expect(canStart(null, "do the thing", false)).toBe(false);
-    expect(canStart("a", "   ", false)).toBe(false);
-    expect(canStart("a", "do the thing", true)).toBe(false);
   });
 });
 

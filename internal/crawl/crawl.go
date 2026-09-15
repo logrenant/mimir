@@ -24,10 +24,10 @@ const ImageTag = "unclecode/crawl4ai:0.8.9"
 
 // Page holds the returned data from a crawl.
 type Page struct {
-	URL         string
-	Title       string
-	Markdown    string
-	RawHTML string // Crawl4AI's raw "html" field (fallback "cleaned_html").
+	URL      string
+	Title    string
+	Markdown string
+	RawHTML  string // Crawl4AI's raw "html" field (fallback "cleaned_html").
 	// Needed to extract structured data (JSON-LD, embedded SPA JSON, Open
 	// Graph meta tags) that both Markdown conversion AND Crawl4AI's own
 	// "cleaned_html" strip out — verified empirically against a live
@@ -47,6 +47,16 @@ type FetchOptions struct {
 	// PageTimeout overrides Crawl4AI's internal page-render timeout for slow
 	// SPA targets. Zero means "use Crawl4AI's own default".
 	PageTimeout time.Duration
+	// JSCode runs in the page after it loads, before the HTML is returned.
+	//
+	// Crawl4AI does not hand back what the script evaluates to, so a caller
+	// that wants an answer has the script write it into the document — an
+	// attribute on the root element survives into the returned HTML. That is
+	// how `internal/catalog`'s site scan reads a storefront's *computed*
+	// styles: the browser resolves the cascade, which no amount of parsing the
+	// stylesheets by hand would do correctly. Verified against the pinned
+	// image, not assumed.
+	JSCode string
 }
 
 // Client interacts with the Crawl4AI container.
@@ -93,6 +103,7 @@ func (c *Client) Health(ctx context.Context) error {
 type crawlerConfig struct {
 	WaitFor     string `json:"wait_for,omitempty"`
 	PageTimeout int    `json:"page_timeout,omitempty"` // milliseconds
+	JSCode      string `json:"js_code,omitempty"`
 }
 
 type crawlRequest struct {
@@ -132,8 +143,8 @@ func (c *Client) MarkdownWithOptions(ctx context.Context, targetURL string, opts
 	}
 
 	payload := crawlRequest{URLs: []string{targetURL}}
-	if opts.WaitForSelector != "" || opts.PageTimeout > 0 {
-		cc := &crawlerConfig{WaitFor: opts.WaitForSelector}
+	if opts.WaitForSelector != "" || opts.PageTimeout > 0 || opts.JSCode != "" {
+		cc := &crawlerConfig{WaitFor: opts.WaitForSelector, JSCode: opts.JSCode}
 		if opts.PageTimeout > 0 {
 			cc.PageTimeout = int(opts.PageTimeout / time.Millisecond)
 		}
@@ -191,11 +202,11 @@ func (c *Client) MarkdownWithOptions(ctx context.Context, targetURL string, opts
 
 	var raw struct {
 		Results []struct {
-			URL          string          `json:"url"`
-			Success      bool            `json:"success"`
-			ErrorMessage string          `json:"error_message"`
-			CleanedHTML  string          `json:"cleaned_html"`
-			HTML         string          `json:"html"`
+			URL          string `json:"url"`
+			Success      bool   `json:"success"`
+			ErrorMessage string `json:"error_message"`
+			CleanedHTML  string `json:"cleaned_html"`
+			HTML         string `json:"html"`
 			Metadata     struct {
 				Title string `json:"title"`
 			} `json:"metadata"`

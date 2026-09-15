@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 /**
  * The brand marks, inline.
  *
@@ -11,11 +13,20 @@
  * second colour inside the mark.
  */
 
-export function Wordmark({ className, title = "Mimir" }: { className?: string; title?: string }) {
+export function Wordmark({
+  className,
+  style,
+  title = "Mimir",
+}: {
+  className?: string;
+  style?: CSSProperties;
+  title?: string;
+}) {
   return (
     <svg
       viewBox="0 0 509 175"
       className={className}
+      style={style}
       role="img"
       aria-label={title}
       fill="currentColor"
@@ -26,9 +37,24 @@ export function Wordmark({ className, title = "Mimir" }: { className?: string; t
   );
 }
 
-export function Mark({ className, title = "Mimir" }: { className?: string; title?: string }) {
+export function Mark({
+  className,
+  style,
+  title = "Mimir",
+}: {
+  className?: string;
+  style?: CSSProperties;
+  title?: string;
+}) {
   return (
-    <svg viewBox="0 0 104 99" className={className} role="img" aria-label={title} fill="currentColor">
+    <svg
+      viewBox="0 0 104 99"
+      className={className}
+      style={style}
+      role="img"
+      aria-label={title}
+      fill="currentColor"
+    >
       <path d="M30.0137 98.7852L13.8252 86.9688L37.9307 55.8916L0 45.0205L6.2627 25.9961L43.248 39.4668L41.8301 0H61.918L60.5 39.4668L97.4854 25.9961L103.748 45.0205L65.8174 55.8916L90.041 86.9688L73.8525 98.7852L51.7559 65.8174L30.0137 98.7852Z" />
     </svg>
   );

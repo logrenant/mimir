@@ -12,9 +12,13 @@ import (
 
 	"github.com/logrenant/mimir/internal/account"
 	"github.com/logrenant/mimir/internal/brain"
+	"github.com/logrenant/mimir/internal/catalog"
 	"github.com/logrenant/mimir/internal/coderunner"
 	"github.com/logrenant/mimir/internal/config"
+	"github.com/logrenant/mimir/internal/connections"
+	"github.com/logrenant/mimir/internal/leadgen"
 	"github.com/logrenant/mimir/internal/project"
+	"github.com/logrenant/mimir/internal/skills"
 )
 
 // Error codes. Wire strings — the desktop app switches on them.
@@ -25,6 +29,9 @@ const (
 	codeNotFound     = "not_found"
 	codeConflict     = "conflict"
 	codeInternal     = "internal"
+	// codeUnavailable is "the server cannot do this", as opposed to "your
+	// request was wrong". A provider whose adapter is not written yet is this.
+	codeUnavailable = "unavailable"
 )
 
 type errorEnvelope struct {
@@ -83,6 +90,40 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, coderunner.ErrClaudeUnavailable):
 		// Actionable and the operator's to fix (SD-6), so it is worth echoing.
 		writeError(w, http.StatusServiceUnavailable, codeInternal, err.Error())
+	case errors.Is(err, leadgen.ErrBusy):
+		// Not a failure and not the operator's mistake: every permit is spent
+		// and the work behind them is somebody else's server. 429 says "ask
+		// again", which is the only useful answer.
+		writeError(w, http.StatusTooManyRequests, codeConflict, err.Error())
+	case errors.Is(err, catalog.ErrUnknownImport), errors.Is(err, catalog.ErrUnknownProduct):
+		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
+	case errors.Is(err, catalog.ErrNotWritable), errors.Is(err, catalog.ErrTooManyProducts),
+		errors.Is(err, catalog.ErrNotCSV), errors.Is(err, catalog.ErrMappingIncomplete),
+		errors.Is(err, catalog.ErrSiteRefused):
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
+	case errors.Is(err, connections.ErrComingSoon), errors.Is(err, connections.ErrBuiltin):
+		// Not the caller's mistake and not a state they can change: the
+		// adapter is not written. 501 says the server, not the request.
+		writeError(w, http.StatusNotImplemented, codeUnavailable, err.Error())
+	case errors.Is(err, connections.ErrUnknown):
+		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
+	case errors.Is(err, catalog.ErrSiteUnreadable):
+		// The shop answered and said nothing this can paint from. Not the
+		// request's fault and not ours: 502 says the upstream, and the message
+		// names which page was read.
+		writeError(w, http.StatusBadGateway, codeUnavailable, err.Error())
+	case errors.Is(err, catalog.ErrDraftLocked):
+		// Nothing is wrong with the request: a person has already written this
+		// product's copy by hand. 409 says the state is what refused, and the
+		// message names it — where a 500 would blame us and say nothing.
+		writeError(w, http.StatusConflict, codeConflict, err.Error())
+	case errors.Is(err, skills.ErrUnknownSkill):
+		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
+	case errors.Is(err, coderunner.ErrSkillUnavailable):
+		// The card cannot start, and the reason is a file the operator owns:
+		// 409 says the state is wrong rather than the request, which is what
+		// they have to go and fix.
+		writeError(w, http.StatusConflict, codeConflict, err.Error())
 	case errors.Is(err, brain.ErrNodeNotFound), errors.Is(err, errUnknownProject):
 		writeError(w, http.StatusNotFound, codeNotFound, err.Error())
 	case errors.Is(err, errProjectIsAnID), errors.Is(err, errBadLimit), errors.Is(err, errBadSeq):
@@ -195,6 +236,12 @@ func (s *Server) requireToken(next http.Handler) http.Handler {
 var bodyLimits = map[string]func(config.Config) int64{
 	"POST /coding-tasks/attachments": func(c config.Config) int64 {
 		return c.CodingAttachmentMaxBytes
+	},
+	// A product catalog is a document, not a prompt. It is the second and last
+	// route here whose payload is measured in megabytes, and it says so with
+	// its own constant rather than by relaxing the cap for every route.
+	"POST /catalog/imports": func(c config.Config) int64 {
+		return c.CatalogCSVMaxBytes
 	},
 }
 

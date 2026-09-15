@@ -32,9 +32,11 @@ The single source of every operational value. Enforces **SD-1**.
 
   `ClaudeSessionDir` has no override at all. It is Mimir's own credential slot,
   derived beside the store like `AttachmentDir` — the CLI hashes the path into
-  a keychain entry name, so the path *is* the identity, and a knob here would
-  let a misconfigured launch sign the operator's own terminal slot out when the
-  app quits.
+  a keychain entry name, so the path *is* the identity. Two things ride on
+  that: a knob here would let a misconfigured launch sign the operator's own
+  terminal slot out on "çıkış yap", and a path that moved between launches
+  would lose the login the operator made once, which is the whole reason the
+  account now survives a quit.
 
   Note the split in the two scraper rows: the container **address** is
   overridable (a test points it at an `httptest` server), while

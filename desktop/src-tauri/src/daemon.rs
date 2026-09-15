@@ -724,9 +724,12 @@ fn mint_token() -> Result<String, getrandom::Error> {
 /// a no-op. For a spawned one the graceful path matters: the daemon shuts the
 /// HTTP server down on SIGTERM and waits for in-flight coding runs, and
 /// skipping it would orphan a process holding the store's write lock.
+///
+/// It does *not* sign the Claude account out. Quitting is not signing out: the
+/// slot is Mimir's own and the keychain keeps what is in it, so the operator
+/// connects once and the daemon reconciles the slot on its next start. Signing
+/// out is a button, not a side effect of closing a window.
 pub fn shutdown(app: &AppHandle) {
-    sign_out(app);
-
     let state = app.state::<DaemonState>();
     if let Some(child) = state.take_child() {
         let pid = child.pid();
@@ -739,24 +742,6 @@ pub fn shutdown(app: &AppHandle) {
         std::thread::sleep(Duration::from_millis(400));
         let _ = child.kill();
     }
-}
-
-/// Signs Mimir's Claude account out on the way out of the app.
-///
-/// Quitting Mimir resets its account — that is the contract, and it has to hold
-/// in attached mode too, where the daemon belongs to launchd and keeps running
-/// after this window is gone. The daemon signs out on its own shutdown and
-/// again on its next start, so this is the third of three: the one that covers
-/// a daemon which never stops.
-///
-/// Failures are swallowed on purpose. This runs while the app is closing, there
-/// is nowhere left to show an error, and the daemon's own start-up reset is
-/// what makes a missed call harmless.
-fn sign_out(app: &AppHandle) {
-    let Status::Ready(endpoint) = status_snapshot(app) else {
-        return;
-    };
-    let _ = call_daemon(&endpoint, "POST", "/accounts/reset", None);
 }
 
 #[cfg(unix)]

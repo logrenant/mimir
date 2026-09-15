@@ -7,10 +7,12 @@
 // (config.ClaudeSessionDir), never the CLI's default slot and never a slot the
 // operator signed into from their own shell.
 //
-// That separation is what makes the lifecycle honest. Mimir signs this slot
-// out when the app quits (Reset), so the account list is empty at every
-// launch and connecting one means signing in again. A reset that reached the
-// default slot would log the operator out of the terminal they were using.
+// That separation is what makes the lifecycle safe. The slot survives a quit —
+// connecting is a one-time thing, and the next launch reconciles what is left
+// with the keychain (Restore) rather than signing it out. Signing out is the
+// operator's own act (Reset), and it is also how they switch to another
+// account. A reset that reached the default slot would log the operator out of
+// the terminal they were using, which is why the slot is Mimir's own.
 //
 // Mimir still never sees, stores or moves a credential. It runs `claude auth
 // login` (see login.go), points it at its own directory, and lets the keychain
@@ -203,11 +205,13 @@ func (r *Registry) Touch(ctx context.Context, id string, at time.Time) error {
 
 // Reset signs the slot out, removes it, and forgets the row.
 //
-// This is what "closing Mimir resets the accounts" means, and all three parts
-// are needed for it to be true: the row alone is bookkeeping, the keychain
-// entry is the login, and the directory is the handle the entry is named
-// after. It runs at startup as well as at shutdown, because a daemon that was
-// killed rather than stopped never got to run the shutdown half.
+// This is what "çıkış yap" means, and all three parts are needed for it to be
+// true: the row alone is bookkeeping, the keychain entry is the login, and the
+// directory is the handle the entry is named after. Leaving any one behind
+// would leave the next login connected as the account the operator just asked
+// to leave — which matters, because this is also how they switch accounts.
+//
+// It runs only when asked. A launch runs Restore instead.
 //
 // Errors from the CLI are not returned. A slot that was never signed in makes
 // `claude auth logout` exit non-zero, and that is the expected case at
@@ -225,4 +229,62 @@ func (r *Registry) Reset(ctx context.Context) error {
 		}
 	}
 	return r.store.DeleteAllAccounts(ctx)
+}
+
+// Restore reconciles the surviving slot with the keychain at startup.
+//
+// The slot outlives the app: quitting Mimir no longer signs it out, so the
+// login the operator made once is still there at the next launch and the
+// directory that names its keychain entry is still on disk. What a launch
+// cannot assume is that the entry behind it is still good — a login lapses, or
+// is revoked from somewhere else entirely — and a row with no login behind it
+// would advertise capacity the keychain does not back. So the probe decides,
+// and it costs nothing to ask.
+//
+// Three answers, and the difference between the last two is the whole reason
+// this is not just a Probe call at the call site:
+//
+//   - signed in: keep the slot and make sure the row is there. record is
+//     idempotent by directory, so this also repairs a lost database.
+//   - signed out, cleanly: a full Reset. The CLI answered, the slot is empty,
+//     and leaving the directory would leave a handle to nothing.
+//   - the probe could not answer at all: forget the row, keep the directory.
+//     A missing CLI or a locked keychain is not evidence the login is gone,
+//     and the directory is the only thing that can address the entry again —
+//     removing it here would orphan a perfectly good login for good.
+func (r *Registry) Restore(ctx context.Context) (Account, bool, error) {
+	if r.dir == "" {
+		return Account{}, false, ErrNoSessionDir
+	}
+
+	// Nothing has ever signed in here, or a Reset already cleaned up. No point
+	// spawning a probe to be told so.
+	if _, err := os.Stat(r.dir); os.IsNotExist(err) {
+		return Account{}, false, r.store.DeleteAllAccounts(ctx)
+	}
+
+	status, err := Probe(ctx, r.cliPath, r.dir)
+	if err != nil {
+		return Account{}, false, fmt.Errorf("account: probing %q: %w", r.dir, err)
+	}
+
+	switch {
+	case status.LoggedIn:
+		acct, err := r.record(ctx)
+		if err != nil {
+			return Account{}, false, err
+		}
+		return acct, true, nil
+
+	case status.Error != "":
+		// The row goes, because capacity has to stay honest, but the directory
+		// stays: this is "we could not ask", not "there is nobody there".
+		if err := r.store.DeleteAllAccounts(ctx); err != nil {
+			return Account{}, false, err
+		}
+		return Account{}, false, fmt.Errorf("account: the slot at %q could not be read: %s", r.dir, status.Error)
+
+	default:
+		return Account{}, false, r.Reset(ctx)
+	}
 }

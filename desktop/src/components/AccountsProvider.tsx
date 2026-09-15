@@ -12,11 +12,13 @@ import { api, DaemonError, type Account, type AccountStatus } from "../lib/daemo
 /**
  * The one Claude account Mimir is connected as, and who it is.
  *
- * There is at most one, and it never survives a quit: the daemon signs its own
- * credential slot out when it stops and again when it starts, so "not
- * connected" is the normal state at every launch rather than a fault. Nothing
- * runs without it — the daemon refuses a task with no identity to spend — so
- * this is the first thing a screen has to be able to say.
+ * There is at most one, and it outlives the app: the credential slot is Mimir's
+ * own and the keychain keeps the login, so "connected" is the normal state at a
+ * launch and the operator signs in once. The daemon still reconciles the slot
+ * against the keychain when it starts, so "not connected" means a login that
+ * was never made or has been signed out — not merely that the app was closed.
+ * Nothing runs without it — the daemon refuses a task with no identity to
+ * spend — so this is the first thing a screen has to be able to say.
  *
  * The probe is what turns a slot into a name. It is free — `claude auth status`
  * reads a keychain entry and prints JSON, no API call — but it is a subprocess,
@@ -29,7 +31,7 @@ import { api, DaemonError, type Account, type AccountStatus } from "../lib/daemo
  */
 
 type AccountsAPI = {
-  /** Null means nothing is connected — the state a fresh launch is in. */
+  /** Null means nothing is connected, which now means signed out rather than freshly launched. */
   account: Account | null;
   /** False until the first list has come back, so a screen can wait rather than flash "no account". */
   loaded: boolean;

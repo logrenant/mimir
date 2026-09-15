@@ -18,16 +18,17 @@ import (
 // mockTool is a simple tool for testing.
 type mockTool struct{}
 
-func (m mockTool) Name() string { return "mock_tool" }
+func (m mockTool) Name() string        { return "mock_tool" }
 func (m mockTool) Description() string { return "Mock tool" }
 func (m mockTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 }
+
 type mockResponse struct {
 	Result string `json:"result"`
 }
 
-func (m mockResponse) MetadataOnly() bool { return true }
+func (m mockResponse) MetadataOnly() bool    { return true }
 func (m mockResponse) SizeBudgetTokens() int { return 1000 }
 
 func (m mockTool) Handle(ctx context.Context, args json.RawMessage) (any, error) {
@@ -48,7 +49,7 @@ func (m *mockSearchClient) Search(ctx context.Context, query string, count int) 
 // mockPanicTool panics when Handle is called.
 type mockPanicTool struct{}
 
-func (m *mockPanicTool) Name() string { return "panic_tool" }
+func (m *mockPanicTool) Name() string        { return "panic_tool" }
 func (m *mockPanicTool) Description() string { return "Panics" }
 func (m *mockPanicTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
@@ -79,7 +80,7 @@ func TestServerToolsE2E(t *testing.T) {
 
 	cfg := config.Load()
 	srv := mimirmcp.NewServer(cfg)
-	
+
 	err = srv.Registry().Register(mockTool{})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +107,7 @@ func TestServerToolsE2E(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to write request: %v", err)
 		}
-		
+
 		reader := bufio.NewReader(rClient)
 		resBytes, err := reader.ReadBytes('\n')
 		if err != nil {

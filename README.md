@@ -37,9 +37,9 @@ Quick map:
 
 | Surface | Highlights |
 |---|---|
-| **MCP tools** (`bin/mimir-mcp`) | `web_search`, `fetch_page`, `research`, `diagnostics`, `ecommerce_product_lookup`, `tiktok_profile_lookup`, `gmaps_business_lookup`, `instagram_profile_lookup`, `maps_search` (only with a Places key), the project-memory tools `project_context`, `context_recall`, `context_remember`, and the knowledge-base tools `brain_ingest_data`, `brain_ingest_github`, `brain_query_nodes`, `brain_related` |
-| **Daemon HTTP** (`bin/mimir-daemon`) | `/healthz`, `/diagnostics`, `/projects`, `/coding-tasks`, `GET /ws/runs/{id}` (live run stream), `/maps/leadgen`, `/maps/emails/status`, `/mcp` |
-| **Desktop app** (`desktop/`) | Menu-bar item (daemon status, new task, login item) · Quick task (⌘⇧G) · Connection handshake · Workspace (pick a folder, run a scoped `claude` coding task, watch its thought/action stream live) · Leadgen (region search → categorize → per-category gap analysis → drafted outreach emails) |
+| **MCP tools** (`bin/mimir-mcp`) | `web_search`, `fetch_page`, `research`, `diagnostics`, `ecommerce_product_lookup`, `tiktok_profile_lookup`, `gmaps_business_lookup`, `instagram_profile_lookup`, `maps_search` (only with a Places key), the project-memory tools `project_context`, `context_recall`, `context_remember`, and the knowledge-base tools `brain_ingest_data`, `brain_ingest_github`, `brain_query_nodes`, `brain_related`, and the catalog reads `catalog_products`, `catalog_product` |
+| **Daemon HTTP** (`bin/mimir-daemon`) | `/healthz`, `/diagnostics`, `/projects`, `/coding-tasks`, `GET /ws/runs/{id}` (live run stream), `/maps/leadgen`, `/maps/emails/status`, `/catalog/*` (import a Shopify/IKAS product export, rewrite its listings, write the CSV back losslessly), `/mcp` |
+| **Desktop app** (`desktop/`) | Menu-bar item (daemon status, new task, login item) · Quick task (⌘⇧G) · Connection handshake · Workspace (pick a folder, run a scoped `claude` coding task, watch its thought/action stream live) · Leadgen (region search → categorize → per-category gap analysis → drafted outreach emails) · Katalog (import a product CSV, learn the brand's own markup and voice from it, rewrite listings inside that vocabulary, export unchanged except where you approved) |
 
 ## Build & verify
 

@@ -72,9 +72,19 @@ func (c *Core) relate(ctx context.Context, node store.BrainNodeRow) (int, string
 		}
 	}
 
-	// Expensive half: one pass over the same candidates.
+	// What the parser already knows, before the model is asked anything.
+	//
+	// A structural edge is a fact — this file imports that one, this function
+	// calls that one — and the model was being asked to guess at a set that
+	// already contained them. Naming them does two things: the candidates it
+	// has to consider get shorter, and the call is spent on the links no
+	// parser can see, which is the only thing it was ever better at.
+	known := c.structuralNeighbours(ctx, node)
+	candidates = withoutKnown(candidates, known)
+
+	// Expensive half: one pass over what is left.
 	note := ""
-	semantic, err := c.semanticEdges(ctx, node, candidates)
+	semantic, err := c.semanticEdges(ctx, node, candidates, known)
 	if err != nil {
 		note = "semantic linking was skipped: the relation pass did not run."
 	}
@@ -123,6 +133,15 @@ func (c *Core) candidates(ctx context.Context, node store.BrainNodeRow) ([]store
 		if r.ID == node.ID {
 			continue
 		}
+		// A global node keeps looking only at global nodes — the asymmetry
+		// AGENTS.md records and defends. The store reads an empty path as
+		// "everywhere" now, which is right for a reader asking the whole
+		// machine a question and wrong here: it would put every project's
+		// titles into one relation prompt, which is a decision to take
+		// deliberately rather than to inherit from a search-scope fix.
+		if node.ProjectPath == "" && r.ProjectPath != "" {
+			continue
+		}
 		out = append(out, r)
 	}
 	return out, nil
@@ -133,19 +152,34 @@ func (c *Core) candidates(ctx context.Context, node store.BrainNodeRow) ([]store
 // This is what stands in for a vector index. It sees only titles, kinds and
 // tags — never a body — so the call stays small no matter how large the nodes
 // are, and a candidate list of twenty is a few hundred tokens.
-func (c *Core) semanticEdges(ctx context.Context, node store.BrainNodeRow, candidates []store.BrainNodeRow) ([]store.BrainEdgeRow, error) {
+func (c *Core) semanticEdges(
+	ctx context.Context,
+	node store.BrainNodeRow,
+	candidates []store.BrainNodeRow,
+	known []string,
+) ([]store.BrainEdgeRow, error) {
 	if c.llm == nil {
 		return nil, fmt.Errorf("%w: no provider configured", llm.ErrProviderUnavailable)
 	}
 
-	known := make(map[string]struct{}, len(candidates))
+	// The ids this call is allowed to answer with. Named apart from `known`
+	// above, which is what the parser settled and the model is told to leave
+	// alone.
+	offered := make(map[string]struct{}, len(candidates))
 	var b strings.Builder
 	b.WriteString("New item:\n")
 	fmt.Fprintf(&b, "  title: %s\n  kind: %s\n  tags: %s\n\n",
 		node.Title, node.Kind, strings.Join(node.Tags, ", "))
+	if len(known) > 0 {
+		b.WriteString("Already linked, from parsing the code — do not repeat these:\n")
+		for _, title := range known {
+			fmt.Fprintf(&b, "- %s\n", title)
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString("Candidates:\n")
 	for _, cand := range candidates {
-		known[cand.ID] = struct{}{}
+		offered[cand.ID] = struct{}{}
 		fmt.Fprintf(&b, "- id: %s\n  title: %s\n  kind: %s\n  tags: %s\n",
 			cand.ID, cand.Title, cand.Kind, strings.Join(cand.Tags, ", "))
 	}
@@ -184,7 +218,7 @@ func (c *Core) semanticEdges(ctx context.Context, node store.BrainNodeRow, candi
 	for _, v := range parsed.Related {
 		// An id the model invented would create an edge to a node that does not
 		// exist, which the neighbour resolver would then silently drop forever.
-		if _, ok := known[v.ID]; !ok {
+		if _, ok := offered[v.ID]; !ok {
 			continue
 		}
 		if v.Weight < c.cfg.BrainRelateMinWeight || v.Weight > 1 {
@@ -195,6 +229,74 @@ func (c *Core) semanticEdges(ctx context.Context, node store.BrainNodeRow, candi
 		})
 	}
 	return out, nil
+}
+
+// structuralNeighbours is what the parser has already linked this node to,
+// named the way the prompt will show them.
+//
+// Titles rather than ids: the model is being told what it does not need to
+// look at, and an id it has never seen means nothing to it. Bounded, because a
+// hub in a large repository has hundreds of structural edges and the point of
+// this is to make the call smaller.
+func (c *Core) structuralNeighbours(ctx context.Context, node store.BrainNodeRow) []string {
+	rows, err := c.store.BrainNeighbors(ctx, node.ID, c.cfg.BrainRelateCandidates)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(rows))
+	for _, e := range rows {
+		if !isStructuralEdge(e.Kind) {
+			continue
+		}
+		ids = append(ids, e.Dst)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	nodes, err := c.store.BrainNodesByIDs(ctx, ids)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Title != "" {
+			out = append(out, n.Title)
+		}
+	}
+	return out
+}
+
+// isStructuralEdge says which edge kinds came from the parser rather than from
+// a model. The two semantic kinds — "tag" and "semantic" — are this pass's own
+// output, and treating them as already known would stop it ever revising itself.
+func isStructuralEdge(kind string) bool {
+	switch kind {
+	case "calls", "imports", "defines", "inherits", "implements", "references", "uses", "structural":
+		return true
+	}
+	return false
+}
+
+// withoutKnown drops candidates whose titles the prompt has already listed as
+// settled, so the model is not asked about a link that is not in question.
+func withoutKnown(candidates []store.BrainNodeRow, known []string) []store.BrainNodeRow {
+	if len(known) == 0 {
+		return candidates
+	}
+	seen := make(map[string]struct{}, len(known))
+	for _, title := range known {
+		seen[title] = struct{}{}
+	}
+	out := candidates[:0]
+	for _, cand := range candidates {
+		if _, ok := seen[cand.Title]; ok {
+			continue
+		}
+		out = append(out, cand)
+	}
+	return out
 }
 
 func termSet(terms []string) map[string]struct{} {

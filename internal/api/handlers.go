@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/logrenant/mimir/internal/account"
+	"github.com/logrenant/mimir/internal/agents"
 	"github.com/logrenant/mimir/internal/coderunner"
 	mimirmcp "github.com/logrenant/mimir/internal/mcp"
 	"github.com/logrenant/mimir/internal/project"
@@ -257,10 +258,10 @@ func (s *Server) handleLoginCode(w http.ResponseWriter, r *http.Request) {
 
 // handleResetAccounts signs the slot out and forgets it.
 //
-// This is both the "çıkış yap" button and what the desktop shell calls on its
-// way out, which is why it is one route and not two: closing Mimir and
-// disconnecting by hand mean the same thing — no account, and a login needed
-// before anything can run again.
+// The only thing that disconnects. The slot survives a quit — a launch runs
+// account.Restore, not Reset — so this route is the operator's deliberate act
+// and nothing else calls it: signing out, and switching to another Anthropic
+// account, which is the same thing done twice.
 func (s *Server) handleResetAccounts(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Accounts.Reset(r.Context()); err != nil {
 		writeDomainError(w, r, err)
@@ -313,6 +314,17 @@ type startCodingTaskRequest struct {
 	// pointer so its absence means the historical behaviour — a client that
 	// predates the board still gets a run, not a card nobody releases.
 	Start *bool `json:"start"`
+
+	// Agent is one of the keys GET /agents offers. Absent or empty means the
+	// default sub-agent, which is what every card written before sub-agents
+	// existed was — so a client that predates them keeps working unchanged.
+	Agent string `json:"agent"`
+
+	// Params is the sub-agent executor's own input, an opaque JSON object.
+	// Opaque here on purpose: this handler is a door, not a floor, and
+	// validating an executor's input would put that executor's knowledge in
+	// the HTTP layer.
+	Params json.RawMessage `json:"params"`
 }
 
 // handleStartCodingTask returns as soon as the task is recorded — 202, not 200.
@@ -327,7 +339,11 @@ func (s *Server) handleStartCodingTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if strings.TrimSpace(req.ProjectID) == "" {
+	// project_id is required only for a sub-agent that works inside a folder.
+	// Demanding one for the rest would make the operator register a directory
+	// to run something that never opens it — and the runner, which owns the
+	// agent registry, is where that question is actually answered.
+	if strings.TrimSpace(req.ProjectID) == "" && needsProject(req.Agent) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, "project_id is required")
 		return
 	}
@@ -342,6 +358,8 @@ func (s *Server) handleStartCodingTask(w http.ResponseWriter, r *http.Request) {
 		Prompt:        req.Prompt,
 		AccountID:     req.AccountID,
 		Model:         req.Model,
+		Agent:         req.Agent,
+		Params:        string(req.Params),
 		AttachmentIDs: req.AttachmentIDs,
 	}
 
@@ -454,6 +472,11 @@ type editCodingTaskRequest struct {
 	Prompt        *string   `json:"prompt"`
 	Model         *string   `json:"model"`
 	AttachmentIDs *[]string `json:"attachment_ids"`
+	// Agent and Params are editable under the same guard as the prompt: until
+	// tokens have been spent, what a card asks for is still the operator's to
+	// change. store.EditableStatuses covers both for free.
+	Agent  *string          `json:"agent"`
+	Params *json.RawMessage `json:"params"`
 }
 
 // handleEditCodingTask rewrites what a card asks for.
@@ -482,12 +505,18 @@ func (s *Server) handleEditCodingTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeBadRequest, "prompt is required")
 		return
 	}
-	run, err := s.deps.Runner.Edit(r.Context(), id, coderunner.EditRequest{
+	edit := coderunner.EditRequest{
 		Title:         req.Title,
 		Prompt:        req.Prompt,
 		Model:         req.Model,
+		Agent:         req.Agent,
 		AttachmentIDs: req.AttachmentIDs,
-	})
+	}
+	if req.Params != nil {
+		params := string(*req.Params)
+		edit.Params = &params
+	}
+	run, err := s.deps.Runner.Edit(r.Context(), id, edit)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -625,13 +654,20 @@ type codingTaskListResponse struct {
 // runs by project — there is no cross-project query, so the desktop app calls
 // this once per registered project and merges the results itself.
 func (s *Server) handleListCodingTasks(w http.ResponseWriter, r *http.Request) {
+	// An absent project_id used to be an error, because internal/store only
+	// indexed runs by project and there was nothing to answer with. There is
+	// now — and it is required rather than convenient, since a worker-lane
+	// card belongs to no project and would be invisible to every per-project
+	// query the board could make.
 	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
-	if projectID == "" {
-		writeError(w, http.StatusBadRequest, codeBadRequest, "project_id is required")
-		return
-	}
 
-	runs, err := s.deps.Runner.List(r.Context(), projectID, 0)
+	var runs []coderunner.Run
+	var err error
+	if projectID == "" {
+		runs, err = s.deps.Runner.ListAll(r.Context(), 0)
+	} else {
+		runs, err = s.deps.Runner.List(r.Context(), projectID, 0)
+	}
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -662,3 +698,14 @@ func (s *Server) handleGetCodingTask(w http.ResponseWriter, r *http.Request) {
 var _ CodeRunner = (*coderunner.Runner)(nil)
 var _ ProjectRegistry = (*project.Registry)(nil)
 var _ AccountRegistry = (*account.Registry)(nil)
+
+// needsProject asks the agent catalogue whether a card must name a folder.
+// Here rather than in the runner because it is a 400 about the request, and the
+// operator should be told before the card exists rather than after.
+func needsProject(agentKey string) bool {
+	a, ok := agents.Lookup(strings.TrimSpace(agentKey))
+	if !ok {
+		a, _ = agents.Lookup(agents.Default)
+	}
+	return a.NeedsProject
+}

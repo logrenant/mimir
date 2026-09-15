@@ -1,8 +1,62 @@
 # internal/llm — AGENTS.md
 
-The one exit point for every non-coding model call. Two providers, both a local
-CLI riding an existing login, and a router that picks between them by *class of
-work* rather than by taste.
+The one exit point for every non-coding model call. A registry of local CLIs,
+each riding its own existing login, and a router that picks between them by
+*class of work* rather than by taste.
+
+**Providers are not interchangeable, and the difference that matters is
+structured output (task-93).** Brain's distil and relation passes send a
+`Schema` and parse what comes back. `agy` has `--json-schema`; the `gemini` CLI
+— measured off the installed binary, not remembered — has no such flag. Point a
+schema-carrying request at a provider that cannot serve one and the answer is
+prose: the parse fails and the pass stores a node with a title and no
+assessment. Nothing errors, nothing is logged, the graph quietly degrades.
+
+So `Capabilities` is part of the `Provider` interface rather than a comment, and
+`CompleteWith` refuses the pairing with `ErrNoStructuredOutput` **before
+anything is spent**. That error is deliberately *not* wrapped in
+`ErrProviderUnavailable`: the provider is available, it simply cannot do this,
+and wrapping it would send the work down the fallback path — ending with it
+running somewhere the operator did not choose because of a mismatch nobody
+reported.
+
+**The registry is a property of the machine, not of the build.** Providers are
+installed CLIs, so which ones exist depends on what is installed and signed in
+here. `Discover` answers that, and it separates two questions because they have
+different prices: "is it installed" is `--version` and free; "does the login
+work" is a real completion and is opt-in. `internal/account` scans
+`~/.claude-accounts` for the same reason, and `graphify` reports itself absent
+rather than pretending.
+
+**A provider is catalogued before it is implemented, and the two are different
+promises (task-99).** `internal/llm/catalogue.go` names thirteen ways to reach
+models; four run. The rest carry `StatusComingSoon`, and `Adapter.Implemented()`
+is what keeps the distinction honest: the wire shape, the route and the picker
+are final, so shipping an adapter changes a status and an adapter and nothing
+else. `POST /llm/connections` refuses an unimplemented one **by name**, which is
+the shape working rather than a placeholder.
+
+The reason nothing is written from documentation alone is the same one that
+governs CLI specs: an adapter built against docs and never exercised fails at
+the first real call, or half-works and returns prose where a schema was asked
+for — which is precisely the silent degradation `Capabilities` exists to
+prevent. A coming-soon entry therefore carries **no base URL and no docs URL**:
+those are facts about somebody else's service, and they arrive with the adapter
+that was tested against them.
+
+**The subprocess dance lives in `runCLI` and nowhere else.** By the third
+provider it had been written three times inside this package — the same mistake
+this package was created to fix, with a shorter blast radius. Providers keep
+their argv, their environment and their envelope decoder; those are not shared
+because three CLIs' output shapes are three shapes, and flattening them into a
+table would invent a commonality that is not there.
+
+**A provider spec is only ever written from a CLI somebody has in front of
+them.** `gemini`'s flags were read off `--help` and its error envelope was
+observed from the CLI itself. task-91 is the precedent: an IKAS dialect profile
+written from memory passed its own fixture and matched nothing anyone actually
+downloads, and a CLI's argv is the same kind of claim. `codex` is absent from
+this registry because it is not installed on this machine.
 
 Callers: `internal/refine` (five prompt profiles) and `internal/brain` (the
 distil and the relation pass). `internal/coderunner` is deliberately **not** a
@@ -43,6 +97,20 @@ the chain exists to protect the reserve rather than to spend it.
 
 The chain runs before the provider fallback, and both are suppressed by an
 explicit `Selection` for the same reason.
+
+**The operator's standing preference sits between the two (task-93).**
+`Router.UseDefaults` supplies one `Selection` per class, read per call and
+injected as a function for the reasons `UseEnviron` gives. SD-1 is intact:
+*which class a piece of work belongs to* stays in code — that is a property of
+the work. *Which provider serves a class on this machine* is not, because it
+depends on what is installed here, and `internal/settings` is where the
+operator's own writing lives.
+
+The precedence is caller > operator default > class routing, and the fallback
+is what separates the middle from the top: a per-run selection suppresses it
+(an operator who said "run this on agy" must not be moved to a budget they did
+not choose), while a standing preference does not (it is this machine's answer
+to "who serves compression", and availability is still the daemon's business).
 
 The table is the *default*, not a law. `Router.CompleteWith` takes an
 `llm.Selection` — a provider name and a model name — and an operator can send

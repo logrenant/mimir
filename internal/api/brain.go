@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -30,7 +31,7 @@ type BrainReader interface {
 // BrainGraphStore is the three reads a force-directed view needs, and nothing
 // else. *store.Store satisfies it.
 type BrainGraphStore interface {
-	BrainGraphIDs(ctx context.Context, projectPath string, limit int) ([]store.BrainNodeDegree, error)
+	BrainGraphIDs(ctx context.Context, projectPath string, limit int, kinds []string) ([]store.BrainNodeDegree, error)
 	BrainNodesByIDs(ctx context.Context, ids []string) ([]store.BrainNodeRow, error)
 	BrainEdgesAmong(ctx context.Context, ids []string, limit int) ([]store.BrainEdgeRow, error)
 	BrainProjects(ctx context.Context) ([]store.BrainProjectCount, error)
@@ -173,6 +174,11 @@ type brainProject struct {
 	Nodes   int    `json:"nodes"`
 	Files   int    `json:"files"`
 	Updated int64  `json:"updated_at"`
+	// OnDisk is whether the folder is still there and still holds anything.
+	// False is the state that needed a name: a repository that was renamed or
+	// moved leaves a project behind that nothing can be scanned from, and until
+	// the screen could say so there was no way to tell it from a live one.
+	OnDisk bool `json:"on_disk"`
 }
 
 type brainProjectsResponse struct {
@@ -261,6 +267,10 @@ func (s *Server) handleBrainProjects(w http.ResponseWriter, r *http.Request) {
 			Nodes:   row.Nodes,
 			Files:   row.Files,
 			Updated: row.UpdatedAt.Unix(),
+			// A stat per project, on a list that has one row per project. The
+			// alternative is a screen that cannot distinguish a project from
+			// its ghost.
+			OnDisk: row.ProjectPath == "" || brain.OnDisk(row.ProjectPath),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -281,7 +291,13 @@ func (s *Server) handleBrainGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ranked, err := s.deps.BrainGraph.BrainGraphIDs(r.Context(), project, limit)
+	kinds, err := graphKinds(r.URL.Query().Get("kinds"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, codeBadRequest, err.Error())
+		return
+	}
+
+	ranked, err := s.deps.BrainGraph.BrainGraphIDs(r.Context(), project, limit, kinds)
 	if err != nil {
 		writeDomainError(w, r, err)
 		return
@@ -416,4 +432,39 @@ func graphLimit(raw string, fallback, max int) (int, error) {
 		n = max
 	}
 	return n, nil
+}
+
+// graphKinds reads the `kinds` parameter: a comma-separated list, or empty.
+//
+// Empty does not mean "everything". It means the picture the tab has always
+// shown, which is every kind a model produced — and *not* the structural layer,
+// because symbols are both far more numerous than everything else and more
+// connected than everything else, so a graph ranked by degree turns into
+// nothing but symbols the moment the parser has run. Asking for them is
+// `?kinds=symbol`, or naming them alongside whatever else is wanted; `?kinds=all`
+// is the escape hatch for a caller that really does want one picture of both.
+func graphKinds(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return brain.SemanticKinds(), nil
+	}
+	if raw == "all" {
+		return nil, nil
+	}
+
+	out := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		kind := strings.TrimSpace(part)
+		if kind == "" {
+			continue
+		}
+		if !brain.IsKind(kind) {
+			return nil, fmt.Errorf("unknown node kind %q", kind)
+		}
+		out = append(out, kind)
+	}
+	if len(out) == 0 {
+		return brain.SemanticKinds(), nil
+	}
+	return out, nil
 }

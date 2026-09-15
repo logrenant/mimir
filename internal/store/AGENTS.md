@@ -140,6 +140,39 @@ joined with `OR` and lets `bm25` do the ranking. An unparseable query is a miss,
 never an error: "no results" is a truthful answer, while an error implies the
 memory is broken.
 
+**An empty project path means everywhere, in every brain read.** `brainScopeClause`
+is the one predicate, and it takes the path twice. `BrainGraphIDs` always read it
+that way and `SearchBrainNodes` did not — it scoped to the rows belonging to no
+project, of which a real store has none — so the desktop's graph drew fine and
+every question asked about it came back "the graph has no vocabulary for that".
+Two spellings of the same word in the same package is the shape of that bug;
+share the clause rather than retyping it.
+
+**The brain index searches with prefix terms; memory does not.** `ftsPrefixQuery`
+for a graph of code, `ftsQuery` for prose. unicode61 splits on non-alphanumerics
+and nothing else, so `OrganizationJsonLd` is one token and the exact-term query
+for "organization" — a word plainly on the screen — misses it.
+
+**And when the index finds nothing, `searchBrainNames` scans.** A prefix term
+still only reaches the front of a token, so "jsonld" and "coding" remain
+unreachable through the index no matter how they are phrased. The fallback is a
+substring scan of title, aliases and tags — ten thousand short strings, a few
+milliseconds, and it runs only after the index came back empty. Splitting those
+names into an indexed column would be faster and would need every node
+re-distilled to be true of the rows already stored.
+
+**`BrainVocabulary` has to agree with the search that follows it.** It is the
+check that decides whether a question is worth running, so a word it drops is a
+word the reader is told the graph does not contain. It takes the same two steps
+in the same order for that reason. The version that reconstructed vocabulary
+from the titles of the best matches was checking one of the five indexed fields
+and calling the other four absent.
+
+**Fold terms before they become syntax.** `foldTerm` lower-cases and drops
+combining marks, because unicode61 does the same on the way in and macOS hands
+back decomposed filenames — this store holds a node keyed `İlk-çizim.uskroki`
+with its cedilla as a separate codepoint.
+
 **Do not alias the FTS table.** SQLite resolves `MATCH` and `bm25()` against the
 virtual table's real name; an alias fails with `no such column`.
 
